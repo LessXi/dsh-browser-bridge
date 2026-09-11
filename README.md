@@ -267,15 +267,28 @@ npm run check:extension           # 扩展脚本语法检查（Chrome 加载前�
 
 所以从 profile 加载时永远能工作，即使本仓库没有任何 `node_modules`。
 
-代价是：**编辑器、`node --check`、以及从本仓库直接跑测试需要后者可达**。两种做法都行：
+代价是：**编辑器跳转/补全需要后者可达**——但**跑测试不需要装任何东西**：
 
 ```powershell
-# A. 本地安装依赖（会覆盖下面的联接，也是最干净的方式）
-pnpm install
+# 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
+npm test                 # 249 条
+npm run check:extension
 
-# B. 或者临时把 profile 的模块树接到本包上（Windows 目录联接）
+# 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
 cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh\profiles\node_modules"
 ```
+
+⚠️ **不要用 `pnpm install` 来「装依赖」，它装不到。** 本仓库没有 lockfile，根 `package.json`
+没有 `dependencies`，而 `pnpm-workspace.yaml` 里 `autoInstallPeers: false`，peer 只声明在
+`packages/dsh-browser-bridge/package.json` 的 `peerDependencies` 里——所以 `pnpm install`
+不会把 `@deepseek-ai/*` 拉下来。宿主库由 `lib/deps.js` 在运行时从
+`$DSH_HOME/profiles/node_modules` 解析。
+
+**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **249 passing, 0 failing, 0 skipped**，
+`npm run check:extension` exit 0。前提是这台机器上装过 DSH（宿主库要能解析到）。
+
+**验证环境**：Node **v24.15.0**。两个 `package.json` 里的 `engines.node: ">=20"` 是**保守下限**，
+没有跑过版本矩阵——别把它当成已测试过的兼容性声明。仓库也没有 lockfile 和 CI。
 
 `packages/*/node_modules/` 已在 `.gitignore` 里——它只是本地便利，不是产物。
 
@@ -575,6 +588,7 @@ packages/dsh-browser-bridge/
 │  ├─ page-tools.js       # 页面工具（统一审批门）
 │  ├─ config.js           # 设置默认值与 schema 描述
 │  ├─ settings.js         # 设置命名空间注册
+│  ├─ deps.js             # peer 依赖双路解析（本地 → $DSH_HOME/profiles/node_modules）
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
@@ -587,6 +601,7 @@ extension/
 ├─ content-selection.js   # 选区上报
 ├─ locales.js             # 侧栏文案（zh 是键集真源）+ 相对时间
 ├─ markdown.js            # 最小 Markdown 渲染器，含表格（纯解析 + DOM 装配，无 innerHTML）
+├─ model-menu.js          # 模型/推理强度弹层的纯函数（放在 extension/ 是因为侧栏 import 不到目录外）
 ├─ options.html/.js       # 令牌与端口
 └─ sidepanel.html/.js     # 侧边栏
 ```

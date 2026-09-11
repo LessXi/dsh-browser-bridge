@@ -1,0 +1,29 @@
+# Normalise line endings on checkout everywhere.
+#
+# Without this, a clone on Windows with the common `core.autocrlf=true` gets
+# every file as CRLF. That silently breaks needle searches written against the
+# committed bytes — `HANDOVER.md` §5.1's client-factory check looks for
+# `'},\n})'` and finds nothing at all on a CRLF checkout, reporting a parse
+# failure for a file that is perfectly fine.
+#
+# Text stays LF in the working tree on every platform; only the checkout is
+# normalised, so the diff of any future change stays readable.
+* text=auto eol=lf
+
+# Binary-ish assets must never be line-ending converted.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.gif binary
+*.ico binary
+*.zip binary
+*.crx binary
+*.woff binary
+*.woff2 binary
+
+# Windows-only helpers keep CRLF so they stay double-clickable and work with
+# cmd.exe / PowerShell 5.1, which both tolerate CRLF better than bare LF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf

@@ -274,7 +274,11 @@
 | 3 | 「最底下这个东西有存在的必要吗？」 | 侧栏底部那个 `PAGE AND CONNECTION` 折叠块该不该留 |
 | 4 | （无，我自己标注的） | 侧栏读不到**冷会话**的标题和历史 |
 
-第 1 条**已经改了一大半**（见 §4）。第 2、3、4 条**完全没动**。
+**这四条与下面 §4 的计划都已在 v3 做完**，之后又经过 v4–v8 若干轮修复（见文档顶部的分层块）。
+
+⚠️ 本节及 §4 保留的是**当时的计划文本**，只用于理解背景。**不要把 §4 当成待办清单**——
+按它做会重做已经完成的工作。要知道「现在什么状态、下一步做什么」，看文档顶部的最新块，
+以及 `README.md` 的「与 Codex 能力的差距」一节。
 
 ---
 
@@ -285,7 +289,7 @@
 三件套：
 - **宿主插件** `packages/dsh-browser-bridge/` —— WebSocket 桥接、`browser_*` 工具、站点策略与审批、上下文附件、浏览器端 UI
 - **Chrome 扩展** `extension/` —— MV3，纯 JS，无构建；CDP 执行器 + 右键菜单 + 选区上报 + 侧栏面板
-- **测试** `packages/dsh-browser-bridge/test/` —— 127 条，全绿
+- **测试** `packages/dsh-browser-bridge/test/` —— **249 条 / 17 个 suite**，零依赖，全新克隆直接可跑
 
 ### 目录
 
@@ -310,8 +314,8 @@
 │  │  ├─ config.js  settings.js  设置默认值/schema + 命名空间注册
 │  │  ├─ deps.js                 peer 依赖双路解析
 │  │  ├─ chat.js                 侧栏对话（列表/读消息/发送）
-│  │  └─ client.js               ★ 浏览器端 UI（v3 正在改这里）
-│  └─ test\                      run.js harness.js + 9 个 suite
+│  │  └─ client.js               ★ 浏览器端 UI：设置卡片 + 侧栏状态/令牌行
+│  └─ test\                      run.js harness.js + 17 个 suite
 └─ extension\
    ├─ manifest.json              MV3；debugger/tabs/tabGroups/storage/alarms/scripting/contextMenus/sidePanel
    ├─ background.js              service worker：桥接客户端 + CDP 执行器 + 页面工具
@@ -360,7 +364,17 @@ dsh plugin --profile web add "file:<repo>\packages\dsh-browser-bridge"
 
 ### 2.3 DSH 是**全局**安装
 
-`%APPDATA%\npm\node_modules\@deepseek-ai\dsh`，版本 **0.1.5-rc.1**。peer 依赖在它内嵌的 `node_modules` 里。
+`%APPDATA%\npm\node_modules\@deepseek-ai\dsh`，版本 **0.1.5-rc.1**。
+
+**别把这两个版本搞混**（`package.json` 的 `peerDependencies` 写 `^0.1.5-rc.2`，是对的）：
+
+| 是什么 | 在哪 | 版本 |
+|---|---|---|
+| `dsh` **启动器**（CLI） | `%APPDATA%\npm\node_modules\@deepseek-ai\dsh` | `0.1.5-rc.1` |
+| 插件真正解析的**宿主库** | `~/.dsh/profiles/node_modules/@deepseek-ai/*` | `0.1.5-rc.2` |
+
+插件用的是后者（`lib/deps.js` 的双路解析），所以 peer 范围写 rc.2 与实测一致，
+不存在版本冲突。文档里凡是只写「DSH 0.1.5-rc.1」的地方，说的都是那个 CLI 包。
 
 用户的**线上实例是 3080 端口**（`dsh web`）。**绝不要动它。**
 
@@ -561,7 +575,7 @@ npm run check:extension
 import { readFileSync } from 'node:fs';
 const src = readFileSync('packages/dsh-browser-bridge/lib/client.js', 'utf8');
 const open = src.indexOf('factory: (require) => {');
-const close = src.lastIndexOf('},\n})');
+const close = Math.max(src.lastIndexOf('},\n})'), src.lastIndexOf('},\r\n})'));
 if (open === -1 || close === -1) { console.log('FAIL: could not locate the factory body'); process.exit(1); }
 const body = src.slice(open + 'factory: (require) => {'.length, close);
 try { new Function('require', body); console.log('OK  client.js factory body parses (' + body.length + ' chars)'); }
@@ -605,7 +619,7 @@ dsh --profile web --dump-config | Select-String "browser-bridge" -Context 2,2
 
 ```powershell
 cd <repo>
-npm test              # 127 条，9 个 suite
+npm test              # 249 条，17 个 suite（不需要 pnpm install）
 npm run check:extension
 ```
 
@@ -639,19 +653,29 @@ Chrome 端到端是**真的**：会起 headless Chrome（`C:\Program Files\Googl
 ## 8. 立即上手
 
 ```powershell
-cd <repo>
+git clone https://github.com/LessXi/dsh-browser-bridge.git
+cd dsh-browser-bridge
 
-# 1. 验证上一轮未验证的改动
-node $env:TEMP\clientcheck.mjs          # 若无，见 §5.1
-npm test
-npm run check:extension
+# 1. 不需要任何安装。测试是零依赖的自建 runner。
+npm test                 # 249 条，17 个 suite
+npm run check:extension  # 8 个扩展脚本的语法预检
 
-# 2. 起探针（用户线上实例在 3080，不要动）
-dsh web --port 3199 --no-open           # 用受管后台 job
-
-# 3. 按 §4.3 → §4.4 → §4.5 顺序做
+# 2. 起探针做实测（用户的线上实例在 3080，绝不要动它）
+dsh web --port 3199 --no-open
 ```
 
-**顺序建议**：先确认 §4.2 的卡片视觉（需要用户刷新确认），再做 §4.3 侧栏（用户意见 2、3），最后 §4.4 冷会话 + §4.5 验证。
+**当前唯一确定的未完成项**：`README.md` 的「与 Codex 能力的差距」一节里那条——
+让模型通过 `browser_screenshot` 真的看到画面，需要有 provider 凭据的实例 + 已连接的扩展。
+探针两样都没有，所以只能由用户在 3080 上验收。
+
+**改动生效范围（别搞混，这是最常犯的错）**：
+
+| 改了什么 | 怎么生效 |
+|---|---|
+| `packages/dsh-browser-bridge/lib/*.js` | 用户**重启 `dsh web`** |
+| `extension/*.js` `*.html` `manifest.json` | 用户在 `chrome://extensions` **重载扩展** |
+
+改 `lib/` 时如果要用探针验证，必须先让 `~/.dsh/profiles/web/node_modules/dsh-browser-bridge`
+指向工作区（junction，见 §2.2），**否则探针跑的是旧拷贝**——这个坑本轮踩过两次。
 
 用户会用截图验收，所以**每一步先验证再交付**，不要声称未验证的东西能用。
