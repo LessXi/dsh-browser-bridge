@@ -1,0 +1,14 @@
+# The browser-bridge bundle patch: one host row over the web profile.
+#
+# This row is the plugin's node half. Its browser half is discovered from the
+# same package's `dsh.client` declaration (platform: web, exports["./client"]),
+# so it needs no second row here.
+#
+# The row registers on the HOST plane deliberately: the bridge owns the
+# websocket upgrade route, the token, and the origin policy, and those exist
+# independently of any one session. The model-facing `browser_*` tools are
+# registered into the shared tool registry, which every preset-backed agent
+# reads through its own scope chain.
+- insert:
+    - id: browser-bridge
+      name: 'dsh-browser-bridge'

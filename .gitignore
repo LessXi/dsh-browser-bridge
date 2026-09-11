@@ -1,0 +1,11 @@
+# Dependencies, when a checkout has been installed locally.
+node_modules/
+
+# The plugin resolves its peers from the harness profile at runtime, so this
+# directory is only needed for editors, `node --check`, and running the tests
+# from a checkout that has not run `pnpm install`.
+packages/*/node_modules/
+
+# Transient output.
+*.log
+*.tmp

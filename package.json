@@ -1,0 +1,11 @@
+{
+  "name": "dsh-browser-bridge-workspace",
+  "private": true,
+  "version": "0.2.0",
+  "description": "DSH browser bridge: drive the user's signed-in Chrome from a DSH web session, with Codex-aligned origin policy and removable context attachments.",
+  "type": "module",
+  "scripts": {
+    "test": "node packages/dsh-browser-bridge/test/run.js",
+    "check:extension": "node --check extension/background.js && node --check extension/content-selection.js && node --check extension/locales.js && node --check extension/markdown.js && node --check extension/model-menu.js && node --check extension/options.js && node --check extension/sidepanel.js && node --check extension/page-distill.js"
+  }
+}

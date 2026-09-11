@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>DSH Browser Bridge — Options</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --line: color-mix(in srgb, currentColor 18%, transparent);
+        --muted: color-mix(in srgb, currentColor 62%, transparent);
+        --accent: #4d6bfe;
+      }
+      body {
+        margin: 0 auto;
+        padding: 28px 24px 48px;
+        max-width: 640px;
+        font: 14px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      h1 { font-size: 19px; margin: 0 0 4px; }
+      p.lede { margin: 0 0 24px; color: var(--muted); }
+      fieldset {
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 16px;
+        margin: 0 0 20px;
+      }
+      legend { padding: 0 6px; font-weight: 600; }
+      label { display: block; margin: 0 0 6px; font-weight: 600; }
+      input[type="text"], input[type="password"], input[type="number"] {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 8px 10px;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        font: 13px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace;
+        background: transparent;
+        color: inherit;
+      }
+      .row { margin-bottom: 16px; }
+      .hint { margin: 6px 0 0; font-size: 12.5px; color: var(--muted); }
+      .actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+      button {
+        padding: 8px 14px;
+        border-radius: 7px;
+        border: 1px solid var(--line);
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        cursor: pointer;
+      }
+      button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+      #result {
+        margin-top: 12px;
+        padding: 10px 12px;
+        border-radius: 7px;
+        border: 1px solid var(--line);
+        white-space: pre-wrap;
+        font: 12.5px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+      }
+      #result[data-state="ok"] { border-color: #2f9e63; }
+      #result[data-state="bad"] { border-color: #d1453b; }
+      ol { margin: 8px 0 0; padding-left: 20px; }
+      li { margin-bottom: 5px; }
+      .warn {
+        border-left: 3px solid #d9971f;
+        padding-left: 12px;
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <h1>DSH Browser Bridge</h1>
+    <p class="lede">
+      This extension lets a DeepSeek Harness session read and operate pages in your own Chrome —
+      including sites you are already signed in to.
+    </p>
+
+    <fieldset class="warn">
+      <legend>Before you connect</legend>
+      <p style="margin:0">
+        The <code>debugger</code> permission is equivalent to being able to read and change your data
+        on every site, including signed-in sessions. The harness asks you before it touches each new
+        site, and you can switch the bridge off entirely from DSH Settings → Plugins.
+      </p>
+    </fieldset>
+
+    <fieldset>
+      <legend>Connection</legend>
+      <div class="row">
+        <label for="port">Harness port</label>
+        <input id="port" type="number" min="1" max="65535" placeholder="3080" />
+        <p class="hint">The port shown in the harness URL, usually 3080.</p>
+      </div>
+      <div class="row">
+        <label for="token">Bridge token</label>
+        <input id="token" type="password" spellcheck="false" placeholder="paste the token" />
+        <p class="hint">
+          Open DSH, go to <strong>Settings → Plugins → browser-bridge</strong>, and copy the token.
+          It is stored only in this browser profile.
+        </p>
+      </div>
+      <div class="row">
+        <label for="autopush" style="font-weight:600">
+          <input id="autopush" type="checkbox" style="width:auto;margin-right:6px" />
+          Sync every text selection into DSH context automatically
+        </label>
+        <p class="hint">
+          Off by default. With it off, you choose what to send from the right-click menu, so merely
+          highlighting text to copy it never reaches the model.
+        </p>
+      </div>
+      <div class="actions">
+        <button id="save" class="primary">Save and connect</button>
+        <button id="test">Test connection</button>
+      </div>
+      <div id="result" hidden></div>
+    </fieldset>
+
+    <fieldset>
+      <legend>File uploads</legend>
+      <p style="margin:0">
+        To let DSH upload a file through a page, Chrome needs one setting this extension cannot grant
+        for itself: open <code>chrome://extensions</code>, find this extension, choose
+        <strong>Details</strong>, and turn on <strong>Allow access to file URLs</strong>.
+      </p>
+    </fieldset>
+
+    <fieldset>
+      <legend>How this stays under your control</legend>
+      <ol>
+        <li>The bridge listens on loopback only, and this extension proves itself with a token.</li>
+        <li>Every new site needs your approval before DSH may read or act on it.</li>
+        <li>Submitting forms, purchasing, and deleting ask a second time.</li>
+        <li>Browser history is never remembered as allowed — every read asks again.</li>
+        <li>No page content is ever sent anywhere except to your own harness.</li>
+      </ol>
+    </fieldset>
+
+    <script src="options.js" type="module"></script>
+  </body>
+</html>
