@@ -463,9 +463,16 @@ async readSessionState(sessionId) {
 
 ---
 
-## 4. 已完成 vs 待办
+## 4. 历史层：v3 的四步修补（**全部已完成 —— 本节只作设计与决策记录，不要照此施工**）
 
-### 4.1 已完成（v3 第 1 步的一半）
+> ⚠️ 下面 4.2–4.5 的标题原先写的是「待办」，那是写这份文档时的状态。**四步后来都做完了**：
+> 侧栏已重做成三段并全中文（xtension/locales.js）、冷会话已能读出 transcript、
+> 	est/chat.test.js 与 	est/panel-i18n.test.js 已就位、探针验收已跑过。
+> 保留本节是因为它记录了**当时的取舍理由**（为什么不用 MV3 _locales/、为什么侧栏不做流式、
+> 为什么整页正文不自动附带）—— 这些理由今天依然成立。
+> **要看待办，看文件顶部的状态块与 README 的「与 Codex 能力的差距」表。**
+
+### 4.1 v3 第 1 步（设置卡片对齐原生令牌）—— 已完成
 
 **`packages/dsh-browser-bridge/lib/client.js` 的卡片/字段 CSS 已对齐原生令牌**（`lib/client.js` 里 `.dshbb-card*` 在 140-175 行附近，`.dshbb-field*` 紧随其后）：
 
@@ -501,13 +508,15 @@ body         border-top: .5px solid var(--dsw-alias-border-l2); margin: 0 16px; 
 - BridgeCard 的 token 行改用 `dshbb-field-head`（标签与按钮同行、值在下方）
 - StatusAction 的字段全部换成 `variant: 'line'` 并本地化
 
-**⚠️ 这些改动尚未验证**（改完还没跑过解析检查和测试）。
+**当时尚未验证；后来已跑通**：
+pm test 249 条全过、
+pm run check:extension exit 0（见 §5.1、§8）。
 
-### 4.2 待办 —— v3 第 1 步收尾
+### 4.2 v3 第 1 步收尾 —— 已完成
 
 ```powershell
 cd <repo>
-node $env:TEMP\clientcheck.mjs    # 若无此文件，见 §5.1 自建
+node $env:TEMP\clientcheck.mjs    # 若无此文件，按 §5.1 重建（仓库里那个 .tmp-clientcheck.mjs 已删）
 npm test
 npm run check:extension
 ```
@@ -516,7 +525,7 @@ npm run check:extension
 
 还要肉眼确认（只有用户能做）：刷新 DSH 页面后，设置 → 插件里 `browser-bridge` 卡片应与其余四张**视觉一致**（圆角、边框、字号、箭头图标、展开行为）。
 
-### 4.3 待办 —— v3 第 2 步：侧栏重做（用户意见 2、3）
+### 4.3 v3 第 2 步：侧栏重做（用户意见 2、3）—— 已完成
 
 **决策（已定，别再纠结）**：
 
@@ -541,7 +550,7 @@ npm run check:extension
 
 **非目标**：**侧栏不做流式输出**（需要第二条协议，收益与风险不成比例）。发送后短阶梯重读 + 空闲轮询。这是**已知并写进 README 的差距**。
 
-### 4.4 待办 —— v3 第 3 步：冷会话（缺口 4）
+### 4.4 v3 第 3 步：冷会话（缺口 4）—— 已完成
 
 改 `packages/dsh-browser-bridge/lib/chat.js`：
 
@@ -554,7 +563,7 @@ npm run check:extension
 
 > `send` **绝不自己拼 UserMessage** —— 消息来源类型是会话日志和压缩器认识的东西，手造会让「谁说了什么」的审计记录失真。
 
-### 4.5 待办 —— v3 第 4 步：测试与验证
+### 4.5 v3 第 4 步：测试与验证 —— 已完成
 
 1. 新增 `test/chat.test.js`：消息归一化、**冷/活分支选择**（stub 出 `sessions.get` 命中与未命中两条路径）、标题回落顺序、`send` 在 commands 缺失时的 fail-closed 文案
 2. 加一条**静态检查**：断言 `extension/sidepanel.js` 与 `sidepanel.html` 里不再有裸界面字符串（用一个「必须出现的 i18n 键」清单反查），防止以后漂回英文
