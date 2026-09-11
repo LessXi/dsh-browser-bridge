@@ -242,6 +242,11 @@ export async function apply(ctx, _config) {
     connectionStatus: () => status.read(),
     grants,
     contextAttachments: attachments,
+    // The harness attachment store, read **per call** for the same reason the
+    // chat ports are: a screenshot only becomes a durable `ImageAttachmentRef`
+    // if the tool can reach the store at the moment it runs, and a store captured
+    // at activation would freeze `undefined` whenever it registers later.
+    attachmentStore: () => ctx.get?.('attachments'),
     tabOrigin,
     policyLayers: layers,
   }
@@ -407,6 +412,12 @@ export async function apply(ctx, _config) {
           // service was not up yet when the plugin activated", which look
           // identical in the panel.
           chatServices: chat.services(),
+          // Whether `browser_screenshot` can turn a capture into a durable image
+          // reference. `false` means the tool still captures but can only send a
+          // text label, because the harness attachment service is not reachable
+          // from this profile — a state that otherwise looks exactly like "the
+          // screenshot worked".
+          attachmentService: typeof ctx.get?.('attachments')?.admitPromptContent === 'function',
           contextDiagnostics: {
             agents: attachments.agentIds(),
             pending: attachments.pendingSessions(),

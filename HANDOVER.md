@@ -1,6 +1,65 @@
 # 交接工作单：DSH 浏览器桥接插件（v3 还原度修补）
 
-> ⚠️ **v5 已完成（本轮）：划词附件修复。** 现行状态见这一段，v4/v3 内容仅作历史参考。
+> ⚠️ **v8 已完成（本轮）：`browser_screenshot` 的图片从来没到过模型。** 现行状态见这一段。
+>
+> ---
+>
+> ### v8：工具结果里的图片块形状是错的（一个缺陷，三层证据）
+>
+> **症状**：`browser_screenshot` 返回 `captured`，模型只看到
+> `Screenshot of the page (jpeg).`，看不到画面。
+>
+> **宿主的真实契约**（三处独立证据，路径均在
+> `%USERPROFILE%\.dsh\profiles\node_modules\@deepseek-ai\`）：
+> 1. `dsh-llm-deepseek/lib/index.js:1452` —
+>    `function collectImageRefs(content, refs) { for (const block of content) if (block.type === "image") refs.set(block.attachment.attachmentId, block.attachment); else if (block.type === "tool-result") collectImageRefs(block.content, refs); }`
+>    —— 读的是 `block.attachment.attachmentId`，且**递归进 tool-result**。
+> 2. `dsh-llm/lib/types/content.js:88-91` 的 `contentHasImage(content)` 同样递归进 `tool-result`。
+> 3. `dsh-llm-deepseek/lib/index.js:171-185` 的 `serializeMessagesWithImages` 里有
+>    `pendingToolImages` / `flushToolImages()`：**专门**把工具结果里的图片收集起来，合并成一条
+>    `role:"user"` + `TOOL_RESULT_IMAGE_TEXT` 的消息。（`:128-130` 的注释写明
+>    「the harness puts each tool result in its own user-role message」，所以 `:52` 的
+>    `assertSupportedImageRoles`（只允许 user 角色带图）不会误伤工具结果。）
+>    → **「工具返回图片」是宿主官方支持的路径，不是我们发明的。**
+>
+> **缺陷**：插件发的是 `{ type: 'image', mediaType, data }`，宿主定义的却是
+> `ImageBlock = { type: 'image', attachment: ImageAttachmentRef }`。块上没有 `attachment`，
+> 于是 `block.attachment.attachmentId` 取 `undefined`。schema 编译得过、工具返回成功，
+> 所以**没有任何一层报错**——字节确实拿到了，只是永远到不了模型。
+>
+> **修法**（`packages/dsh-browser-bridge/lib/page-tools.js` 的 `browser_screenshot`）：
+> - `execute` 改走 `store.admitPromptContent([{ type:'image', data: encoded, mediaType, name }])`
+>   → `[{ type:'image', attachment }]`。该方法在 `dsh-attachment/lib/index.js:220-244`，
+>   内部走 `admitEncodedImages` → 会校验**规范化 base64**（`decoded.toString('base64') === data`）。
+>   注意 `admitEncodedImages` 是**自由函数** `(store, images)`，实例方法是 `admitPromptContent`。
+> - `render` 只产出 `{ type:'image', attachment: value.attachment }`。
+> - **base64 不再进入工具值**：此前每张截图都会把整段 base64 写进会话日志。
+>   工具值现在只剩 `{ url, format, mediaType, width, height, bytes, attachment }`。
+> - 新增端口 `ports.attachmentStore`（`lib/index.js` 的 `ports` 对象里），
+>   **按调用解析**：`attachmentStore: () => ctx.get?.('attachments')`。附件服务比插件激活更晚
+>   注册，激活时读一次会永久冻住 `undefined`——这个坑本项目已经踩过一次，别再改回去。
+> - 读端口**必须**写成 `typeof attachmentStore === 'function' ? attachmentStore() : undefined`：
+>   测试夹具不传这个端口，直接 `attachmentStore()` 会 `TypeError`。
+> - 尺寸限额安全：`dsh-attachment-local/lib/index.js:987-998` 的默认值是
+>   `maxImageBytes 20971520` / `maxImagePixels 64e6` / `maxImageDimension 8192`，
+>   1280 宽的截图远在限额内。
+>
+> **降级路径**（都不抛异常、都不制造假块）：
+> `ATTACHMENT_STORE_UNAVAILABLE`（附件服务缺失，只回文字并说明原因）、
+> `EMPTY_SCREENSHOT`（空载荷不入库）、站点规则拒绝时一个字节都不入库。
+>
+> **测试**：新增 `packages/dsh-browser-bridge/test/screenshot.test.js`（8 条）。夹具用
+> **预先记录的 `access` 授权**过 gate，而不是桩审批——这样审批接线一变，测试就会失败而不是
+> 悄悄放行。其中一条按宿主**真实的那次遍历**断言：把 render 出来的 blocks 包进
+> `{ type:'tool-result', toolCallId, content: blocks }` 再递归找 image，要求每个 image 都带
+> `attachment.attachmentId`。**旧代码正是在这里失败。**
+>
+> **投递**：本修复**只动宿主**，`extension/` 未改 → 用户**只需重启 `dsh web`，
+> 不用重载 Chrome 扩展**。
+>
+> ---
+>
+> ⚠️ **v5 已完成：划词附件修复。** v4/v3 内容仅作历史参考。
 >
 > ---
 >

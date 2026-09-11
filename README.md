@@ -245,7 +245,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 241 条
+npm test                          # 全部 249 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -289,7 +289,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面四层测试，241 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
+**已自动化验证**：上面四层测试，249 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
 
 侧边栏那部分还有一组**静态**检查，防止语言和版式漂回去：两个字典的键必须完全一致、面板里每个
 `t('…')` 的键都必须存在、HTML 里不允许残留裸文案、旧版文案一个都不许出现、**字典里不允许出现整句
@@ -311,6 +311,9 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 - [ ] 发一条消息后**只出现人说过的话和模型的回答**，没有系统提示、没有 `[tool-result]`
 - [ ] 上翻看历史时，8 秒轮询不会把视图拽到底部
 - [ ] 从侧边栏发一条消息，确认模型收到并回复
+- [ ] **让模型截一张图**（`browser_screenshot`），确认它真的**看到了画面**，而不是只知道「截过了」。
+      块形状与附件引用已由测试锁定（v8），但「一张真截图能通过附件服务的准入」这一步只能在装着
+      provider 凭据的宿主上才能看到——探针实例没有凭据，跑不出模型回合
 
 ### 探针实例上已跑通的部分
 
@@ -337,6 +340,42 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 `client-connection/browser-session`（DSH web 客户端自己的会话凭据），**没有任何 provider key**；
 你的 3080 实例的 key 只活在那个进程的环境里，第二个实例不会继承。
 所以「模型真的回复」这一条要在**你自己的实例**上看：重启 `dsh web` 让新代码生效，再从侧栏发一条。
+
+#### v8：截图从来没送进模型（本次修复）
+
+**症状**：`browser_screenshot` 回答 `captured`，模型却看不到图，只剩一行
+`Screenshot of the page (jpeg).`。
+
+**根因**（三处独立证据）：宿主的图片块是
+`ImageBlock = { type: 'image', attachment: ImageAttachmentRef }`——
+`dsh-llm-deepseek/lib/index.js:1452` 的 `collectImageRefs` 读的是
+**`block.attachment.attachmentId`**；`dsh-llm/lib/types/content.js:88-91` 的
+`contentHasImage` 会递归进 `tool-result`；而同一个 adapter 的
+`serializeMessagesWithImages`（`dsh-llm-deepseek/lib/index.js:171-185`）
+**专门**把工具结果里的图片收进 `pendingToolImages`，再合并成一条带
+`TOOL_RESULT_IMAGE_TEXT` 的 user 消息。也就是说「工具返回图片」是官方支持的路径。
+插件发的却是 `{ type: 'image', mediaType, data }`：**内联 base64 不是合法块形状**，
+块上没有 `attachment`。schema 能编译、工具报成功，所以没有任何一层报错——
+字节确实拿到了，只是永远到不了模型。
+
+**修法**：截图先交给宿主的附件服务换成引用，块里只放引用。
+`lib/page-tools.js` 的 `execute` 现在走
+`store.admitPromptContent([{ type: 'image', data, mediaType, name }])` → `{ type:'image', attachment }`，
+`render` 只产出 `{ type: 'image', attachment }`。
+**base64 不再进入工具值**（此前每张截图都会把一大段 base64 写进会话日志），
+工具值里只剩 `{ attachmentId, mediaType, width, height, bytes, url, format }`。
+`ports.attachmentStore` 是**按调用解析**的 getter——附件服务比插件激活更晚出现，
+激活时读一次会永久冻住 `undefined`（这个坑本项目已经踩过一次）。
+
+**降级**（都不抛异常、不制造假块）：附件服务不可用 → `ATTACHMENT_STORE_UNAVAILABLE`，
+只回文字并说明原因；空截图 → `EMPTY_SCREENSHOT`；站点规则拒绝 → 一个字节都不入库。
+用 `.png` 时 `mediaType` 在两侧都保持一致。
+
+**测试**：新增 `test/screenshot.test.js`（8 条）。其中一条按**宿主真实的那次遍历**断言——
+把 render 出来的 blocks 包进 `{ type:'tool-result', content: blocks }` 再递归找 image，
+要求每个 image 都带 `attachment.attachmentId`。这正是旧代码会失败的地方。
+
+**本修复只动宿主**：扩展没有改动，所以**只需重启 `dsh web`，不用重载 Chrome 扩展**。
 
 #### v5：附件投递的两个真实缺陷（本次修复）
 
@@ -539,7 +578,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 241 条，含真实 Chrome 端到端
+└─ test/                  # 249 条，含真实 Chrome 端到端
 
 extension/
 ├─ manifest.json

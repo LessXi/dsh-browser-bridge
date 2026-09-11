@@ -42,12 +42,15 @@ const NEEDS_FULL_CDP = 'full_cdp_access'
  * @param {() => Record<string, unknown>} ports.connectionStatus - Last connection facts.
  * @param {object} ports.grants - A {@link import('./grants.js').GrantTable}.
  * @param {object} ports.contextAttachments - A {@link import('./context.js').ContextAttachments}.
+ * @param {() => object} ports.attachmentStore - Resolves the harness attachment store, or
+ *   `undefined` in a profile that mounts none. Called per screenshot rather than captured,
+ *   because the store registers later than this plugin activates.
  * @param {object} ports.approval - The harness approval service, or a stub.
  * @param {(url: string) => Promise<string>} ports.tabOrigin - Resolves the origin of a tab.
  * @returns {object[]} Tool definitions.
  */
 export function buildPageTools(ports) {
-  const { bridge, settings, connectionStatus, grants, contextAttachments, approval, tabOrigin } = ports
+  const { bridge, settings, connectionStatus, grants, contextAttachments, attachmentStore, approval, tabOrigin } = ports
 
   /**
    * Resolve the normalized origin a call is acting on.
@@ -353,13 +356,27 @@ export function buildPageTools(ports) {
       schema: {
         type: 'object',
         additionalProperties: true,
-        properties: { url: { type: 'string' }, format: { type: 'string' }, data: { type: 'string' } },
+        properties: {
+          url: { type: 'string' },
+          format: { type: 'string' },
+          mediaType: { type: 'string' },
+          width: { type: 'integer' },
+          height: { type: 'integer' },
+          bytes: { type: 'integer' },
+          attachment: { type: 'object', additionalProperties: true },
+        },
       },
       render: (_args, value) => {
         const blocks = [{ type: 'text', text: `Screenshot of ${value?.url ?? 'the page'} (${value?.format ?? 'jpeg'}).` }]
-        if (typeof value?.data === 'string' && value.data.length > 0) {
-          blocks.push({ type: 'image', mediaType: value.mediaType ?? 'image/jpeg', data: value.data })
-        }
+        // A screenshot reaches the model as a durable attachment reference, never
+        // as inline bytes. The harness defines `ImageBlock` as
+        // `{ type: 'image', attachment: ImageAttachmentRef }`, and the DeepSeek
+        // adapter's `collectImageRefs` reads `block.attachment.attachmentId`. An
+        // image block carrying `data`/`mediaType` instead has no `attachment`, so
+        // the first image-capable model to receive one dereferences `undefined`
+        // rather than seeing the picture — the tool looked like it "returned no
+        // image" while the bytes were in fact already in the durable value.
+        if (value?.attachment !== undefined) blocks.push({ type: 'image', attachment: value.attachment })
         return blocks
       },
     },
@@ -374,7 +391,44 @@ export function buildPageTools(ports) {
           maxWidth: Number(settings().screenshotMaxWidth),
           format: args.format === 'png' ? 'png' : 'jpeg',
         }, exec)
-        return { url: shot?.url, format: shot?.format, mediaType: shot?.mediaType, data: shot?.data, text: 'captured' }
+        const encoded = typeof shot?.data === 'string' ? shot.data : ''
+        if (encoded.length === 0) {
+          return { text: 'the browser returned an empty screenshot for that tab', meta: { code: 'EMPTY_SCREENSHOT' } }
+        }
+        const mediaType = shot?.mediaType === 'image/png' ? 'image/png' : 'image/jpeg'
+        const store = typeof attachmentStore === 'function' ? attachmentStore() : undefined
+        if (store === undefined || typeof store.admitPromptContent !== 'function') {
+          return {
+            text: 'the screenshot was captured but the harness attachment service is unavailable, so its pixels cannot reach the model',
+            meta: { code: 'ATTACHMENT_STORE_UNAVAILABLE' },
+          }
+        }
+        const [admitted] = await store.admitPromptContent([
+          { type: 'image', data: encoded, mediaType, name: `screenshot-${hole.tabId}` },
+        ])
+        const ref = admitted?.attachment
+        if (ref === undefined) {
+          return {
+            text: 'the harness attachment service returned no reference for the screenshot',
+            meta: { code: 'ATTACHMENT_REF_MISSING' },
+          }
+        }
+        // Best effort only: the capture already succeeded, so a tab lookup that
+        // fails must not turn a usable screenshot into an error. The label exists
+        // to make the picture easy to talk about, not to gate it.
+        const tab = await call(METHODS.tabsList, { includeAll: true }, exec)
+          .then((rows) => (Array.isArray(rows) ? rows : []).find((row) => Number(row?.id ?? row?.tabId) === hole.tabId))
+          .catch(() => undefined)
+        return {
+          url: typeof tab?.url === 'string' ? tab.url : undefined,
+          format: shot?.format,
+          mediaType,
+          width: ref.width,
+          height: ref.height,
+          bytes: ref.bytes,
+          attachment: ref,
+          text: 'captured',
+        }
       } catch (error) {
         return { text: failureText('browser_screenshot', error, connectionStatus()), meta: { code: error?.code } }
       }
