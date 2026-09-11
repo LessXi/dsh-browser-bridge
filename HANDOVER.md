@@ -80,7 +80,7 @@
 >
 > **取证方式（全程靠证据，不靠推断）**：
 > 1. 附件暂存队列是持久化的——`~/.dsh/storages/dsh-browser-bridge-context.json` 里
->    `session-…-…` 的两条附件（`kind:'tab'` 空正文 +
+>    `session-…` 的两条附件（`kind:'tab'` 空正文 +
 >    `kind:'selection'` 正文「逐字节一致」）**当时仍在队列里** → 注入从未发生。
 > 2. 残留横跨三个会话（`505eb23f` / `d4d10dad` / `69e9fb87`）→ 不像竞态，像**从来没成功过**。
 > 3. 探针实例（`dsh web --port 3199 --no-open`）上复现：`staged:1` 入队后 6 秒仍在队列。
@@ -173,7 +173,7 @@
 > ### v6（本次：侧边栏把表格渲染成一坨竖线）
 >
 > 用户截图：模型给的 Cookie 对比表在面板里变成 `| 类型 | 作用 | 能否拒绝 |` 这样的原文管道。
-> 读回该会话（`session-…-…`）的**原始输出**确认：模型给的是
+> 读回该会话（`session-…`）的**原始输出**确认：模型给的是
 > 标准 GFM 表格，一个字符都没错。问题在渲染器——`<repo>\extension\markdown.js`
 > 原本的块类型只有 code / heading / rule / quote / list / paragraph，表格每一行都掉进 paragraph，
 > 几行被 `\n` 连成一个段落，HTML 再把换行折成空格。

@@ -336,7 +336,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 |---|---|
 | `GET /browser-bridge/chat` | 3 个分组（两个具名工作区 + 未分组），**0 条 `[tool-result]`、0 条裸 UUID、0 条归档会话** |
 | 会话与 DSH 同步 | 与 DSH 侧栏同一个调用 `sessionController.list()` + 同一份 `archivedSessionIds`；归档 13 条、子代理会话全部不出现 |
-| `POST {action:'messages'}`（`session-……`） | **8 行**：`user / reasoning×3 / tool×3 / assistant`，与该会话日志里的 34 个事件逐一对上。系统提示、技能目录、`tool/result`、turn/step 边界全部不产出。修复前这里是整段系统提示 |
+| `POST {action:'messages'}`（`session-…`） | **8 行**：`user / reasoning×3 / tool×3 / assistant`，与该会话日志里的 34 个事件逐一对上。系统提示、技能目录、`tool/result`、turn/step 边界全部不产出。修复前这里是整段系统提示 |
 | 同一会话的标题 | `11`（来自 header）；列表里的标题走 `projections.values.title` |
 | `POST {action:'create'}` | `{created:true, sessionId:…}`，新会话落进指定工作区分组 |
 | 新会话的 `messages` | **0 行**（空会话就是空的，不再拿 id 或 `lastMessage` 充当内容） |
