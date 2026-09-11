@@ -6,6 +6,9 @@
 > **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（249 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
+>
+> **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
+> 换成你自己克隆它的目录即可（例：`cd <repo>`）。
 
 > ⚠️ **v8 已完成（本轮）：`browser_screenshot` 的图片从来没到过模型。** 现行状态见这一段。
 >
