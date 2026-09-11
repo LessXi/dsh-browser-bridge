@@ -9,3 +9,4 @@ packages/*/node_modules/
 # Transient output.
 *.log
 *.tmp
+.tmp-*

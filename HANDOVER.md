@@ -1,4 +1,11 @@
-# 交接工作单：DSH 浏览器桥接插件（v3 还原度修补）
+# 交接工作单：DSH 浏览器桥接插件
+
+> **当前状态：v8 已交付。** 下一节就是最新的一轮改动；下面标 v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v8 那一段为止即可。
+>
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（249 条）与
+> `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
+> （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 
 > ⚠️ **v8 已完成（本轮）：`browser_screenshot` 的图片从来没到过模型。** 现行状态见这一段。
 >
