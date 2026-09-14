@@ -367,6 +367,10 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 #### v11：划词不出现的两个叠在一起的静默缺陷（本次修复）
 
+> 扩展版本号本次从 `0.3.0` 升到 **`0.4.0`**。重载后再看
+> `http://127.0.0.1:3080/browser-bridge/health` 的 `hello.version`，是 `0.4.0` 就说明重载生效了——
+> 比在 `chrome://extensions` 上肉眼确认可靠。
+
 现象：在页面上选中文字，侧栏**没有出现「选中内容」chip**，因此也无从知道它会不会被带进上下文。用户在 ACM 的一篇文章上复现（`dl.acm.org/doi/10.1145/3809166#sec-3`，选中「结构化剪枝」，面板只显示「当前标签页」那一个 chip，且当时刚重载过扩展）。
 
 链路是：`content-selection.js` 上报 → service worker 转发给面板。**扩展一重载，所有已打开页面里的旧上报脚本就都死了**：它还在监听，但 `chrome.runtime` 已经失效，消息发不出去。Chrome 不会往已打开的页面重新注入声明式内容脚本，所以要靠面板重新注入这个文件来救活。这条恢复路径由两个**各自独立、且都静默**的缺陷废掉：
