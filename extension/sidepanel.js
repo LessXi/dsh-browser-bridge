@@ -10,10 +10,12 @@
  *
  * Four deliberate limits, all recorded in the README:
  *
- *   - **No streaming.** The transcript is re-read after a send and on a slow
- *     poll while a turn runs. Streaming would need a second protocol for
- *     marginal benefit in a panel this size, and a wrong guess about the event
- *     shape would be worse than a short delay.
+ *   - **Live output arrives as text, not as markdown.** The host relays the
+ *     agent's own stream frames (see `lib/stream.js`), and this panel draws them
+ *     as plain text with a caret. A half-finished table or code fence parses
+ *     into something different on every frame, so the parsed row arrives with
+ *     the commit — which is also why the live block is replaced rather than
+ *     appended to. `@`-mention and attachment state mid-send is still a poll.
  *   - **The session is chosen, not guessed.** A message goes to the session
  *     named in the header. Restoring the last session you looked at is not a
  *     guess — the name is on screen before you type — but silently picking a
@@ -111,6 +113,18 @@ let catalog = null
 let catalogReason = ''
 /** Whether the picker is open. */
 let menuOpen = false
+/**
+ * The attempt currently streaming into this panel, or null.
+ *
+ * The host relays live model output over its own socket and the service worker
+ * hands each frame on, which is the only reason a reply can be read as it is
+ * written: the session log has no delta events, only whole messages. A panel
+ * opened in the middle of a turn never sees `start`, so it simply renders
+ * nothing live and waits for the committed rows like before.
+ *
+ * @type {{ sessionId: string, text: string, reasoning: string, tool: number, done: boolean } | null}
+ */
+let live = null
 
 /**
  * Show a short-lived failure message. There is no success channel: a send that
@@ -613,8 +627,13 @@ function updateToBottom() {
 function drawTranscript(next) {
   rows = next
   const signature = JSON.stringify(next) + JSON.stringify([...expandedReasoning])
+  // A settled stream gives way to the real rows the moment they actually
+  // change. Doing it here rather than on the `end` frame is what keeps the
+  // text on screen if the re-read raced the append.
+  if (live !== null && live.done && signature !== drawnSignature) live = null
   if (signature === drawnSignature) {
     renderWorking()
+    renderLive()
     updateToBottom()
     return
   }
@@ -627,6 +646,7 @@ function drawTranscript(next) {
 
   transcript.replaceChildren(fragment)
   renderWorking()
+  renderLive()
 
   if (followed) transcript.scrollTop = transcript.scrollHeight
   else transcript.scrollTop = keep
@@ -648,6 +668,90 @@ function renderWorking() {
   line.textContent = t('row.working')
   transcript.append(line)
   if (stickToBottom && !sending) transcript.scrollTop = transcript.scrollHeight
+}
+
+/**
+ * Draw the streaming block, or take it away.
+ *
+ * It lives outside the row list on purpose: `drawTranscript` compares a
+ * signature to decide whether to touch the DOM at all, and a block that changes
+ * several times a second has no business invalidating that comparison.
+ *
+ * @returns {void}
+ */
+function renderLive() {
+  const existing = transcript.querySelector('.live')
+  const wanted = view === 'chat' && live !== null && (live.text.length > 0 || live.reasoning.length > 0)
+  if (!wanted) {
+    existing?.remove()
+    return
+  }
+
+  let node = existing
+  if (node === null) {
+    node = document.createElement('div')
+    node.className = 'live'
+    const think = document.createElement('div')
+    think.className = 'live-think'
+    const body = document.createElement('div')
+    body.className = 'answer live-body'
+    node.append(think, body)
+    // Above the waiting line, which `renderWorking` keeps as the last child.
+    const anchor = transcript.querySelector('.working')
+    if (anchor === null) transcript.append(node)
+    else anchor.before(node)
+  }
+
+  node.dataset.done = String(live.done)
+  const [think, body] = node.children
+  // Reasoning is superseded by the answer, exactly as a reasoning row is.
+  const showThink = live.reasoning.length > 0 && live.text.length === 0
+  think.textContent = showThink ? live.reasoning : ''
+  think.hidden = !showThink
+  body.textContent = live.text
+
+  if (stickToBottom) transcript.scrollTop = transcript.scrollHeight
+}
+
+/**
+ * Fold one relayed `assistant/delta` frame into the live block.
+ *
+ * @param {object} payload - `{ sessionId, kind, text? }`, as `lib/stream.js` sends it.
+ * @returns {void}
+ */
+function applyDelta(payload) {
+  if (payload === null || typeof payload !== 'object') return
+  // Another panel's session, or a turn the user has already navigated away from.
+  if (payload.sessionId !== currentSessionId || currentSessionId.length === 0) return
+
+  if (payload.kind === 'start') {
+    live = { sessionId: currentSessionId, text: '', reasoning: '', tool: 0, done: false }
+    currentSessionRunning = true
+    // Draw the waiting line first: the live block is inserted before it, so
+    // without this the first tokens would land under a line that is not there.
+    renderWorking()
+    renderLive()
+    return
+  }
+  if (live === null) return
+
+  const text = typeof payload.text === 'string' ? payload.text : ''
+  if (payload.kind === 'text') live.text += text
+  else if (payload.kind === 'reasoning') live.reasoning += text
+  else if (payload.kind === 'tool') live.tool += text.length
+  else if (payload.kind === 'end') {
+    live.done = true
+    renderLive()
+    // `end` follows the commit, so the committed row is in the log by now and
+    // this re-read swaps the block for the real, parsed markdown row.
+    refreshTranscript().catch(() => {})
+    // The waiting line is drawn from the host's `running` flag, so without this
+    // it would sit under the finished answer until the next five-second poll.
+    refreshGroups().catch(() => {})
+    return
+  } else return
+
+  renderLive()
 }
 
 /**
@@ -1136,6 +1240,10 @@ async function requestSelectionFromPage() {
 }
 
 chrome.runtime.onMessage.addListener((message) => {
+  if (message?.type === 'dsh-assistant-delta') {
+    applyDelta(message.payload ?? {})
+    return false
+  }
   if (message?.type !== 'dsh-selection-changed') return false
   applySelection(message.payload ?? {})
   return false

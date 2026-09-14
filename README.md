@@ -124,7 +124,11 @@ profile 的 patch 层是**启动时读入的静态层**，所以改完 bundles �
 
 界面语言跟随浏览器 UI 语言（`zh*` → 中文，其余 → 英文）。
 
-**没有流式输出**：发送后按短阶梯重读记录 + 空闲轮询。这是已知差距，见文末。
+**逐字流式输出**：模型一边写，侧边栏一边显示。宿主把 agent 自己的 stream 帧（`agent/assistant-stream`）合并成 80ms 一批的通知，经**同一条** websocket 推给扩展，由 service worker 转给面板——**这是这条线上第一个「宿主主动开口」的消息**，请求有 `id`、扩展事件有 `event`，通知用第三个键 `notify`，所以扩展不必猜收到的帧是哪种。
+
+面板把流式内容画成**纯文本 + 光标**，不解析 markdown：半张表格或半个代码围栏每帧都会解析成不同的东西。attempt 一 settle，面板就重读会话记录，用**真正解析过的行替换**流式块——所以它不会变成第二行，也不会和正式回复并排。等待行（`正在工作` 那条扫光）跟随宿主的 `running` 标志，attempt 结束时会立刻重读一次，而不是等 5 秒轮询。
+
+没连接扩展时通知直接丢弃、不排队（计数在 `contextDiagnostics` 旁边的 `stream` 里）：记录永远可以重读，半个 token 流不行。
 
 自动同步开关**不在侧边栏**——它属于扩展选项页，侧边栏再放一个就是同一个开关的第二个副本。
 
@@ -245,7 +249,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 249 条
+npm test                          # 全部 279 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -271,7 +275,7 @@ npm run check:extension           # 扩展脚本语法检查（Chrome 加载前�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 249 条
+npm test                 # 279 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -284,7 +288,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 不会把 `@deepseek-ai/*` 拉下来。宿主库由 `lib/deps.js` 在运行时从
 `$DSH_HOME/profiles/node_modules` 解析。
 
-**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **249 passing, 0 failing, 0 skipped**，
+**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **279 passing, 0 failing, 0 skipped**，
 `npm run check:extension` exit 0。前提是这台机器上装过 DSH（宿主库要能解析到）。
 
 **验证环境**：Node **v24.15.0**。两个 `package.json` 里的 `engines.node: ">=20"` 是**保守下限**，
@@ -302,7 +306,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面四层测试，249 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
+**已自动化验证**：上面四层测试，279 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
 
 侧边栏那部分还有一组**静态**检查，防止语言和版式漂回去：两个字典的键必须完全一致、面板里每个
 `t('…')` 的键都必须存在、HTML 里不允许残留裸文案、旧版文案一个都不许出现、**字典里不允许出现整句
@@ -347,12 +351,53 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 | **模型选择属于会话**（v7） | 在探针新建的会话上切到 `deepseek-v4-pro` → `{"selected":{"provider":"deepseek-official","model":"deepseek-v4-pro","reasoningEffort":"high"}}`（宿主自己补上了该模型的默认强度）；**同一份列表里其它每个会话的 `model` 字段一个都没变** |
 | 切换正被另一个实例持有的会话（v7） | 探针去 resume 你的 3080 正持有的会话时被拒：`SessionAlreadyOwnedError: session "…" is already owned by an active write handle`。这是**两个实例并存**才有的情况——面板连的就是持有会话的那个宿主，正常使用遇不到 |
 | 非法推理强度（v7） | `reasoningEffort:"turbo"` → `{selected:false, reason:"provider \"deepseek-official\" model \"deepseek-v4-pro\" does not support reasoning effort \"turbo\""}`，面板显示成 `切换失败：<原因>` |
+| **宿主加载了流式中继**（v9） | 插件树正常加载（`ctx.on('agent/assistant-stream', …)` 没有报错），`GET /browser-bridge/health` 里出现 `stream:{frames,ignored,flushes,notifications,dropped,ends,buffered}` 全 0 |
 
 最后一步在探针上报错 `llm-deepseek: no API key for provider route "deepseek-official"`——
 **这是探针进程拿不到凭据，不是插件缺陷**。已核对 `$DSH_HOME/.credentials.yaml`：里面只有一条
 `client-connection/browser-session`（DSH web 客户端自己的会话凭据），**没有任何 provider key**；
 你的 3080 实例的 key 只活在那个进程的环境里，第二个实例不会继承。
 所以「模型真的回复」这一条要在**你自己的实例**上看：重启 `dsh web` 让新代码生效，再从侧栏发一条。
+
+**流式输出因此也没能在探针上跑完整条链**：没有 provider 凭据就没有 assistant attempt，
+`agent/assistant-stream` 一帧都不会发。探针能证明的是中继**装上了**（`stream` 计数全 0 且不报错）；
+「宿主聚合 → 走 `notify` → service worker 转给面板 → 面板逐字画出来」这一段由
+`test/stream.test.js`（真 socket 上的帧形状）+ `test/panel-stream.test.js`（真跑面板模块）分段覆盖，
+**中间那一跳（Chrome 的 `chrome.runtime.sendMessage`）只做了结构断言，没有在真 Chrome 里点过**。
+
+#### v9：侧边栏逐字流式输出（本次新增）
+
+**问题**：回复是整段蹦出来的。发送后面板按 `[800, 2000, 4000, 8000, 15000]ms` 的阶梯重读记录，再靠 8 秒空闲轮询——模型写了 20 秒，你就在那 20 秒里看着一条「正在工作」的扫光。
+
+**根因**：会话日志里**根本没有增量事件**。`dsh-session` 的事件类型全集是 `assistant/attempt`、`assistant/message`、`feedback/message-delete`、`feedback/message-put`、`request/context`、`system/message`、`user/message`——模型的一次 attempt 只在**写完之后**提交一条完整的 `assistant/message`。任何读记录的做法都不可能做到逐字。
+
+**真正的通道**在 agent loop 里：`dsh-agent-loop/lib/index.js:1031` 每收到一个 provider chunk 就 `this.dispatch.emit('agent/assistant-stream', { frame })`。宿主自己的 web UI 就是靠它渲染打字机的（`dsh-api-session-controller/lib/index.js:1343` 在消费同一个事件）。两个形状细节决定了实现：
+
+- frame 带的是 `attemptId`，不是 sessionId。`attemptId = \`${sessionId}:${attempt}\``（`dsh-agent-loop/lib/index.js:389`），所以 session 从冒号前缀取，面板才能忽略不属于自己的输出。
+- frame **按 token 到达**。原样转发一条回复就是几千个 websocket 帧，所以按 `sessionId + kind` 聚合，80ms 一批。
+
+**这条线上第三个方向**。此前只有两种帧：宿主→扩展的请求（有 `id`）、扩展→宿主的事件（有 `event`）。通知是第一种**宿主主动开口且不要回答**的消息，所以给它第三个键 `notify`，扩展不用猜收到的帧是哪种：
+
+```js
+// lib/bridge.js
+notify(name, payload) {
+  if (!this.live) return false
+  try { this.socket.send(JSON.stringify({ notify: name, payload: payload ?? null })); return true }
+  catch { return false }
+}
+```
+
+`extension/background.js` 的 `handleFrame` **必须在找 `id` 之前**先看 `notify`：请求路径对没有 `id` 的帧直接 return，晚一步判断就等于所有通知都被丢掉。service worker 再 `chrome.runtime.sendMessage({ type: 'dsh-assistant-delta', payload })` 转给面板（面板是独立文档，自己拿不到这条 socket）。
+
+**面板为什么画纯文本**：半张表格或半个 ``` 围栏每帧都会解析成不同的东西，边读边重排比不流式更糟。所以流式块是 `white-space: pre-wrap` 的纯文本 + 一个光标，**attempt settle 之后重读记录、用真正解析过的行替换它**。替换发生在 `drawTranscript` 里（「已 settle 且行签名变了」才让位），不是收到 `end` 就清空——否则重读一旦racing，已经显示的文字会先消失。已实测：结束后的 DOM 里 `.live` 节点数为 0，`.answer` 只多一条。
+
+**顺带修掉的一个可见瑕疵**：`.working` 那条扫光读的是宿主的 `running` 标志，原本只在 5 秒轮询时更新——回复都显示完了、「正在工作」还挂着最多 5 秒。现在 attempt 结束时立刻重读一次会话列表。
+
+**降级是明确的**：没有扩展连接时通知**丢弃、不排队**（记录永远可以重读，半个 token 流不行），计数在 `/browser-bridge/health` 的 `stream` 字段里：`frames` 涨而 `notifications` 不涨，说明没有扩展在收；`frames` 就是 0，说明 agent 事件根本没到这个插件。
+
+**测试**：`test/stream.test.js`（宿主：聚合、flush 时机、跨会话隔离、无连接降级、通知在线上的形状、两半的字面量对齐）+ `test/panel-stream.test.js`（**把面板模块真的 import 进 `test/dom-shim.js` 里跑**：一个 live 块、reasoning 让位、跨会话忽略、中途打开的面板不显示半截、settle 后被正式行替换）。面板那一半此前只有字符串匹配，没有一行在跑。
+
+> 弯路记录：第一版 DOM 桩不支持 `append('文本')`，markdown 渲染抛错——而面板那条路是 `.catch(() => {})`，**异常被吞掉后看起来和「记录没变化」完全一样**，表现为「live 块该消失却没消失」。桩补上文本节点后测试立刻转绿。
 
 #### v8：截图从来没送进模型（本次修复）
 
@@ -506,7 +551,7 @@ paragraph，表格的每一行都掉进 paragraph，几行被 `\n` 连成一个�
 | 书签读写 | ❌ 不实现（官方给了权限但无明确场景） |
 | 云浏览器 / 手动接管 | ❌ Codex Cloud 独有 |
 | 元素高亮 / 「正在被控制」提示 | ❌ 未实现（官方是否有此 UI 亦未确证） |
-| 侧边栏**流式输出** | ❌ 未实现。面板用「发送后短阶梯重读 + 8 秒空闲轮询」，所以回复是整段出现而不是逐字。做流式要第二套协议（追加式事件流 + 断线重连续传），在这个尺寸的面板里收益与风险不成比例 |
+| 侧边栏**流式输出** | ✅ 已实现（v9）。宿主用 `agent/assistant-stream` 帧合并成 80ms 一批的通知，走 `notify` 键推给 service worker 再转给面板。面板画纯文本+光标，attempt settle 后用解析过的正式行替换。**限于：** 只有模型输出是流式的；附件/`@` 状态仍是轮询 |
 | 侧边栏自动带上**整页正文** | ❌ 有意不做。发送时自动附带的是当前标签页的**身份**（标题+URL），正文要显式加入：整页文本上千 token，自动带上会让每次提问都悄悄变贵 |
 
 ### 未确证的实现假设
@@ -592,7 +637,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 249 条，含真实 Chrome 端到端
+└─ test/                  # 279 条，含真实 Chrome 端到端
 
 extension/
 ├─ manifest.json

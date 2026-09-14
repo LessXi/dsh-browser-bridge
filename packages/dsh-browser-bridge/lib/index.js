@@ -34,6 +34,7 @@ import { createIngest } from './ingest.js'
 import { buildPageTools } from './page-tools.js'
 import { normalizeOrigin } from './policy.js'
 import { registerSettings } from './settings.js'
+import { createStreamRelay } from './stream.js'
 import { buildTools } from './tools.js'
 import { loadOrCreateToken } from './token.js'
 
@@ -171,6 +172,20 @@ export async function apply(ctx, _config) {
   ctx.effect(() => () => {
     grants.clear()
   }, 'browser-bridge: site grants')
+
+  // The agent loop publishes every provider chunk as it arrives, one frame per
+  // token. Relaying them is what turns the panel from "silence, then a finished
+  // paragraph" into something that reads as typing; the committed transcript
+  // stays the source of truth, so a dropped frame costs only animation.
+  const stream = createStreamRelay({
+    bridge,
+    log: (message) => ctx.logger?.debug?.(`browser-bridge: ${message}`),
+  })
+  const detachStream = stream.attach(ctx)
+  ctx.effect(() => () => {
+    detachStream()
+    stream.dispose()
+  }, 'browser-bridge: assistant stream relay')
 
   const attachments = new ContextAttachments({
     settings,
@@ -418,6 +433,11 @@ export async function apply(ctx, _config) {
           // from this profile — a state that otherwise looks exactly like "the
           // screenshot worked".
           attachmentService: typeof ctx.get?.('attachments')?.admitPromptContent === 'function',
+          // Counters for the live-output relay. `frames: 0` while a turn is
+          // running means the agent event never reached this plugin, which is a
+          // different problem from `dropped` climbing, which just means no
+          // extension was connected to receive it.
+          stream: stream.stats(),
           contextDiagnostics: {
             agents: attachments.agentIds(),
             pending: attachments.pendingSessions(),

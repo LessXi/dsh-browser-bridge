@@ -231,6 +231,24 @@ function emit(event, payload) {
 }
 
 /**
+ * Fan one host-initiated notification out to the side panel.
+ *
+ * The panel is a separate document and cannot hold the bridge socket itself, so
+ * live model output has to travel through this worker. A notification has no
+ * backlog and no acknowledgement: with no panel open it is simply dropped,
+ * which is correct, because a transcript can always be re-read and a half
+ * finished token stream cannot.
+ *
+ * @param {string} notify - The notification name; see `NOTIFICATIONS` in `lib/protocol.js`.
+ * @param {object} payload - Its payload.
+ * @returns {void}
+ */
+function relayNotification(notify, payload) {
+  if (notify !== 'assistant/delta') return
+  chrome.runtime.sendMessage({ type: 'dsh-assistant-delta', payload }).catch(() => {})
+}
+
+/**
  * Route one inbound frame: answer a request, ignore anything else.
  * @param {string} text - The raw frame.
  * @returns {Promise<void>} Resolves after the answer is sent.
@@ -243,6 +261,15 @@ async function handleFrame(text) {
     return
   }
   if (typeof parsed !== 'object' || parsed === null) return
+
+  // The third direction on this socket: the host speaking without being asked
+  // and expecting no answer. It carries no `id`, so it has to be routed before
+  // the request path below returns early on a missing id.
+  if (typeof parsed.notify === 'string') {
+    relayNotification(parsed.notify, parsed.payload)
+    return
+  }
+
   const id = parsed.id
   if (typeof id !== 'number') return
 

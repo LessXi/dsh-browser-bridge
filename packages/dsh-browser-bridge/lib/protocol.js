@@ -106,6 +106,26 @@ export const EVENTS = Object.freeze({
 })
 
 /**
+ * Notifications the host pushes without being asked.
+ *
+ * The mirror image of {@link EVENTS}, and the only host→extension traffic that
+ * is not a reply: nothing is waiting on an answer, and a notification that
+ * cannot be delivered is dropped rather than queued. Payloads are shaped for
+ * one consumer — the side panel — so they stay small and self-describing.
+ */
+export const NOTIFICATIONS = Object.freeze({
+  /**
+   * One coalesced slice of the model's live output, forwarded from the agent's
+   * `agent/assistant-stream` frames.
+   *
+   * Payload: `{ sessionId, kind, text? }` where `kind` is `text`, `reasoning`,
+   * `tool`, or `end`. `end` carries no text and marks the attempt settled, at
+   * which point the panel re-reads the committed transcript.
+   */
+  assistantDelta: 'assistant/delta',
+})
+
+/**
  * CDP domains the extension must refuse unless Developer mode is on and the
  * origin has been granted `full_cdp_access`.
  *

@@ -271,6 +271,40 @@
         .working { animation: none; color: var(--tertiary); background: none; -webkit-background-clip: initial; }
       }
 
+      /* Live model output. Deliberately plain text and not markdown: a
+         half-finished table or code fence parses into something different on
+         every frame, and the committed row replaces this the instant the
+         attempt settles. */
+      .live { display: flex; flex-direction: column; gap: 6px; }
+      .live-body { white-space: pre-wrap; overflow-wrap: anywhere; }
+      .live-body::after {
+        content: '';
+        display: inline-block;
+        width: 2px;
+        height: 1em;
+        margin-left: 2px;
+        vertical-align: -0.15em;
+        background: var(--accent);
+        animation: caret 1s steps(2, start) infinite;
+      }
+      .live[data-done='true'] .live-body::after { display: none; }
+      .live-think {
+        color: var(--faint);
+        font-size: var(--text-xs);
+        line-height: 1.5;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        max-height: 4.5em;
+        overflow: hidden;
+      }
+      @keyframes caret {
+        0%, 50% { opacity: 1; }
+        50.01%, 100% { opacity: 0; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .live-body::after { animation: none; }
+      }
+
       /* ---- the way back down ---- */
       #to-bottom {
         position: absolute;

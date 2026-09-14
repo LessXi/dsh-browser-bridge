@@ -199,6 +199,30 @@ export class BrowserConnection {
     })
   }
 
+  /**
+   * Push a notification the extension never asked for.
+   *
+   * Calls are request/response, so they carry an `id`; events from the
+   * extension carry an `event` name. Notifications are the third direction —
+   * host to extension, no answer expected — and get their own `notify` key so
+   * the extension can route frames without guessing which shape it received.
+   *
+   * @param {string} name - Notification name, e.g. one of {@link NOTIFICATIONS}.
+   * @param {unknown} payload - JSON-serializable payload.
+   * @returns {boolean} Whether it reached an open socket.
+   */
+  notify(name, payload) {
+    if (!this.live) return false
+    try {
+      this.socket.send(JSON.stringify({ notify: name, payload: payload ?? null }))
+      return true
+    } catch {
+      // A socket that died between the liveness check and the write is not an
+      // error worth surfacing: the next frame will simply not be delivered.
+      return false
+    }
+  }
+
   /** Close the socket and settle every outstanding call. */
   close() {
     this.#settleAll(BRIDGE_ERRORS.disconnected, 'the bridge connection was closed')

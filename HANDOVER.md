@@ -1,16 +1,72 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v8 已交付。** 下一节就是最新的一轮改动；下面标 v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v8 那一段为止即可。
+> **当前状态：v9 已交付。** 下一节就是最新的一轮改动；下面标 v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v9 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（249 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（279 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 >
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
 
-> ⚠️ **v8 已完成（本轮）：`browser_screenshot` 的图片从来没到过模型。** 现行状态见这一段。
+> ⚠️ **v9 已完成（本轮）：侧边栏改成逐字流式输出。** 现行状态见这一段。
+>
+> ---
+>
+> ### v9：模型边写边显示（一个通道 + 三处接线 + 一套跑了面板模块的测试）
+>
+> **症状**：回复整段蹦出。发送后按 `[800, 2000, 4000, 8000, 15000]ms` 重读记录 + 8 秒空闲轮询，
+> 所以模型写 20 秒，人就看着 20 秒的「正在工作」扫光。
+>
+> **根因**：会话日志里**没有增量事件**。`dsh-session` 事件类型全集 = `assistant/attempt` /
+> `assistant/message` / `feedback/message-delete` / `feedback/message-put` / `request/context` /
+> `system/message` / `user/message`；一次 attempt 只在**写完之后**提交一条完整 `assistant/message`。
+> 读记录不可能逐字。
+>
+> **唯一通道**：`dsh-agent-loop/lib/index.js:1031` —
+> `const live = new AssistantStreamAttempt(..., (frame) => { this.dispatch.emit("agent/assistant-stream", { frame }) })`。
+> 事件签名 `'agent/assistant-stream'(this: Scoped<Agent>, payload: { agent, frame })`
+> （`dsh-tool-cordis/lib/index.js:4940`），scope 映射 `dsh-scope/lib/index.js:10`；
+> 宿主自己的 web UI 在 `dsh-api-session-controller/lib/index.js:1343` 消费同一个事件。
+>
+> **两个形状细节**（决定整个实现）：
+> - frame 带 `attemptId` 不带 sessionId；`attemptId = \`${sessionId}:${attempt}\``
+>   （`dsh-agent-loop/lib/index.js:389`）→ session = 冒号前缀（`sessionOfAttempt`）。
+> - frame **按 token 到达** → 按 `sessionId + kind` 聚合、80ms 一批（`DEFAULT_FLUSH_MS = 80`）。
+> - chunk 字段名取自 `dsh-llm/lib/types/assembler.js:46-58`：`text-delta`/`reasoning-delta` 用
+>   `chunk.text`；`tool-call-delta` 只在 `chunk.name` 存在时算一次（参数流不再发）。
+>
+> **线上第三种方向**：宿主→扩展请求带 `id`，扩展→宿主事件带 `event`，通知带 **`notify`**
+> （`lib/protocol.js` 的 `NOTIFICATIONS.assistantDelta = 'assistant/delta'`）。
+> `lib/bridge.js` 的 `BrowserConnection.notify(name, payload)` 不 live 就返回 false。
+> **`extension/background.js` 的 `handleFrame` 必须在 `const id = parsed.id` 之前判断 `parsed.notify`**
+> ——请求路径对没 `id` 的帧直接 return，晚一步所有通知都被丢掉。
+> 之后 service worker `chrome.runtime.sendMessage({ type: 'dsh-assistant-delta', payload })` 转给面板
+> （面板是独立文档，拿不到这条 socket）。
+>
+> **面板**（`extension/sidepanel.js`）：`let live = {sessionId,text,reasoning,tool,done}`；
+> `applyDelta(payload)` 折叠帧，`renderLive()` 画**纯文本 + 光标**（`white-space: pre-wrap`）。
+> **不解析 markdown**：半张表格每帧都会解析成不同的东西。让位发生在 `drawTranscript` 里
+> ——「`live.done` 且行签名变了」才 `live = null` 并替换；直接在 `end` 清空会让重读 racing 时文字先消失。
+> `.live` 块插在 `.working` 之前；`start` 时先 `renderWorking()` 再 `renderLive()`（否则首批 token 落在不存在的行下面）。
+> 顺带修掉：`.working` 读宿主 `running` 标志，原本只在 5 秒轮询时更新 → 现在 attempt 结束时立刻 `refreshGroups()`。
+>
+> **降级**：没连接扩展 → 通知丢弃不排队，计数在 health 的 `stream` 字段
+> （`frames` 涨而 `notifications` 不涨 = 没扩展在收；`frames` 为 0 = agent 事件没到插件）。
+>
+> **测试**：`test/stream.test.js` + `test/panel-stream.test.js`，后者用**新建的 `test/dom-shim.js`
+> 把 `extension/sidepanel.js` 真的 import 进 Node 跑**（此前面板只有字符串匹配）。279 条全过。
+>
+> **弯路（重要）**：第一版 DOM 桩不支持 `append('文本')`，markdown 渲染抛错；面板那条路是
+> `.catch(() => {})`，**异常被吞后与「记录没变化」完全无法区分**，症状是「live 块该消失却没消失」。
+> 补上文本节点后立刻转绿。→ 死掉的 accessor / 被吞的异常 / 空结果，三者形状相同。
+>
+> **交付**：改了 `lib/`（宿主）+ `extension/`（扩展）→ **重启 `dsh web` 且重载 Chrome 扩展**。
+>
+> ---
+>
+> ⚠️ **v8 已完成（历史）：`browser_screenshot` 的图片从来没到过模型。**
 >
 > ---
 >
@@ -292,7 +348,7 @@
 三件套：
 - **宿主插件** `packages/dsh-browser-bridge/` —— WebSocket 桥接、`browser_*` 工具、站点策略与审批、上下文附件、浏览器端 UI
 - **Chrome 扩展** `extension/` —— MV3，纯 JS，无构建；CDP 执行器 + 右键菜单 + 选区上报 + 侧栏面板
-- **测试** `packages/dsh-browser-bridge/test/` —— **249 条 / 17 个 suite**，零依赖，全新克隆直接可跑
+- **测试** `packages/dsh-browser-bridge/test/` —— **279 条 / 19 个 suite**，零依赖，全新克隆直接可跑
 
 ### 目录
 
@@ -318,7 +374,7 @@
 │  │  ├─ deps.js                 peer 依赖双路解析
 │  │  ├─ chat.js                 侧栏对话（列表/读消息/发送）
 │  │  └─ client.js               ★ 浏览器端 UI：设置卡片 + 侧栏状态/令牌行
-│  └─ test\                      run.js harness.js + 17 个 suite
+│  └─ test\                      run.js harness.js + 19 个 suite
 └─ extension\
    ├─ manifest.json              MV3；debugger/tabs/tabGroups/storage/alarms/scripting/contextMenus/sidePanel
    ├─ background.js              service worker：桥接客户端 + CDP 执行器 + 页面工具
@@ -509,7 +565,7 @@ body         border-top: .5px solid var(--dsw-alias-border-l2); margin: 0 16px; 
 - StatusAction 的字段全部换成 `variant: 'line'` 并本地化
 
 **当时尚未验证；后来已跑通**：
-pm test 249 条全过、
+pm test 279 条全过、
 pm run check:extension exit 0（见 §5.1、§8）。
 
 ### 4.2 v3 第 1 步收尾 —— 已完成
@@ -631,7 +687,7 @@ dsh --profile web --dump-config | Select-String "browser-bridge" -Context 2,2
 
 ```powershell
 cd <repo>
-npm test              # 249 条，17 个 suite（不需要 pnpm install）
+npm test              # 279 条，19 个 suite（不需要 pnpm install）
 npm run check:extension
 ```
 
@@ -669,7 +725,7 @@ git clone https://github.com/LessXi/dsh-browser-bridge.git
 cd dsh-browser-bridge
 
 # 1. 不需要任何安装。测试是零依赖的自建 runner。
-npm test                 # 249 条，17 个 suite
+npm test                 # 279 条，19 个 suite
 npm run check:extension  # 8 个扩展脚本的语法预检
 
 # 2. 起探针做实测（用户的线上实例在 3080，绝不要动它）
