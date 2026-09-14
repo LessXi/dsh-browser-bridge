@@ -488,3 +488,111 @@ test('return still queues while a turn runs, because the button is not the only 
     assert.equal(host.sent.at(-1).text, 'a follow-up')
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Copying what the model wrote
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Everything the fake clipboard was handed, in order. */
+const clipped = []
+/** Flipped to make the clipboard refuse, which a browser is allowed to do. */
+let clipRefuses = false
+
+// Node has a `navigator` but no clipboard on it, and nothing else in this run
+// reads one, so a single definition here is additive rather than a stub that
+// has to be put back.
+Object.defineProperty(globalThis.navigator, 'clipboard', {
+  configurable: true,
+  value: {
+    writeText: async (text) => {
+      if (clipRefuses) throw new Error('the clipboard said no')
+      clipped.push(text)
+    },
+  },
+})
+
+/**
+ * Put a given transcript on screen through the path a finished turn takes.
+ *
+ * A live attempt, then the settled read that replaces it: the panel only gives
+ * its live block up once the rows underneath actually changed, so a test that
+ * skipped the first half would be asserting against a redraw that never came.
+ *
+ * @param {object[]} messages - Rows for the host to answer with.
+ * @returns {Promise<void>} Resolves once the panel has redrawn.
+ */
+async function show(messages) {
+  turn += 1
+  startAttempt()
+  deliver({ sessionId: SESSION, kind: 'text', text: `streaming ${turn}` })
+  host.messages = messages
+  host.running = false
+  deliver({ sessionId: SESSION, kind: 'end' })
+  await settle()
+}
+
+/** The transcript's copy button for `scope`, by class rather than by position. */
+function copyButtonIn(scope) {
+  return transcript.querySelector(scope).querySelector('.copy')
+}
+
+test('a code block can be copied without selecting it by hand', async () => {
+  await show([{ kind: 'assistant', text: 'Run this:\n\n```sh\nls -la\n```\n' }])
+
+  const head = transcript.querySelector('.code-block').querySelector('.code-head')
+  assert.equal(head.querySelector('.code-lang').textContent, 'sh', 'the head does not name the language')
+  const copy = head.querySelector('.copy')
+  assert.equal(copy.dataset.copy, 'code')
+  assert.equal(copy.textContent, '复制', 'the button has no label, so there is nothing to click')
+
+  clipped.length = 0
+  transcript.emit('click', { target: copy })
+  await settle()
+
+  assert.deepEqual(clipped, ['ls -la'], 'the code never reached the clipboard')
+  assert.equal(copy.textContent, '已复制', 'nothing on screen said the copy had happened')
+})
+
+test('copying an answer copies what is rendered, not the markdown behind it', async () => {
+  await show([{ kind: 'assistant', text: 'Use **bold** and `code` here.' }])
+
+  const copy = copyButtonIn('.answer-actions')
+  assert.equal(copy.dataset.copy, 'answer')
+
+  clipped.length = 0
+  transcript.emit('click', { target: copy })
+  await settle()
+
+  assert.deepEqual(clipped, ['Use bold and code here.'], 'the reader would have got asterisks and backticks')
+})
+
+test('a click that is not on a copy button copies nothing', async () => {
+  await show([{ kind: 'assistant', text: 'just words' }])
+  clipped.length = 0
+
+  // The transcript is one big delegated target, so anything that bubbles
+  // through it arrives here: a click on a link, on the reasoning toggle, or on
+  // nothing at all must not put the message on the clipboard.
+  transcript.emit('click', { target: sendButton })
+  transcript.emit('click', {})
+  await settle()
+
+  assert.deepEqual(clipped, [], 'a stray click was treated as a copy')
+})
+
+test('a refused clipboard says so instead of looking like it worked', async () => {
+  await show([{ kind: 'assistant', text: '```\nnope\n```' }])
+  const copy = copyButtonIn('.code-block')
+  toast.textContent = ''
+  clipRefuses = true
+  try {
+    transcript.emit('click', { target: copy })
+    await settle()
+  } finally {
+    clipRefuses = false
+  }
+
+  assert.equal(copy.textContent, '复制', 'a refused copy announced itself as copied')
+  assert.equal(copy.dataset.state, undefined, 'the button was left in its copied state')
+  assert.equal(toast.textContent, '复制失败', 'a refused clipboard failed silently')
+})

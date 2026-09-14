@@ -541,8 +541,21 @@ function renderRow(row, index) {
     wrapper.dataset.kind = 'assistant'
     const answer = document.createElement('div')
     answer.className = 'answer'
-    answer.append(renderMarkdown(document, row.text))
+    answer.append(renderMarkdown(document, row.text, { copy: t('action.copy') }))
     wrapper.append(answer)
+    // Copying the whole answer lives here rather than in the header: it acts on
+    // one row, and the row is where the reader is looking. It stays invisible
+    // until the row is hovered or something inside it takes focus, so a panel
+    // full of answers is not a panel full of buttons.
+    const actions = document.createElement('div')
+    actions.className = 'answer-actions'
+    const copy = document.createElement('button')
+    copy.type = 'button'
+    copy.className = 'copy'
+    copy.dataset.copy = 'answer'
+    copy.textContent = t('action.copy')
+    actions.append(copy)
+    wrapper.append(actions)
     return wrapper
   }
 
@@ -836,6 +849,11 @@ function drawHistory() {
       if (session.running) {
         const dot = document.createElement('span')
         dot.className = 'session-dot'
+        // A six-pixel dot is the whole message, so it needs a name to be
+        // readable at all: without one the row says "busy" only to someone who
+        // already knows what the dot means.
+        dot.title = t('session.running')
+        dot.setAttribute('aria-label', t('session.running'))
         button.append(dot)
       }
       const time = document.createElement('span')
@@ -1248,6 +1266,59 @@ input.addEventListener('input', () => {
 transcript.addEventListener('scroll', () => {
   stickToBottom = atBottom()
   updateToBottom()
+})
+
+/**
+ * Put text on the clipboard.
+ *
+ * `navigator.clipboard` is the whole implementation on purpose: the panel is an
+ * extension page, which is a secure context, and a click is a user gesture, so
+ * the API is available exactly when the button is. The deprecated
+ * `document.execCommand('copy')` fallback is left out because it would be a
+ * path that never runs in production and therefore never gets tested; a refusal
+ * is reported instead of swallowed.
+ *
+ * @param {string} text - What to copy.
+ * @returns {Promise<boolean>} Whether the clipboard took it.
+ */
+async function copyText(text) {
+  const clipboard = globalThis.navigator?.clipboard
+  if (clipboard === undefined || typeof clipboard.writeText !== 'function') return false
+  try {
+    await clipboard.writeText(text)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * One delegated handler for every copy button in the transcript.
+ *
+ * Rows are rebuilt whenever the transcript's data changes, so per-button
+ * listeners would need re-attaching on every draw. Delegation survives a
+ * redraw — which is also what lets the "copied" label sit there for a moment
+ * without the next poll wiping it.
+ */
+transcript.addEventListener('click', (event) => {
+  const button = event.target?.closest?.('.copy')
+  if (button === null || button === undefined) return
+  const scope = button.dataset.copy === 'code' ? button.closest('.code-block') : button.closest('.row')
+  const source = button.dataset.copy === 'code' ? scope?.querySelector('code') : scope?.querySelector('.answer')
+  const text = typeof source?.textContent === 'string' ? source.textContent : ''
+  if (text.length === 0) return
+  copyText(text).then((ok) => {
+    if (!ok) {
+      say(t('error.notCopied'))
+      return
+    }
+    button.dataset.state = 'copied'
+    button.textContent = t('action.copied')
+    setTimeout(() => {
+      delete button.dataset.state
+      button.textContent = t('action.copy')
+    }, 1400)
+  })
 })
 
 toBottom.addEventListener('click', () => {

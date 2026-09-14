@@ -1,14 +1,33 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v11 已交付。** 下一节就是最新的一轮改动；下面标 v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v11 那一段为止即可。
+> **当前状态：v12 已交付。** 下一节就是最新的一轮改动；下面标 v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v12 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（288 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（295 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 >
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
+
+> ### v12：侧边栏能复制代码块和整条回答（扩展侧，本次新增）
+>
+> **为什么做**：此前面板**没有任何复制能力**，想拿走一段代码只能手动框选。这是每天都碰到的摩擦。
+>
+> **做法**
+> - `extension/markdown.js`：`code` 块渲染成 `div.code-block > (div.code-head + pre)`；头行左边语言、右边「复制」。`renderBlocks(document, blocks, options)` 新增第三参 `options.copy`（标签由调用方给，渲染器**自己不造文案**），`renderMarkdown(document, text, options)` 透传。
+> - `extension/sidepanel.js`：`renderRow` 的 assistant 分支给 `renderMarkdown` 传 `{copy: t('action.copy')}`，并在回答尾部追加 `div.answer-actions > button.copy[data-copy="answer"]`；新增 `copyText(text)`（只走 `globalThis.navigator?.clipboard?.writeText`，被拒返回 false）与**一个委托处理器** `transcript.addEventListener('click', …)`——按钮靠 `data-copy` + `closest` 定位，`dataset.state='copied'` + 1400ms 后还原。
+> - `extension/sidepanel.html`：新增 `.code-block` / `.code-head` / `.code-lang` / `.copy` / `.copy[data-state='copied']` / `.answer-actions`（hover 与 `:focus-within` 显示，`@media (hover:none)` 常显）。
+> - `extension/locales.js`：新增 `action.copy`、`action.copied`、`error.notCopied`；**删掉 3 个死键** `action.refresh`、`action.refresh.title`、`history.title`。
+> - `extension/sidepanel.js` 的会话列表圆点：补 `dot.title` / `aria-label = t('session.running')`——键早就存在却没人读，那个 6px 的圆点此前没有任何文字说明。
+>
+> **测试**：288 → **295**。`test/markdown.test.js` 改写代码块形状用例为卡片形状（并加「没有语言也要有复制按钮、渲染器不造文案」）；`test/panel-stream.test.js` 新增 4 条真跑面板模块的用例（代码块复制 / 整条回答复制渲染文本 / 点别处不复制 / 剪贴板被拒时弹「复制失败」且按钮不变成已复制），文件里用 `Object.defineProperty(globalThis.navigator, 'clipboard', …)` 装假剪贴板；`test/panel-i18n.test.js` 新增「复制链路两端都接上」（渲染器类名 ↔ 样式表选择器）与「字典里不许有没人读的键」两条不变式。
+>
+> **证伪记录**：把 `transcript.addEventListener('click', …)` 改名使其失效后重跑，4 条新用例中 3 条变红（第 4 条断言「点别处不许复制」，拆掉处理器自然仍绿）；恢复后 295 全绿。
+>
+> **交付**：只改 `extension/` → 用户**重载 Chrome 扩展**即可，不需要重启 `dsh web`。
+>
+> **一个可复用的自查手段（本次新发现）**：把 `extension/sidepanel.html` + 其模块复制到一个临时目录，在 `</head>` 前注入「最小的 `chrome.*` + 打桩 `fetch`」脚本（注意桩里必须返回 `payload.catalog`，面板读的是 `catalog` 字段而不是目录本身），用 http 起静态服务打开，就能在没有 Chrome 的情况下读到面板的**真实渲染文本**。像素级仍看不到（`browser_screenshot` 的图片**不会**回传成工具结果；`read_image` 读 `~/.dsh/attachments/v1/objects/**` 里的落地文件才看得到图）。**注意**：2026-09-14 该手段用到一半被用户制止——「不要影响到我正在使用浏览器」，此后不再开标签页、不截图。
 
 > ### v11：划词不出现的两个叠在一起的静默缺陷（扩展侧，本次修复）
 >

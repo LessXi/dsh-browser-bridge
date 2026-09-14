@@ -249,7 +249,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 288 条
+npm test                          # 全部 295 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -275,7 +275,7 @@ npm run check:extension           # 扩展脚本语法检查（Chrome 加载前�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 288 条
+npm test                 # 295 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -288,7 +288,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 不会把 `@deepseek-ai/*` 拉下来。宿主库由 `lib/deps.js` 在运行时从
 `$DSH_HOME/profiles/node_modules` 解析。
 
-**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **288 passing, 0 failing, 0 skipped**，
+**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **295 passing, 0 failing, 0 skipped**，
 `npm run check:extension` exit 0。前提是这台机器上装过 DSH（宿主库要能解析到）。
 
 **验证环境**：Node **v24.15.0**。两个 `package.json` 里的 `engines.node: ">=20"` 是**保守下限**，
@@ -306,7 +306,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面四层测试，288 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
+**已自动化验证**：上面四层测试，295 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
 
 侧边栏那部分还有一组**静态**检查，防止语言和版式漂回去：两个字典的键必须完全一致、面板里每个
 `t('…')` 的键都必须存在、HTML 里不允许残留裸文案、旧版文案一个都不许出现、**字典里不允许出现整句
@@ -365,6 +365,45 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 `test/stream.test.js`（真 socket 上的帧形状）+ `test/panel-stream.test.js`（真跑面板模块）分段覆盖，
 **中间那一跳（Chrome 的 `chrome.runtime.sendMessage`）只做了结构断言，没有在真 Chrome 里点过**。
 
+#### v12：代码块与整条回答的复制（本次新增）
+
+侧边栏此前**没有任何复制能力**：想拿走一段代码只能手动框选，而在一条窄面板里框选会连气泡边缘
+和相邻文字一起选中。这是每天都碰到的摩擦，也是「看着还不像成品」的地方。
+
+**做了什么**
+
+- **代码块变成一张卡片**：`extension/markdown.js` 的 `code` 块渲染成
+  `div.code-block > (div.code-head + pre)`，头行左侧是语言（原版也有这一步，`code-block-language`），
+  右侧是「复制」。
+- **整条回答也能复制**：回答行尾部一个「复制」，默认不可见，鼠标悬停或键盘聚焦
+  （`:focus-within`）时出现——原版把块级操作也挂在 hover 上（`_TableActions` 在 `:not(:hover)` 时 `opacity: 0`）。
+  代码块那个按钮**常驻可见**：它很小，而且在头行里，藏起来反而找不到。
+- **一个委托处理器管所有按钮**（`extension/sidepanel.js` 的 `transcript.addEventListener('click', …)`）。
+  行是重建的，逐个按钮挂监听器就得每次重画后再挂一轮；委托还能让「已复制」两个字在重画之间活下来。
+  按钮靠 `data-copy="code" | "answer"` 与 `closest` 定位作用域，**不靠 DOM 位置**。
+- **复制的是渲染后的文本**，不是 markdown 源码：复制一条含 `**粗体**` 和反引号的回答，得到的是
+  `Use bold and code here.`。
+- **失败会说话**：剪贴板被拒时按钮**不会**变成「已复制」，而是弹「复制失败」。这里只走
+  `navigator.clipboard`——面板页是扩展页（安全上下文），点击是用户手势，需要它时它就在；
+  不写 `document.execCommand('copy')` 兜底，因为那是一条线上永远不跑、因而永远不被测的路径。
+
+**顺带修掉的三处**
+
+- 会话列表里那条「正在运行」的小圆点**从来没有名字**：6 像素的点是它要传达的全部信息，
+  没有 `title`/`aria-label` 时只有已经知道它含义的人看得懂。现已接上早就存在、却没人读的 `session.running`。
+- 清掉三个死键：`action.refresh`、`action.refresh.title`（v4 把刷新按钮换成了「标题 + `＋`」，键留下来了）、
+  `history.title`。
+- 新增 `test('no dictionary entry is dead weight')`，把「字典里不许有没人读的键」钉成不变式——
+  死键是「本来打算接、后来忘了」留下的痕迹，那个没名字的圆点就是这么漏掉的。
+
+**实测**：`npm test` **295 passed, 0 failing, 0 skipped**；`npm run check:extension` exit 0。
+另把面板页挂在一个 http 预览宿主里跑起来、读回它的渲染结果核对：代码块头行确实出现
+`python` 与「复制」，回答尾部确实出现「复制」，表格/列表/思考行/工具行/两个 chip 都在该在的位置。
+
+**证伪**（新测试必须能抓住功能被拆掉）：把 `transcript.addEventListener('click', …)` 的注册改名使其失效后重跑，
+4 条新面板用例中 **3 条立刻变红**——第 4 条断言的是「点别处不许复制」，拆掉处理器它自然还是绿的，
+这是该用例的性质，不是它没在测东西。恢复后全绿。
+
 #### v11：划词不出现的两个叠在一起的静默缺陷（本次修复）
 
 > 扩展版本号本次从 `0.3.0` 升到 **`0.4.0`**。重载后再看
@@ -393,7 +432,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 | 项 | 结果 |
 |---|---|
-| `npm test` | **288 passing, 0 failing, 0 skipped** |
+| `npm test` | **295 passing, 0 failing, 0 skipped** |
 | `npm run check:extension` | exit 0 |
 | **把 `content-selection.js` 换回 `git show HEAD:` 的那一版，再跑新测试** | **3 条变红**（接管、死副本被替换、失败后重试），换回新版全绿 → 测试确实能抓住这两个缺陷 |
 | 旧版跑「死副本被替换」用例 | 直接把进程打崩：`Error: Extension context invalidated.` —— 无人接管的 rejection，正是线上那个缺陷的真身 |
@@ -701,7 +740,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 288 条，含真实 Chrome 端到端
+└─ test/                  # 295 条，含真实 Chrome 端到端
 
 extension/
 ├─ manifest.json

@@ -276,19 +276,42 @@ export function renderInline(document, text) {
  *
  * @param {Document} document - The document to build nodes with.
  * @param {object[]} blocks - Blocks from `parseMarkdown`.
+ * @param {object} [options] - Rendering labels.
+ * @param {string} [options.copy] - Label for a code block's copy button.
  * @returns {DocumentFragment} The fragment.
  */
-export function renderBlocks(document, blocks) {
+export function renderBlocks(document, blocks, options = {}) {
   const fragment = document.createDocumentFragment()
 
   for (const block of blocks) {
     if (block.type === 'code') {
+      // A code block is a card with a head row: the language on the left, a
+      // copy button on the right. Without the button the only way to take a
+      // snippet is to drag-select it, and that is friction the reader meets
+      // every single time. The button is deliberately inert — the panel
+      // delegates the click — so this renderer stays a pure function.
+      const card = document.createElement('div')
+      card.className = 'code-block'
+      const head = document.createElement('div')
+      head.className = 'code-head'
+      const label = document.createElement('span')
+      label.className = 'code-lang'
+      label.textContent = typeof block.lang === 'string' ? block.lang : ''
+      head.append(label)
+      const copy = document.createElement('button')
+      copy.type = 'button'
+      copy.className = 'copy'
+      copy.dataset.copy = 'code'
+      copy.textContent = typeof options.copy === 'string' ? options.copy : ''
+      head.append(copy)
+      card.append(head)
       const pre = document.createElement('pre')
       const code = document.createElement('code')
       code.textContent = block.text
       if (typeof block.lang === 'string' && block.lang.length > 0) pre.dataset.lang = block.lang
       pre.append(code)
-      fragment.append(pre)
+      card.append(pre)
+      fragment.append(card)
       continue
     }
 
@@ -374,8 +397,9 @@ export function renderBlocks(document, blocks) {
  * Render a Markdown string straight to nodes.
  * @param {Document} document - The document to build nodes with.
  * @param {string} text - The message body.
+ * @param {object} [options] - Rendering labels; see `renderBlocks`.
  * @returns {DocumentFragment} The fragment.
  */
-export function renderMarkdown(document, text) {
-  return renderBlocks(document, parseMarkdown(text))
+export function renderMarkdown(document, text, options) {
+  return renderBlocks(document, parseMarkdown(text), options)
 }

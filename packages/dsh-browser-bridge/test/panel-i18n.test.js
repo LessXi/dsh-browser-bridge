@@ -275,3 +275,44 @@ test('the menu module reports a code and leaves every word to the panel', (t) =>
   // helper names like `asText(`.
   assert.equal(/\bt\(['"]/.test(source), false, 'the menu module must not translate')
 })
+
+test('the copy affordance is wired on both sides of the DOM', () => {
+  // The panel tests drive a DOM with no CSS engine, so a class the renderer
+  // emits and the stylesheet never defines renders as a working button there
+  // and as an invisible one in Chrome — and `.copy` is reached by delegation,
+  // which means a rename on either side fails silently rather than loudly.
+  const html = readExtensionFile('sidepanel.html')
+  const markdown = readExtensionFile('markdown.js')
+  const script = readExtensionFile('sidepanel.js')
+
+  assert.match(markdown, /className = 'code-block'/, 'the renderer no longer builds a code card')
+  assert.match(markdown, /dataset\.copy = 'code'/)
+  assert.match(script, /copy\.dataset\.copy = 'answer'/, 'the answer has no copy button')
+  assert.match(script, /navigator\?\.clipboard/, 'the panel no longer uses the async clipboard')
+
+  for (const selector of ['.code-block', '.code-head', '.code-lang', '.answer-actions']) {
+    assert.ok(html.includes(selector), `sidepanel.html never styles ${selector}`)
+  }
+  assert.ok(html.includes(".copy[data-state='copied']"), 'a finished copy would show no feedback')
+  assert.ok(
+    html.includes(".row[data-kind='assistant']:hover .answer-actions"),
+    'the answer button is never revealed, so it cannot be clicked',
+  )
+  assert.match(html, /^\s*\.copy \{/m, 'the delegated target has to be styled under exactly that name')
+})
+
+test('no dictionary entry is dead weight', () => {
+  // A key nothing reads is either a leftover from a control that was removed
+  // (the header's reload button) or a label that was meant to be wired and
+  // never was — which is how the running dot stayed unlabelled. Every key is
+  // reached through a literal `t('…')`, and `relativeTime` builds its own from
+  // inside `locales.js`, so that file is part of the search.
+  const names = [
+    'locales.js', 'sidepanel.js', 'background.js', 'options.js',
+    'markdown.js', 'model-menu.js', 'content-selection.js', 'page-distill.js',
+  ]
+  const sources = names.map((name) => readExtensionFile(name)).join('\n')
+  const used = new Set([...sources.matchAll(/\bt\(\s*'([^']+)'/g)].map((match) => match[1]))
+  const dead = Object.keys(zh).filter((key) => !used.has(key))
+  assert.deepEqual(dead, [], 'these keys are defined and never read')
+})

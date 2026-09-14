@@ -39,13 +39,12 @@ export const zh = Object.freeze({
   'action.send.title': '发送',
   'action.stop': '停止',
   'action.stop.title': '停下这一轮',
-  'action.refresh': '重新载入',
-  'action.refresh.title': '重新读取',
   'action.toBottom': '回到底部',
   'action.drop': '移除',
+  'action.copy': '复制',
+  'action.copied': '已复制',
 
   // The history view.
-  'history.title': '会话',
   'history.empty': '还没有会话',
   'tabs.title': '受控标签页',
   'tabs.none': '没有受控标签页',
@@ -105,6 +104,7 @@ export const zh = Object.freeze({
   // nothing selected, and the user's question — "will this be attached?" — has
   // opposite answers in the two cases. Reloading installs a fresh reporter.
   'error.reportStale': '请刷新页面',
+  'error.notCopied': '复制失败',
 })
 
 /** English. Same keys as {@link zh}. */
@@ -120,12 +120,11 @@ export const en = Object.freeze({
   'action.send.title': 'Send',
   'action.stop': 'Stop',
   'action.stop.title': 'Stop this turn',
-  'action.refresh': 'Reload',
-  'action.refresh.title': 'Reload',
   'action.toBottom': 'Jump to latest',
   'action.drop': 'Remove',
+  'action.copy': 'Copy',
+  'action.copied': 'Copied',
 
-  'history.title': 'Chats',
   'history.empty': 'No chats yet',
   'tabs.title': 'Controlled tabs',
   'tabs.none': 'No controlled tabs',
@@ -164,6 +163,7 @@ export const en = Object.freeze({
   'error.restartHost': 'Restart dsh web (host is older)',
   'error.attachmentRefused': 'Attachment refused: {reason}',
   'error.reportStale': 'Reload the page',
+  'error.notCopied': 'Could not copy',
 })
 
 /** Every dictionary, by locale tag. */

@@ -142,12 +142,29 @@ test('inline code, bold and italics render as their own elements', () => {
   assert.equal(rendered.textContent, 'use npm test then stop and breathe')
 })
 
-test('a code block renders as pre > code carrying the language', () => {
-  const pre = renderMarkdown(makeDocument(), '```sh\nls -la\n```').children[0]
+test('a code block renders as a card: language and copy on the head, code under it', () => {
+  const card = renderMarkdown(makeDocument(), '```sh\nls -la\n```', { copy: 'Copy' }).children[0]
+  assert.equal(card.tagName, 'DIV')
+  assert.equal(card.className, 'code-block')
+  const [head, pre] = card.children
+  assert.equal(head.className, 'code-head')
+  assert.equal(head.children[0].className, 'code-lang')
+  assert.equal(head.children[0].textContent, 'sh', 'the head names the language')
+  const copy = head.children[1]
+  assert.equal(copy.tagName, 'BUTTON')
+  assert.equal(copy.dataset.copy, 'code', 'the panel finds the button by its dataset, not by its position')
+  assert.equal(copy.textContent, 'Copy', 'the label is the caller’s, so this renderer stays pure')
   assert.equal(pre.tagName, 'PRE')
   assert.equal(pre.dataset.lang, 'sh')
   assert.equal(pre.children[0].tagName, 'CODE')
   assert.equal(pre.children[0].textContent, 'ls -la')
+})
+
+test('a fence without a language still gets a copy button and invents no label', () => {
+  const card = renderMarkdown(makeDocument(), '```\nplain\n```').children[0]
+  assert.equal(card.children[0].children[0].textContent, '', 'nothing is invented for the missing language')
+  assert.equal(card.children[0].children[1].dataset.copy, 'code')
+  assert.equal(card.children[0].children[1].textContent, '', 'and the renderer never invents UI copy')
 })
 
 test('rendering never needs innerHTML', () => {
