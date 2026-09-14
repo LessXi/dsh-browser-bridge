@@ -707,6 +707,44 @@ export function createChat(ports) {
   }
 
   /**
+   * Stop the turn a session is running.
+   *
+   * The harness's `cancel` is deliberately narrow: it cancels the *active turn*
+   * and keeps the agent's pending inbox (`agent.cancel({ kind: 'user' }, {
+   * keepInbox: true })` in `dsh-api-session-controller/lib/index.js:876`). That
+   * is the meaning the button needs — a person pressing stop wants the model to
+   * stop talking, not to have the message they queued behind it thrown away.
+   *
+   * It throws `session/not-found` when nothing is attached, which is the common
+   * case for a session that is not running at all, so that comes back as a
+   * refusal rather than an error.
+   *
+   * @param {string} sessionId - The session whose turn should stop.
+   * @returns {Promise<{ cancelled: true, sessionId: string } | { cancelled: false, reason: string }>} The outcome.
+   */
+  const cancel = async (sessionId) => {
+    if (typeof sessionId !== 'string' || sessionId.length === 0) {
+      return { cancelled: false, reason: 'no session was named' }
+    }
+    const commands = commandsOf()
+    if (commands === undefined || typeof commands.cancel !== 'function') {
+      return {
+        cancelled: false,
+        reason: 'the harness does not expose turn cancellation, so the bridge cannot stop this turn',
+      }
+    }
+    try {
+      await commands.cancel({ sessionId })
+      // Whatever was streaming is now abandoned; the panel is about to get an
+      // `end` frame with an `abandoned` outcome and re-read the transcript.
+      coldCache.delete(sessionId)
+      return { cancelled: true, sessionId }
+    } catch (error) {
+      return { cancelled: false, reason: error?.message ?? String(error) }
+    }
+  }
+
+  /**
    * Which session services this surface actually got.
    *
    * All of them are read with `ctx.get` rather than injected, deliberately: a
@@ -730,6 +768,7 @@ export function createChat(ports) {
       prompt: typeof commands?.prompt === 'function',
       modelCatalog: typeof commands?.modelCatalog === 'function',
       selectModel: typeof commands?.selectModel === 'function',
+      cancel: typeof commands?.cancel === 'function',
       workspaces: typeof workspaces?.list === 'function',
       // `untried` until a read has needed the surface rules; `false` means the
       // narrower local rule is in use, which is worth knowing because it is the
@@ -738,7 +777,7 @@ export function createChat(ports) {
     }
   }
 
-  return { listSessions, readMessages, createSession, send, readModels, selectModel, services }
+  return { listSessions, readMessages, createSession, send, cancel, readModels, selectModel, services }
 }
 
 /**

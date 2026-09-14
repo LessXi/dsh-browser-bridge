@@ -249,7 +249,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 279 条
+npm test                          # 全部 285 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -275,7 +275,7 @@ npm run check:extension           # 扩展脚本语法检查（Chrome 加载前�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 279 条
+npm test                 # 285 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -288,7 +288,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 不会把 `@deepseek-ai/*` 拉下来。宿主库由 `lib/deps.js` 在运行时从
 `$DSH_HOME/profiles/node_modules` 解析。
 
-**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **279 passing, 0 failing, 0 skipped**，
+**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **285 passing, 0 failing, 0 skipped**，
 `npm run check:extension` exit 0。前提是这台机器上装过 DSH（宿主库要能解析到）。
 
 **验证环境**：Node **v24.15.0**。两个 `package.json` 里的 `engines.node: ">=20"` 是**保守下限**，
@@ -306,7 +306,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面四层测试，279 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
+**已自动化验证**：上面四层测试，285 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
 
 侧边栏那部分还有一组**静态**检查，防止语言和版式漂回去：两个字典的键必须完全一致、面板里每个
 `t('…')` 的键都必须存在、HTML 里不允许残留裸文案、旧版文案一个都不许出现、**字典里不允许出现整句
@@ -364,6 +364,34 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 「宿主聚合 → 走 `notify` → service worker 转给面板 → 面板逐字画出来」这一段由
 `test/stream.test.js`（真 socket 上的帧形状）+ `test/panel-stream.test.js`（真跑面板模块）分段覆盖，
 **中间那一跳（Chrome 的 `chrome.runtime.sendMessage`）只做了结构断言，没有在真 Chrome 里点过**。
+
+#### v10：侧边栏现在能停下跑飞的回合（本次新增）
+
+**问题**：一旦发出去，就**没有任何办法打断**。发送中的按钮只是 `disabled`，模型想 5 分钟你就等 5 分钟；发错一句话、模型理解偏了、它开始跑一个你不想让它跑的命令——都只能看着。
+
+**宿主本来就有这个能力，缺的只是接线**。`SessionController.cancel(request)`（`dsh-api-session-controller/lib/index.js:2945`）转发到 `commands.cancel`（`:872`）：取 `ctx.agents.get(sessionId)`，找不到就抛 `session/not-found`，找到就 `agent.cancel({ kind: 'user' }, { keepInbox: true })` 并返回 `{ accepted: true }`。语义是**只取消当前活动回合，保留 pending inbox**——正在排队的那条消息不会跟着一起没。
+
+三处接线：
+
+- `lib/index.js` 的 `commands` 端口多一个 `cancel: bind(controller, 'cancel')`；`serveChatRoute` 多一条 `action === 'cancel'` 分支，成功 200、没停下 409。
+- `lib/chat.js` 多一个 `cancel(sessionId)`：空 id、宿主没暴露该命令、宿主抛错三种情况各自返回**具名原因**而不是布尔值——面板要能把原因原样说给用户听。
+- 面板把它做成**同一个按钮的两种状态**，不是第二个按钮：回合在跑时 `#send` 变成 `■`（`data-mode="stop"`，用 `CanvasText`/`Canvas` 反色而不是主题色，两个状态永远不会看错），点它发 `{action:'cancel'}`；取消成功才把 `currentSessionRunning` 置否，被拒绝则**留在停止状态**并把原因显示出来——假装停下了比不停下更糟。
+
+**实测**（探针 `dsh web --port 3199 --no-open`，用户线上 3080 全程未碰）：
+
+| 请求 | 结果 |
+|---|---|
+| `GET /browser-bridge/health` | `chatServices.cancel = true`（端口在真实宿主里解析得到） |
+| `POST {action:'cancel'}`，会话未挂载 | `409 {"cancelled":false,"reason":"session \"…\" not found (not attached)"}` |
+| `POST {action:'cancel'}`，不存在的会话 | 同上，原因带着那个 id |
+| `POST {action:'cancel'}`，不带 id | `409 {"cancelled":false,"reason":"no session was named"}` |
+| **先 `send` 再立刻 `cancel` 同一会话** | **`200 {"cancelled":true,"sessionId":"…"}`** |
+
+**一个诚实的边界**：上面那次成功的取消之后 4 秒再取消同一个会话，宿主**仍然**回 `cancelled:true`——`agent.cancel()` 对已经没有回合的 agent 也会接受。所以「宿主说停下了」不等于「刚才确实有个回合在跑」。面板只在它认为有回合时才提供停止，且这个回答只用来把按钮切回发送态，不构成任何别的声明。
+
+**面板侧的测试**（`test/panel-stream.test.js` 后半段）真跑 `extension/sidepanel.js`：空输入时按钮不可点、打字后激活、发送后同一槽位变停止、停止发的是 `cancel` 而不是把输入框内容发出去、取消成功后按钮切回且等待行消失、被拒绝时留在停止态并把原因显示出来、以及**回合运行中按 Enter 仍然照常入队**（停止按钮不是唯一的入口）。
+
+> **这个 suite 与流式共用同一个文件**，因为面板是有状态的模块：第二个 suite 再 `import extension/sidepanel.js` 只会拿到缓存实例，它自己的宿主板子一次都不会被调用（runner 会先把所有 suite import 完再跑）。分成两个文件时正是这样失败的。
 
 #### v9：侧边栏逐字流式输出（本次新增）
 
@@ -637,7 +665,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 279 条，含真实 Chrome 端到端
+└─ test/                  # 285 条，含真实 Chrome 端到端
 
 extension/
 ├─ manifest.json

@@ -88,6 +88,8 @@ let selectionAttached = false
 let harnessPort = '3080'
 /** True while a send is in flight, so the poll does not fight the button. */
 let sending = false
+/** True while a stop request is in flight. */
+let stopping = false
 /** `'chat'` or `'history'`. */
 let view = 'chat'
 
@@ -193,9 +195,7 @@ function paintStaticCopy() {
   toBottom.textContent = '↓'
   toBottom.setAttribute('aria-label', t('action.toBottom'))
   input.placeholder = t('composer.placeholder')
-  sendButton.textContent = '↑'
-  sendButton.title = t('action.send.title')
-  sendButton.setAttribute('aria-label', t('action.send'))
+  drawSend()
   modelButton.setAttribute('aria-label', t('model.select'))
   document.title = t('panel.title')
 }
@@ -660,14 +660,16 @@ function renderWorking() {
   const wanted = view === 'chat' && (currentSessionRunning || sending)
   if (!wanted) {
     existing?.remove()
-    return
+  } else if (existing === null) {
+    const line = document.createElement('div')
+    line.className = 'working'
+    line.textContent = t('row.working')
+    transcript.append(line)
+    if (stickToBottom && !sending) transcript.scrollTop = transcript.scrollHeight
   }
-  if (existing !== null) return
-  const line = document.createElement('div')
-  line.className = 'working'
-  line.textContent = t('row.working')
-  transcript.append(line)
-  if (stickToBottom && !sending) transcript.scrollTop = transcript.scrollHeight
+  // The composer's action depends on the same fact this row does, so they are
+  // drawn together: there is no path that shows "running" without offering stop.
+  drawSend()
 }
 
 /**
@@ -885,7 +887,7 @@ function renderChrome() {
   renderContexts()
   drawModel()
   if (view === 'history') drawHistory()
-  sendButton.disabled = !hostReachable || currentSessionId.length === 0
+  drawSend()
   renderWorking()
 }
 
@@ -920,7 +922,7 @@ async function refreshHealth() {
   hostReachable = status !== 0
   bridgeConnected = hostReachable && payload?.connected === true
   renderContexts()
-  sendButton.disabled = !hostReachable || currentSessionId.length === 0 || input.value.trim().length === 0
+  drawSend()
 }
 
 /**
@@ -992,7 +994,7 @@ function restoreDraft() {
   input.value = drafts.get(currentSessionId) ?? ''
   input.style.height = 'auto'
   input.style.height = `${Math.min(140, input.scrollHeight)}px`
-  sendButton.disabled = !hostReachable || currentSessionId.length === 0
+  drawSend()
 }
 
 /**
@@ -1024,6 +1026,72 @@ function pendingAttachments() {
 }
 
 /**
+ * Draw the composer's one action.
+ *
+ * Send and stop are the same slot in two states rather than two buttons: a
+ * running turn has nothing to send and everything to stop, and a stop control
+ * kept anywhere else is something the user has to hunt for while the thing it
+ * stops is still running.
+ *
+ * @returns {void}
+ */
+function drawSend() {
+  // `sending` counts as busy. The request is in flight and the turn it starts
+  // is already past the point of being recalled by the time the answer lands,
+  // so offering stop immediately is honest rather than optimistic.
+  const busy = sending || currentSessionRunning
+  if (busy) {
+    sendButton.dataset.mode = 'stop'
+    sendButton.textContent = '■'
+    sendButton.title = t('action.stop.title')
+    sendButton.setAttribute('aria-label', t('action.stop'))
+  } else {
+    delete sendButton.dataset.mode
+    sendButton.textContent = '↑'
+    sendButton.title = t('action.send.title')
+    sendButton.setAttribute('aria-label', t('action.send'))
+  }
+  // While busy, only its own in-flight request disables it: whether there is
+  // text in the box stopped mattering the moment the turn started.
+  sendButton.disabled = busy
+    ? stopping
+    : !hostReachable || currentSessionId.length === 0 || input.value.trim().length === 0
+}
+
+/**
+ * Stop the running turn.
+ *
+ * `cancel` drops the turn, not the inbox: anything the user queued while it ran
+ * still goes through. That is the host's semantics and the one a user expects
+ * from a stop button in a client where sending while busy is allowed.
+ *
+ * @returns {Promise<void>}
+ */
+async function stopTurn() {
+  if (stopping || currentSessionId.length === 0) return
+  stopping = true
+  drawSend()
+  const result = await bridge('/browser-bridge/chat', {
+    method: 'POST',
+    body: { action: 'cancel', sessionId: currentSessionId },
+  })
+  stopping = false
+  const payload = result.payload ?? {}
+  if (payload.cancelled === true) {
+    // Re-read rather than trim the transcript: what a stopped turn leaves
+    // behind is the host's decision, and a cancelled attempt may still be
+    // recorded. `renderWorking` redraws the button on its way out.
+    currentSessionRunning = false
+    renderWorking()
+    refreshGroups().catch(() => {})
+    refreshTranscript().catch(() => {})
+    return
+  }
+  say(t('error.notStopped', { reason: payload.reason ?? `HTTP ${result.status}` }))
+  drawSend()
+}
+
+/**
  * Deliver the composed message into the selected session.
  * @returns {Promise<void>} Resolves once the send has been acknowledged.
  */
@@ -1035,7 +1103,7 @@ async function sendMessage() {
     return
   }
   sending = true
-  sendButton.disabled = true
+  drawSend()
   stickToBottom = true
   const result = await bridge('/browser-bridge/chat', {
     method: 'POST',
@@ -1063,7 +1131,7 @@ async function sendMessage() {
     say(t('error.notSent', { reason }))
   }
   sending = false
-  sendButton.disabled = input.value.trim().length === 0
+  drawSend()
 }
 
 /**
@@ -1153,7 +1221,8 @@ document.addEventListener('keydown', (event) => {
 })
 
 sendButton.addEventListener('click', () => {
-  sendMessage().catch((error) => say(t('error.generic', { reason: error.message })))
+  const action = sendButton.dataset.mode === 'stop' ? stopTurn() : sendMessage()
+  action.catch((error) => say(t('error.generic', { reason: error.message })))
 })
 
 input.addEventListener('keydown', (event) => {
@@ -1166,7 +1235,7 @@ input.addEventListener('input', () => {
   input.style.height = 'auto'
   input.style.height = `${Math.min(140, input.scrollHeight)}px`
   drafts.set(currentSessionId, input.value)
-  sendButton.disabled = !hostReachable || currentSessionId.length === 0 || input.value.trim().length === 0
+  drawSend()
 })
 
 transcript.addEventListener('scroll', () => {

@@ -1,16 +1,67 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v9 已交付。** 下一节就是最新的一轮改动；下面标 v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v9 那一段为止即可。
+> **当前状态：v10 已交付。** 下一节就是最新的一轮改动；下面标 v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v10 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（279 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（285 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 >
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
 
-> ⚠️ **v9 已完成（本轮）：侧边栏改成逐字流式输出。** 现行状态见这一段。
+> ### v10：侧边栏能停下跑飞的回合（一个隐藏能力 + 三处接线 + 面板侧真跑测试）
+>
+> **症状**：发出去就收不回来。发送中按钮只是 `disabled`，模型写 5 分钟你就等 5 分钟。
+>
+> **根因**：不是能力缺失，是**接线缺失**。宿主一直有 `SessionController.cancel(request)`
+> （`dsh-api-session-controller/lib/index.js:2945` → `commands.cancel` `:872`：
+> `agent.cancel({ kind: 'user' }, { keepInbox: true })`，找不到 agent 抛 `session/not-found`）。
+> **语义是只取消活动回合、保留 pending inbox**——排队中的那条不会跟着消失。
+>
+> **三处接线**
+> - `packages/dsh-browser-bridge/lib/index.js`：`commands` 端口加 `cancel: bind(controller,'cancel')`；
+>   `serveChatRoute` 加 `action === 'cancel'` 分支（成功 200、没停下 409），**排在 `action === 'send'` 之前**。
+> - `packages/dsh-browser-bridge/lib/chat.js:725`：`const cancel = async (sessionId) => …`，
+>   三种失败各自返回**具名原因**（`'no session was named'` /
+>   `'the harness does not expose turn cancellation, so the bridge cannot stop this turn'` / 宿主 message）；
+>   `services()` 加 `cancel: typeof commands?.cancel === 'function'`。
+> - `extension/sidepanel.js`：新增 `let stopping`、`drawSend()`、`stopTurn()`。
+>   **发送与停止是同一个槽位的两种状态**，不是两个按钮：`sending || currentSessionRunning` 时
+>   `sendButton.dataset.mode = 'stop'`、字形 `■`、`aria-label` 换掉；点它是 `POST {action:'cancel'}`。
+>   原先散在 7 处的 `sendButton.disabled = …` 全部收进 `drawSend()`（`renderWorking()` 末尾也调它，
+>   所以**不存在「显示在跑却不提供停止」的路径**）。取消成功才 `currentSessionRunning = false`；
+>   被拒绝则**留在停止态**并 `say(t('error.notStopped', {reason}))`。
+> - `extension/sidepanel.html`：`#send[data-mode='stop']` 用 `CanvasText`/`Canvas` **反色**（不是主题色），
+>   加上 `:hover` 与 `:disabled` 覆盖——`#send:disabled` 与 `#send[data-mode='stop']` 同特异度，
+>   靠源码顺序决定，所以必须显式写 `#send[data-mode='stop']:disabled`。
+> - `extension/locales.js`：zh/en 各加 3 键（`action.stop` / `action.stop.title` / `error.notStopped`）。
+>
+> **实测**（探针 `dsh web --port 3199 --no-open`，用户线上 3080 全程未碰）
+> | 请求 | 结果 |
+> |---|---|
+> | `GET /browser-bridge/health` | `chatServices.cancel = true` |
+> | `cancel` 未挂载的会话 | `409 {"cancelled":false,"reason":"session \"…\" not found (not attached)"}` |
+> | `cancel` 不存在的会话 | 同上，原因带 id |
+> | `cancel` 不带 id | `409 {"cancelled":false,"reason":"no session was named"}` |
+> | **先 `send` 再立刻 `cancel` 同一会话** | **`200 {"cancelled":true,"sessionId":"…"}`** |
+>
+> **必须记住的边界**：那次成功取消之后 4 秒再取消同一会话，宿主**仍然**回 `cancelled:true`——
+> `agent.cancel()` 对已经没有回合的 agent 一样接受。**「宿主说停下了」不等于「刚才确实有回合在跑」**；
+> 面板只在它认为有回合时才提供停止，且该回答只用来把按钮切回发送态。
+>
+> **测试**：`test/panel-stream.test.js` 后半段（真 import `extension/sidepanel.js`）加了 6 条——
+> 空输入不可点 / 打字激活 / 发送后同一槽位变停止 / 停止发的是 cancel 而不是把输入框内容发出去 /
+> 取消成功后按钮切回且等待行消失 / 被拒绝时留在停止态并把原因显示给用户 / 回合中 Enter 仍照常入队。
+> **为什么和流式共用一个文件**：面板是有状态模块，第二个 suite 再 import 只会拿到缓存实例，
+> 它自己的宿主板子一次都不会被调用（runner 先 import 完所有 suite 再跑）——分成两个文件时就是这么失败的。
+> 285 条全过。
+>
+> **交付**：`lib/` 与 `extension/` 都动了 → 用户要**重启 `dsh web`** + **重载 Chrome 扩展**。
+>
+> ---
+
+> ⚠️ **v9 已完成：侧边栏改成逐字流式输出。** 下面是那一轮。
 >
 > ---
 >
@@ -357,7 +408,7 @@
 三件套：
 - **宿主插件** `packages/dsh-browser-bridge/` —— WebSocket 桥接、`browser_*` 工具、站点策略与审批、上下文附件、浏览器端 UI
 - **Chrome 扩展** `extension/` —— MV3，纯 JS，无构建；CDP 执行器 + 右键菜单 + 选区上报 + 侧栏面板
-- **测试** `packages/dsh-browser-bridge/test/` —— **279 条 / 19 个 suite**，零依赖，全新克隆直接可跑
+- **测试** `packages/dsh-browser-bridge/test/` —— **285 条 / 19 个 suite**，零依赖，全新克隆直接可跑
 
 ### 目录
 
@@ -696,7 +747,7 @@ dsh --profile web --dump-config | Select-String "browser-bridge" -Context 2,2
 
 ```powershell
 cd <repo>
-npm test              # 279 条，19 个 suite（不需要 pnpm install）
+npm test              # 285 条，19 个 suite（不需要 pnpm install）
 npm run check:extension
 ```
 
@@ -734,7 +785,7 @@ git clone https://github.com/LessXi/dsh-browser-bridge.git
 cd dsh-browser-bridge
 
 # 1. 不需要任何安装。测试是零依赖的自建 runner。
-npm test                 # 279 条，19 个 suite
+npm test                 # 285 条，19 个 suite
 npm run check:extension  # 8 个扩展脚本的语法预检
 
 # 2. 起探针做实测（用户的线上实例在 3080，绝不要动它）

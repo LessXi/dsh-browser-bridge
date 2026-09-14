@@ -1,14 +1,23 @@
 /**
- * The side panel's live-output path, driven for real.
+ * The side panel, driven for real.
  *
- * `test/stream.test.js` proves the host coalesces and the wire carries the
- * notification. It cannot prove the panel does anything useful with it, and the
- * gap between those two points is where this feature would actually be broken:
+ * `test/stream.test.js` proves the host coalesces tokens and the wire carries
+ * the notification. It cannot prove the panel does anything useful with it, and
+ * the gap between those two points is where a feature would actually be broken:
  * a delta for the wrong session, a second live block per token, text that never
  * gives way to the committed row, markdown parsed mid-stream.
  *
  * So the panel module is imported into the DOM shim in `test/dom-shim.js` and
  * the messages the service worker would forward are handed to it directly.
+ *
+ * The second half covers the composer's one action — the button that starts a
+ * turn has to become the button that stops it — which is the other end of the
+ * same story and equally invisible to a host-side test.
+ *
+ * Both live in one file because the panel is a stateful module: a second suite
+ * importing `extension/sidepanel.js` would be handed the cached instance and
+ * its own host stub would never be called. That failure is not subtle, but it
+ * is confusing, and the runner imports every suite before running any of them.
  *
  * @module dsh-browser-bridge/test/panel-stream.test
  */
@@ -35,6 +44,12 @@ const host = {
   title: 'A session',
   running: false,
   requests: [],
+  /** Every `POST {action:'send'}` body, in order. */
+  sent: [],
+  /** Every `POST {action:'cancel'}` body, in order. */
+  cancelled: [],
+  /** The answer `cancel` gets, mutated per test. */
+  cancel: { status: 200, payload: { cancelled: true } },
 }
 
 const groupsPayload = () => ({
@@ -87,6 +102,14 @@ globalThis.fetch = async (url, options = {}) => {
     const body = options.body === undefined ? {} : JSON.parse(options.body)
     if (body.action === 'messages') return respond({ sessionId: body.sessionId, messages: host.messages, title: host.title })
     if (body.action === 'models') return respond({ error: 'empty-catalog' })
+    if (body.action === 'send') {
+      host.sent.push(body)
+      return respond({ accepted: true })
+    }
+    if (body.action === 'cancel') {
+      host.cancelled.push(body)
+      return respond(host.cancel.payload, host.cancel.status)
+    }
     return respond({ accepted: true })
   }
   if (address.includes('/browser-bridge/health')) return respond({ connected: true })
@@ -119,6 +142,9 @@ function startAttempt(sessionId = SESSION) {
 
 // Assigned after the import, because the panel is what mints these nodes.
 let transcript
+let sendButton
+let input
+let toast
 let turn = 0
 
 /**
@@ -143,6 +169,9 @@ await import(pathToFileURL(join(extensionDir, 'sidepanel.js')).href)
 await settle()
 globalThis.setInterval = realSetInterval
 transcript = registry.get('transcript')
+sendButton = registry.get('send')
+input = registry.get('input')
+toast = registry.get('toast')
 
 // The import must have reached the host: if it did not, every assertion below
 // would be testing a panel that never selected a session and would pass
@@ -302,4 +331,160 @@ test('the panel tolerates every frame the relay can send, including an unknown k
   deliver({})
   deliver(null)
   assert.equal(liveBody().textContent, 'kept')
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The composer's one action
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Run one composer interaction with the clock stopped.
+ *
+ * The panel arms a five-step transcript re-read after every send and a
+ * six-second auto-clear behind every message. Real timers would hold this
+ * process open for fifteen seconds after the last assertion and fire a refresh
+ * into the middle of a later suite, so they are stubbed for the duration of one
+ * call and put back before anything else can run.
+ *
+ * @param {() => Promise<void>} body - The interaction to run.
+ * @returns {Promise<void>} Resolves when the body and the restore are done.
+ */
+async function onStoppedClock(body) {
+  const realSetTimeout = globalThis.setTimeout
+  globalThis.setTimeout = () => 0
+  try {
+    await body()
+  } finally {
+    globalThis.setTimeout = realSetTimeout
+  }
+}
+
+/** Type into the composer the way a person does, redraw included. */
+function type(text) {
+  input.value = text
+  input.emit('input')
+}
+
+/** Press the one button and let the panel finish reacting. */
+async function press() {
+  sendButton.click()
+  await settle()
+}
+
+/**
+ * Put the panel back on an idle session, whatever ran before this.
+ *
+ * The stream tests above leave the panel mid-turn on purpose — one of them
+ * asserts the waiting line survives between two steps — so the composer has to
+ * be given a clean slate rather than assumed to have one.
+ *
+ * @returns {Promise<void>} Resolves once a turn is either absent or cancelled.
+ */
+async function settleToIdle() {
+  type('')
+  if (sendButton.dataset.mode !== 'stop') return
+  host.running = false
+  host.cancel = { status: 200, payload: { cancelled: true } }
+  await press()
+}
+
+/** Get the panel into the state a running turn leaves it in. */
+async function startTurn() {
+  await settleToIdle()
+  type('go')
+  await press()
+  assert.equal(sendButton.dataset.mode, 'stop', 'a send left the composer without a stop button')
+}
+
+test('an empty composer keeps the button inert, and typing arms it', async () => {
+  await onStoppedClock(() => settleToIdle())
+
+  assert.equal(sendButton.dataset.mode, undefined, 'an idle composer was not drawn as send')
+  assert.equal(sendButton.disabled, true, 'send was live with nothing to send')
+
+  type('hello')
+  assert.equal(sendButton.disabled, false, 'text in the box did not arm the button')
+  assert.equal(sendButton.textContent, '↑', 'the send glyph was replaced by something else')
+  assert.equal(sendButton.dataset.mode, undefined, 'typing alone switched the button to stop')
+
+  type('')
+})
+
+test('sending swaps the same slot to stop, and the send reached the host', async () => {
+  await onStoppedClock(async () => {
+    await startTurn()
+
+    assert.equal(host.sent.length, 1, 'the send never reached the host')
+    assert.equal(host.sent[0].sessionId, SESSION)
+    assert.equal(sendButton.textContent, '■', 'the running button kept the send glyph')
+    assert.equal(sendButton.disabled, false, 'the stop button was left disabled')
+    assert.equal(input.value, '', 'the box kept the text it had already sent')
+  })
+})
+
+test('pressing stop cancels that session, and cancels rather than sends', async () => {
+  await onStoppedClock(async () => {
+    host.cancel = { status: 200, payload: { cancelled: true } }
+    const sent = host.sent.length
+    const cancelled = host.cancelled.length
+    await press()
+
+    assert.equal(host.cancelled.length, cancelled + 1, 'stop did not reach the host')
+    assert.equal(host.cancelled.at(-1).action, 'cancel')
+    assert.equal(host.cancelled.at(-1).sessionId, SESSION, 'stop cancelled the wrong session')
+    assert.equal(host.sent.length, sent, 'pressing stop sent the box contents instead')
+  })
+})
+
+test('a cancelled turn hands the slot back to send and clears the waiting line', async () => {
+  await onStoppedClock(async () => {
+    host.running = false
+    host.cancel = { status: 200, payload: { cancelled: true } }
+    await startTurn()
+    assert.ok(transcript.querySelector('.working') !== null, 'the running turn showed no waiting line')
+
+    await press()
+
+    assert.equal(sendButton.dataset.mode, undefined, 'the button stayed on stop after the turn ended')
+    assert.equal(sendButton.textContent, '↑')
+    assert.equal(transcript.querySelector('.working'), null, 'the waiting line outlived the cancelled turn')
+  })
+})
+
+test('a refused stop says why and leaves stopping on the table', async () => {
+  await onStoppedClock(async () => {
+    host.running = true
+    host.cancel = { status: 409, payload: { cancelled: false, reason: 'nobody is running here' } }
+    await startTurn()
+    toast.textContent = ''
+
+    await press()
+
+    assert.equal(sendButton.dataset.mode, 'stop', 'a failed stop pretended the turn was over')
+    assert.equal(sendButton.disabled, false, 'the button was left disabled after a refusal')
+    assert.ok(
+      toast.textContent.includes('nobody is running here'),
+      `the refusal reason never reached the user: ${JSON.stringify(toast.textContent)}`,
+    )
+
+    // Leave the panel idle for whatever runs next.
+    host.running = false
+    host.cancel = { status: 200, payload: { cancelled: true } }
+    await press()
+  })
+})
+
+test('return still queues while a turn runs, because the button is not the only way in', async () => {
+  await onStoppedClock(async () => {
+    host.running = false
+    await startTurn()
+    const before = host.sent.length
+
+    type('a follow-up')
+    input.emit('keydown', { key: 'Enter', shiftKey: false, preventDefault() {} })
+    await settle()
+
+    assert.equal(host.sent.length, before + 1, 'Enter was swallowed while a turn was running')
+    assert.equal(host.sent.at(-1).text, 'a follow-up')
+  })
 })

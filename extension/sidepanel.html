@@ -472,6 +472,12 @@
         font-size: 14px;
       }
       #send:disabled { background: var(--lift); color: var(--faint); }
+      /* A running turn has nothing to send and everything to stop, so the slot
+         changes state instead of a second control appearing. Inverted rather
+         than accented, so the two states never read as the same button. */
+      #send[data-mode='stop'] { background: CanvasText; color: Canvas; font-size: 10px; }
+      #send[data-mode='stop']:hover { opacity: 0.85; }
+      #send[data-mode='stop']:disabled { background: var(--lift); color: var(--faint); }
       /* The picker. Geometry is the original's, measured off its own stylesheet:
          224px wide, 16px panel radius, 4px padding, 40px rows with a 12px radius
          and the check on the right. Colours come from this panel's tokens

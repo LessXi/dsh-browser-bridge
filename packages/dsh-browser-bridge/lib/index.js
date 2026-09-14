@@ -338,6 +338,10 @@ export async function apply(ctx, _config) {
         // Both live on the controller itself, unlike `readSessionState`.
         modelCatalog: bind(controller, 'modelCatalog'),
         selectModel: bind(controller, 'selectModel'),
+        // The only way to stop a turn. It cancels the active turn and keeps the
+        // agent's pending inbox, which is what the panel's stop button means:
+        // "stop what you are doing", not "forget what I already queued".
+        cancel: bind(controller, 'cancel'),
         readSessionState: bind(controller.commands, 'readSessionState'),
       }
     },
@@ -544,6 +548,14 @@ export async function apply(ctx, _config) {
           reasoningEffort: parsed.reasoningEffort,
         })
         json(result.selected === false ? 409 : 200, result)
+        return
+      }
+      if (parsed.action === 'cancel') {
+        const sessionId = typeof parsed.sessionId === 'string' ? parsed.sessionId : ''
+        const result = await chat.cancel(sessionId)
+        // A refusal is the normal outcome for a session that is not running
+        // here, so it is a 409 with the harness's own wording rather than a 500.
+        json(result.cancelled ? 200 : 409, result)
         return
       }
       if (parsed.action === 'send') {

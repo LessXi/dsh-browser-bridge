@@ -37,6 +37,8 @@ export const zh = Object.freeze({
   'action.settings': '设置',
   'action.send': '发送',
   'action.send.title': '发送',
+  'action.stop': '停止',
+  'action.stop.title': '停下这一轮',
   'action.refresh': '重新载入',
   'action.refresh.title': '重新读取',
   'action.toBottom': '回到底部',
@@ -86,6 +88,7 @@ export const zh = Object.freeze({
   // Only ever shown when something failed.
   'error.generic': '出错了：{reason}',
   'error.notSent': '未发送：{reason}',
+  'error.notStopped': '没能停下：{reason}',
   'error.loadFailed': '读取失败：{error}',
   'error.startedFailed': '面板启动失败：{error}',
   'error.noSession': '先选择一个会话',
@@ -111,6 +114,8 @@ export const en = Object.freeze({
   'action.settings': 'Settings',
   'action.send': 'Send',
   'action.send.title': 'Send',
+  'action.stop': 'Stop',
+  'action.stop.title': 'Stop this turn',
   'action.refresh': 'Reload',
   'action.refresh.title': 'Reload',
   'action.toBottom': 'Jump to latest',
@@ -148,6 +153,7 @@ export const en = Object.freeze({
 
   'error.generic': 'Something went wrong: {reason}',
   'error.notSent': 'Not sent: {reason}',
+  'error.notStopped': 'Could not stop: {reason}',
   'error.loadFailed': 'Could not load: {error}',
   'error.startedFailed': 'Panel failed to start: {error}',
   'error.noSession': 'Pick a chat first',
