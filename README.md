@@ -249,7 +249,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 285 条
+npm test                          # 全部 288 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -275,7 +275,7 @@ npm run check:extension           # 扩展脚本语法检查（Chrome 加载前�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 285 条
+npm test                 # 288 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -288,7 +288,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 不会把 `@deepseek-ai/*` 拉下来。宿主库由 `lib/deps.js` 在运行时从
 `$DSH_HOME/profiles/node_modules` 解析。
 
-**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **285 passing, 0 failing, 0 skipped**，
+**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **288 passing, 0 failing, 0 skipped**，
 `npm run check:extension` exit 0。前提是这台机器上装过 DSH（宿主库要能解析到）。
 
 **验证环境**：Node **v24.15.0**。两个 `package.json` 里的 `engines.node: ">=20"` 是**保守下限**，
@@ -306,7 +306,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面四层测试，285 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
+**已自动化验证**：上面四层测试，288 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
 
 侧边栏那部分还有一组**静态**检查，防止语言和版式漂回去：两个字典的键必须完全一致、面板里每个
 `t('…')` 的键都必须存在、HTML 里不允许残留裸文案、旧版文案一个都不许出现、**字典里不允许出现整句
@@ -365,7 +365,39 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 `test/stream.test.js`（真 socket 上的帧形状）+ `test/panel-stream.test.js`（真跑面板模块）分段覆盖，
 **中间那一跳（Chrome 的 `chrome.runtime.sendMessage`）只做了结构断言，没有在真 Chrome 里点过**。
 
+#### v11：划词不出现的两个叠在一起的静默缺陷（本次修复）
+
+现象：在页面上选中文字，侧栏**没有出现「选中内容」chip**，因此也无从知道它会不会被带进上下文。用户在 ACM 的一篇文章上复现（`dl.acm.org/doi/10.1145/3809166#sec-3`，选中「结构化剪枝」，面板只显示「当前标签页」那一个 chip，且当时刚重载过扩展）。
+
+链路是：`content-selection.js` 上报 → service worker 转发给面板。**扩展一重载，所有已打开页面里的旧上报脚本就都死了**：它还在监听，但 `chrome.runtime` 已经失效，消息发不出去。Chrome 不会往已打开的页面重新注入声明式内容脚本，所以要靠面板重新注入这个文件来救活。这条恢复路径由两个**各自独立、且都静默**的缺陷废掉：
+
+| 缺陷 | 位置 | 后果 |
+|---|---|---|
+| `chrome.scripting.executeScript` **需要目标页面的 host 权限**，而 manifest 的 `host_permissions` 只有 loopback | `extension/manifest.json`（旧） | 在任何真实网页上必然抛 `Cannot access contents of the page`，被 `catch { return }` 吞掉 |
+| 上报脚本的「每文档只装一次」守卫是**早退** | `extension/content-selection.js`（旧，`if (globalThis.__dshSelectionReporter === true) return`） | 即使能注入，**死掉的那一份已经占了标记**，新副本立刻 return → 什么都没装。v4 为修「重载后失联」而加的恢复路径，被同一轮加的守卫废掉 |
+
+两个缺陷形状相同：**失败 ⇒ 无 chip ⇒ 与「确实没有选中」完全一样**。除此之外还有第三处：`report()` 用 `try { chrome.runtime.sendMessage(...) } catch {}`，而 MV3 里上下文失效是 **reject 不是 throw** → 一个没人接管的 rejected promise（真 Chrome 里是页面控制台报错），且 `lastReported` 已经把它标成「报过了」，同一段文字再也不会重试。
+
+修法：
+
+1. `extension/manifest.json` 的 `host_permissions` 补 `"http://*/*"`、`"https://*/*"`，与 `content_scripts.matches` 对齐。**不新增权限警告**——声明 `https://*/*` 的内容脚本本来就会触发同一句「读取和更改你在所有网站上的数据」。
+2. `extension/content-selection.js`：守卫从「早退」改成**新副本接管**——新副本先调旧副本暴露的 `dispose()`，再占据 `globalThis.__dshSelectionReporter`。`dispose` 只碰 DOM API（`removeEventListener`），因此**在一个 Chrome 已经作废的上下文里也能跑**；只有 `chrome.runtime.onMessage.removeListener` 需要包 `try`。
+3. 同一个文件的 `report()`：发送失败（throw **或** promise reject）时回滚 `lastReported`，让下一次 `selectionchange` / `pointerup` 重试。
+4. `extension/sidepanel.js` 的 `requestSelectionFromPage()`：**回包形状不对也算失败**（死端口会以 `undefined` resolve 而不是 reject），失败 → 重新注入 → 再问一次；两次都不成且 URL 是 http(s) 时，用 `error.reportStale`（「请刷新页面」）说一次（按 `tabId:url` 去重），而不是继续静默。另外面板窗口获得焦点时也再问一次——划完词回到面板正是 chip 必须正确的那一刻。
+
+实测（探针 3199 + 全量测试）：
+
+| 项 | 结果 |
+|---|---|
+| `npm test` | **288 passing, 0 failing, 0 skipped** |
+| `npm run check:extension` | exit 0 |
+| **把 `content-selection.js` 换回 `git show HEAD:` 的那一版，再跑新测试** | **3 条变红**（接管、死副本被替换、失败后重试），换回新版全绿 → 测试确实能抓住这两个缺陷 |
+| 旧版跑「死副本被替换」用例 | 直接把进程打崩：`Error: Extension context invalidated.` —— 无人接管的 rejection，正是线上那个缺陷的真身 |
+
+**测试写法**：上报脚本是自包含的 IIFE（只依赖 `globalThis`/`window`/`document`/`chrome`/`location`），所以测试用 `new Function` 把它跑在一个沙盘里，`install()` 返回**那一份副本自己的**发送记录。这一点是必须的——只数监听器个数没有鉴别力：**「接管成功」和「拒绝安装」都留下 1 个监听器**。第一版断言就是数个数，对修好和没修好的代码都通过。
+
 #### v10：侧边栏现在能停下跑飞的回合（本次新增）
+
 
 **问题**：一旦发出去，就**没有任何办法打断**。发送中的按钮只是 `disabled`，模型想 5 分钟你就等 5 分钟；发错一句话、模型理解偏了、它开始跑一个你不想让它跑的命令——都只能看着。
 
@@ -636,7 +668,7 @@ dsh plugin --profile web remove dsh-browser-bridge
 | `browser_eval` / `browser_cdp` 报需要 Developer mode | 到 设置 → 插件 → browser-bridge 打开 `developerMode` |
 | `browser_*` 报某站点被拒绝 | 该域名命中了规则表里的 `deny`，去设置里改 |
 | 侧栏显示「还没有会话」，点 `＋` 报 `HTTP 400` | **宿主还是旧代码。** 扩展在 `chrome://extensions` 点一下重载就换了，宿主得重启 `dsh web`——两边路由形状必须一致。面板遇到这种不一致会直接提示「请重启 dsh web（宿主是旧版本）」，看到这句就是这个原因 |
-| 划词后 chip 没出现 | 右键菜单里确认用的是 `Add selection to DSH context`（选中上下文才有这一项）；另外确认 DSH 里至少有一个会话 |
+| 划词后 chip 没出现 | 先看是不是**刚重载过扩展**：旧页面的上报脚本已失效，面板会在打开/切标签页/重新聚焦时自动重注入，注入不成就显示「请刷新页面」（v11 修）。仍然不行时：右键菜单里确认用的是 `Add selection to DSH context`；另外确认 DSH 里至少有一个会话 |
 | 重启 dsh 后暂存的附件还在但目标会话没了 | 附件按会话暂存；找不到目标会话时 `contextTargetSessionId` 可以指定一个 |
 | 发了消息，但面板里没有 `上下文 · …` 那一行 | 附件没进上下文。先看 `GET /browser-bridge/health` 的 `contextDiagnostics.diag`：`skip:inject-threw` 是注入被拒（v5 已修），`skip:no-agent` 是会话还没有活 agent（会留到唤醒它的那条消息）。`pending` 里出现该会话说明附件还卡着 |
 
@@ -665,7 +697,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 285 条，含真实 Chrome 端到端
+└─ test/                  # 288 条，含真实 Chrome 端到端
 
 extension/
 ├─ manifest.json

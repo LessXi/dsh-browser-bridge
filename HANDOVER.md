@@ -1,15 +1,41 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v10 已交付。** 下一节就是最新的一轮改动；下面标 v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v10 那一段为止即可。
+> **当前状态：v11 已交付。** 下一节就是最新的一轮改动；下面标 v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v11 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（285 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（288 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 >
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
 
+> ### v11：划词不出现的两个叠在一起的静默缺陷（扩展侧，本次修复）
+>
+> **症状**：页面上选中文字，侧栏没有「选中内容」chip，因此也无从知道它会不会进上下文。用户在一篇 ACM 文章上复现，当时刚重载过扩展。
+>
+> **链路**：`extension/content-selection.js` 上报 → service worker 转发给面板。**扩展一重载，所有已打开页面里的旧上报脚本全部失联**（还在监听，`chrome.runtime` 已作废）。Chrome 不会向已打开的页面重新注入声明式内容脚本，所以只能靠面板重新注入这个文件救活。
+>
+> **两个各自独立、且都静默的缺陷，把这条恢复路径废掉了两次**
+> 1. `chrome.scripting.executeScript` **需要目标页面 host 权限**，而 `extension/manifest.json` 的 `host_permissions` 只有 loopback → 任何真实网页上必然抛 `Cannot access contents of the page. Extension manifest must request permission…`，被 `catch { return }` 吞掉。**只改这一处不够**，见下一条。
+> 2. `extension/content-selection.js` 的「每文档只装一次」守卫是**早退**：`if (globalThis.__dshSelectionReporter === true) return`。即使注入被允许，**死掉的那一份已经占了标记**，新副本立刻 return → 什么都没装。v4 为修「重载后失联」而加的恢复路径，被同一轮加的守卫废掉。
+>
+> 第三处：`report()` 是 `try { chrome.runtime.sendMessage(…) } catch {}`，而 MV3 里上下文失效是 **reject 不是 throw** → 无人接管的 rejected promise（真 Chrome 里是页面控制台报错），且 `lastReported` 已把它标成「报过了」，同一段文字再也不重试。
+>
+> **三个缺陷形状相同：失败 ⇒ 无 chip ⇒ 与「确实没选中」完全一样。**
+>
+> **修法**
+> - `extension/manifest.json`：`host_permissions` 补 `"http://*/*"`、`"https://*/*"`，与 `content_scripts.matches` 对齐。**不新增权限警告**（声明 `https://*/*` 内容脚本本就触发同一句）。
+> - `extension/content-selection.js`：守卫改为**新副本接管**——先调旧副本的 `dispose()`，再占 `globalThis.__dshSelectionReporter`。`dispose` 只碰 DOM API，**在已作废的上下文里也能跑**；只有 `chrome.runtime.onMessage.removeListener` 需要 `try`。
+> - 同文件 `report()`：throw **或** reject 都回滚 `lastReported`，下一次 `selectionchange`/`pointerup` 重试。
+> - `extension/sidepanel.js` 的 `requestSelectionFromPage()`：**回包形状不对也算失败**（死端口以 `undefined` resolve 而非 reject）→ 重注入 → 再问；两次都不成且 URL 是 http(s) 时用 `error.reportStale`（「请刷新页面」）说一次（按 `tabId:url` 去重）。面板窗口获得焦点时也再问一次。
+>
+> **测试写法（重要）**：上报脚本是自包含 IIFE，所以测试用 `new Function` 把它跑在沙盘里，`install()` 返回**那一份副本自己的**发送记录。
+> **只数监听器个数没有鉴别力：接管成功和拒绝安装都留下 1 个监听器**——第一版断言正是数个数，对修好和没修好的代码都通过。
+> 证伪方式：把 `extension/content-selection.js` 换成 `git show HEAD:<上一提交>:extension/content-selection.js`，新测试**3 条变红**（旧版还会因无人接管的 rejection 直接把测试进程打崩）。
+>
+> **交付**：只改 `extension/` → 用户**重载 Chrome 扩展**即可，不需要重启 `dsh web`（本次没动 `lib/`）。重载后已打开的页面会自动被重新注入，**不必手动刷新每个标签页**。
+>
 > ### v10：侧边栏能停下跑飞的回合（一个隐藏能力 + 三处接线 + 面板侧真跑测试）
 >
 > **症状**：发出去就收不回来。发送中按钮只是 `disabled`，模型写 5 分钟你就等 5 分钟。
@@ -55,7 +81,7 @@
 > 取消成功后按钮切回且等待行消失 / 被拒绝时留在停止态并把原因显示给用户 / 回合中 Enter 仍照常入队。
 > **为什么和流式共用一个文件**：面板是有状态模块，第二个 suite 再 import 只会拿到缓存实例，
 > 它自己的宿主板子一次都不会被调用（runner 先 import 完所有 suite 再跑）——分成两个文件时就是这么失败的。
-> 285 条全过。
+> 288 条全过。
 >
 > **交付**：`lib/` 与 `extension/` 都动了 → 用户要**重启 `dsh web`** + **重载 Chrome 扩展**。
 >
@@ -408,7 +434,7 @@
 三件套：
 - **宿主插件** `packages/dsh-browser-bridge/` —— WebSocket 桥接、`browser_*` 工具、站点策略与审批、上下文附件、浏览器端 UI
 - **Chrome 扩展** `extension/` —— MV3，纯 JS，无构建；CDP 执行器 + 右键菜单 + 选区上报 + 侧栏面板
-- **测试** `packages/dsh-browser-bridge/test/` —— **285 条 / 19 个 suite**，零依赖，全新克隆直接可跑
+- **测试** `packages/dsh-browser-bridge/test/` —— **288 条 / 19 个 suite**，零依赖，全新克隆直接可跑
 
 ### 目录
 
@@ -747,7 +773,7 @@ dsh --profile web --dump-config | Select-String "browser-bridge" -Context 2,2
 
 ```powershell
 cd <repo>
-npm test              # 285 条，19 个 suite（不需要 pnpm install）
+npm test              # 288 条，19 个 suite（不需要 pnpm install）
 npm run check:extension
 ```
 
@@ -785,7 +811,7 @@ git clone https://github.com/LessXi/dsh-browser-bridge.git
 cd dsh-browser-bridge
 
 # 1. 不需要任何安装。测试是零依赖的自建 runner。
-npm test                 # 285 条，19 个 suite
+npm test                 # 288 条，19 个 suite
 npm run check:extension  # 8 个扩展脚本的语法预检
 
 # 2. 起探针做实测（用户的线上实例在 3080，绝不要动它）
