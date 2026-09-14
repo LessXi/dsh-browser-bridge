@@ -63,6 +63,15 @@
 > 补上文本节点后立刻转绿。→ 死掉的 accessor / 被吞的异常 / 空结果，三者形状相同。
 >
 > **交付**：改了 `lib/`（宿主）+ `extension/`（扩展）→ **重启 `dsh web` 且重载 Chrome 扩展**。
+> 生效判据：`http://127.0.0.1:3080/browser-bridge/health` 出现 `stream` 字段。
+>
+> **下一轮（v10）建议：停止按钮。** 已经查到宿主有现成命令：
+> `SessionController.cancel(request)`（`dsh-api-session-controller/lib/index.js:2945`）→
+> `commands.cancel`（同文件 `:872`）：
+> `const agent = this.ctx.agents.get(request.sessionId); if (agent === void 0) throw new RemoteError("session/not-found", …); agent.cancel({ kind: "user" }, { keepInbox: true }); return { accepted: true }`
+> —— 语义正是「取消当前 turn 但保留 inbox」。面板侧现状：发送中 `sendButton` 只是被禁用，
+> 用户**没有任何办法打断**一个跑飞的回合。做法：`lib/index.js` 的 `commands` getter 加 `cancel: bind(controller,'cancel')`，
+> `serveChatRoute` 加 `action:'cancel'`，面板在 `currentSessionRunning || sending` 时把 `↑` 换成停止键。
 >
 > ---
 >
