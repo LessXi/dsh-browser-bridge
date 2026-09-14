@@ -101,6 +101,10 @@ export const zh = Object.freeze({
   // refusal used to be invisible: the chip promised an attachment, the message
   // went out without it, and nothing said so.
   'error.attachmentRefused': '有附件没被接受：{reason}',
+  // A page whose reporter cannot be reached looks exactly like a page with
+  // nothing selected, and the user's question — "will this be attached?" — has
+  // opposite answers in the two cases. Reloading installs a fresh reporter.
+  'error.reportStale': '请刷新页面',
 })
 
 /** English. Same keys as {@link zh}. */
@@ -159,6 +163,7 @@ export const en = Object.freeze({
   'error.noSession': 'Pick a chat first',
   'error.restartHost': 'Restart dsh web (host is older)',
   'error.attachmentRefused': 'Attachment refused: {reason}',
+  'error.reportStale': 'Reload the page',
 })
 
 /** Every dictionary, by locale tag. */

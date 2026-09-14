@@ -19,6 +19,14 @@
  * panel, none of which exists outside Chrome. What they can do is pin the shape
  * of the wiring, which is exactly where all three defects lived.
  *
+ * The reporter itself is the exception. It is a self-contained IIFE over
+ * `globalThis`, `window`, `document` and `chrome`, so `new Function` can run a
+ * real copy against a sandbox — which is how the fourth defect is caught by
+ * behaviour rather than by string matching: re-injecting the file was supposed
+ * to recover a page whose extension context had died, and the install guard it
+ * shipped with made that recovery a no-op, because the dead copy already held
+ * the flag.
+ *
  * @module dsh-browser-bridge/test/extension-selection
  */
 
@@ -36,23 +44,224 @@ function readExtensionFile(name) {
   return readFileSync(join(extensionDir, name), 'utf8')
 }
 
-test('the reporter installs once per document, so re-injection is safe', (t) => {
-  const source = readExtensionFile('content-selection.js')
-  assert.ok(
-    source.includes('globalThis.__dshSelectionReporter === true'),
-    'a second copy would double every listener in the shared isolated world',
+const reporterSource = readExtensionFile('content-selection.js')
+
+/** Let the promise callbacks the reporter attached run to completion. */
+function settle() {
+  return new Promise((resolve) => setImmediate(resolve))
+}
+
+/**
+ * Build the globals `content-selection.js` expects, and let copies be installed.
+ *
+ * Each `install()` returns the bucket that *that copy alone* reports into. A
+ * count of listeners cannot tell a takeover from a refusal — both leave one
+ * listener in place — so the tests have to ask which copy is listening, and a
+ * per-copy bucket is the only way to tell.
+ *
+ * @returns {object} A page whose `install`, `fire`, `flush` and `dead` expose
+ *   the reporter's behaviour.
+ */
+function makePage() {
+  /** @param {Map<string, Set<Function>>} bag - One event target's listeners. */
+  const target = (bag) => ({
+    addEventListener(type, listener) {
+      if (!bag.has(type)) bag.set(type, new Set())
+      bag.get(type).add(listener)
+    },
+    removeEventListener(type, listener) {
+      bag.get(type)?.delete(listener)
+    },
+  })
+
+  const timers = new Map()
+  let nextTimer = 1
+
+  const page = {
+    /** Flipped once the extension context is invalidated. */
+    dead: false,
+    /** What `window.getSelection()` reports. */
+    text: '',
+    documentListeners: new Map(),
+    windowListeners: new Map(),
+    messageListeners: new Set(),
+  }
+
+  page.document = { ...target(page.documentListeners), title: 'A page' }
+  page.window = target(page.windowListeners)
+  page.window.getSelection = () =>
+    page.text.length === 0 ? null : { isCollapsed: false, toString: () => page.text }
+  page.location = { href: 'https://example.test/article' }
+
+  page.setTimeout = (fn) => {
+    const id = nextTimer++
+    timers.set(id, fn)
+    return id
+  }
+  page.clearTimeout = (id) => {
+    timers.delete(id)
+  }
+  /** Run whatever the debounce queued. */
+  page.flush = () => {
+    for (const [id, fn] of [...timers]) {
+      timers.delete(id)
+      fn()
+    }
+  }
+  /** Fire a DOM event the reporter subscribed to. */
+  page.fire = (bag, type) => {
+    for (const fn of [...(bag.get(type) ?? [])]) fn()
+  }
+
+  /**
+   * Install one copy of the reporter, exactly as Chrome would.
+   * @returns {object[]} The messages this copy sent, and only this copy.
+   */
+  page.install = () => {
+    /** @type {object[]} */
+    const sent = []
+    const chrome = {
+      runtime: {
+        sendMessage(message) {
+          // This is the shape that hid the defect: a dead context *rejects*, it
+          // does not throw, so a try/catch around the call never sees it.
+          if (page.dead) {
+            const failure = Promise.reject(new Error('Extension context invalidated.'))
+            // A script that ignores this rejection leaves it unhandled — which
+            // is the defect, and in Chrome it is a console error. Here it would
+            // take the runner down, so the page absorbs its own copy while
+            // handing the script the same rejected promise.
+            failure.catch(() => {})
+            return failure
+          }
+          sent.push(message)
+          return Promise.resolve()
+        },
+        onMessage: {
+          addListener(listener) {
+            page.messageListeners.add(listener)
+          },
+          removeListener(listener) {
+            page.messageListeners.delete(listener)
+          },
+        },
+      },
+    }
+    // eslint-disable-next-line no-new-func
+    const run = new Function(
+      'globalThis',
+      'window',
+      'document',
+      'chrome',
+      'location',
+      'setTimeout',
+      'clearTimeout',
+      reporterSource,
+    )
+    run(page, page.window, page.document, chrome, page.location, page.setTimeout, page.clearTimeout)
+    return sent
+  }
+  return page
+}
+
+test('a re-injected reporter takes over from the copy already installed', async (t) => {
+  const page = makePage()
+  const first = page.install()
+  const second = page.install()
+  assert.equal(
+    page.documentListeners.get('selectionchange').size,
+    1,
+    'a document never ends up with two live reporters',
   )
-  assert.ok(source.includes('globalThis.__dshSelectionReporter = true'))
+
+  page.text = 'hello'
+  page.fire(page.documentListeners, 'selectionchange')
+  page.flush()
+  await settle()
+  assert.equal(second.length, 1, 'the newest copy is the one that reports')
+  assert.equal(first.length, 0, 'and the copy it replaced has been detached')
 })
 
-test('clearing a highlight is reported, so the chip can go away', (t) => {
-  const source = readExtensionFile('content-selection.js')
-  // The old shape: set the cache, then bail on empty before sending.
-  assert.ok(
-    !/lastReported = text\s*\n\s*if \(text\.length === 0\) return/.test(source),
-    'an empty selection must reach the service worker',
-  )
-  assert.ok(/lastReported = text\s*\n\s*try \{/.test(source), 'the send must follow the cache update directly')
+test('a reporter whose extension context died is replaced, not obeyed', async (t) => {
+  const page = makePage()
+  const dead = page.install()
+
+  // The extension is reloaded: this copy keeps listening and keeps failing.
+  page.dead = true
+  page.text = '逐字节一致'
+  page.fire(page.documentListeners, 'selectionchange')
+  page.flush()
+  await settle()
+  assert.equal(dead.length, 0, 'the dead copy cannot report anything')
+
+  // The panel re-injects. The old copy held the install flag, so before this
+  // change the new copy returned immediately and the page stayed silent for the
+  // rest of its life — which is what the user saw: a highlight, and no chip.
+  page.dead = false
+  const live = page.install()
+  page.fire(page.documentListeners, 'selectionchange')
+  page.flush()
+  await settle()
+  assert.equal(live.length, 1, 'the replacement reports the selection it was re-injected for')
+  assert.equal(live[0].text, '逐字节一致')
+})
+
+test('a report that failed is retried instead of being remembered as sent', async (t) => {
+  const page = makePage()
+  const sent = page.install()
+
+  page.dead = true
+  page.text = 'retry me'
+  page.fire(page.documentListeners, 'selectionchange')
+  page.flush()
+  await settle()
+  assert.equal(sent.length, 0, 'nothing got through while the context was dead')
+
+  // The same selection, now that the context is live again. The cache has to
+  // have been rolled back, or the text counts as already reported and never
+  // leaves the page.
+  page.dead = false
+  page.fire(page.documentListeners, 'pointerup')
+  page.flush()
+  await settle()
+  assert.equal(sent.length, 1, 'the same text is reported again after a failure')
+  assert.equal(sent[0].text, 'retry me')
+})
+
+test('clearing a highlight is reported, so the chip can go away', async (t) => {
+  const page = makePage()
+  const sent = page.install()
+
+  page.text = 'selected'
+  page.fire(page.documentListeners, 'selectionchange')
+  page.flush()
+  await settle()
+  assert.equal(sent.length, 1)
+
+  page.text = ''
+  page.fire(page.documentListeners, 'selectionchange')
+  page.flush()
+  await settle()
+  assert.equal(sent.length, 2, 'an empty selection must reach the service worker')
+  assert.equal(sent[1].text, '')
+  assert.equal(sent[1].url, 'https://example.test/article')
+})
+
+test('the manifest lets the panel inject into every page the reporter covers', (t) => {
+  const manifest = JSON.parse(readExtensionFile('manifest.json'))
+  const patterns = manifest.content_scripts.flatMap((entry) => entry.matches ?? [])
+  const hosts = manifest.host_permissions ?? []
+  // `chrome.scripting.executeScript` needs a *host permission*; declaring a
+  // content script does not grant one. Without the scheme listed here the
+  // recovery path throws on every real page and only ever worked on loopback.
+  const schemes = [...new Set(patterns.map((pattern) => pattern.split('://')[0]))]
+  assert.ok(schemes.length > 0, 'the reporter is declared for some scheme')
+  for (const scheme of schemes) {
+    assert.ok(
+      hosts.some((host) => host.startsWith(`${scheme}://`)),
+      `content scripts match ${scheme}:// but host_permissions are ${JSON.stringify(hosts)}`,
+    )
+  }
 })
 
 test('the service worker forwards an empty selection to the panel but never to the host', (t) => {

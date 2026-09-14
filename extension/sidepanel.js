@@ -92,6 +92,13 @@ let sending = false
 let stopping = false
 /** `'chat'` or `'history'`. */
 let view = 'chat'
+/**
+ * The `tabId:url` whose reporter was last found unreachable.
+ *
+ * Kept so the panel says it once per page instead of on every focus change —
+ * repeating it would be nagging about something the user cannot act on twice.
+ */
+let staleReporter = ''
 
 /** @type {{ id: string|null, title: string, sessions: object[] }[]} */
 let groups = []
@@ -1292,20 +1299,54 @@ async function requestSelectionFromPage() {
   }
   if (tab?.id === undefined) return
 
+  /**
+   * Ask the page, and treat anything that is not the promised shape as failure.
+   *
+   * A dead message port resolves with `undefined` instead of rejecting, so the
+   * shape of the answer is the only reliable signal — and the first version read
+   * that `undefined` as "this page has no selection", which is the same picture
+   * as success with nothing to show.
+   *
+   * @returns {Promise<object|undefined>} The reply, or undefined if it never came.
+   */
+  const ask = async () => {
+    const reply = await chrome.tabs.sendMessage(tab.id, { type: 'dsh-selection-request' })
+    return reply !== null && typeof reply === 'object' && typeof reply.text === 'string' ? reply : undefined
+  }
+
   let reply
   try {
-    reply = await chrome.tabs.sendMessage(tab.id, { type: 'dsh-selection-request' })
+    reply = await ask()
   } catch {
+    reply = undefined
+  }
+
+  if (reply === undefined) {
     try {
       await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content-selection.js'] })
-      reply = await chrome.tabs.sendMessage(tab.id, { type: 'dsh-selection-request' })
+      reply = await ask()
     } catch {
-      // A page Chrome will not let us into — a store page, a PDF viewer, an
-      // internal URL. There is no selection to report and nothing to say.
-      return
+      // Chrome injects only where the extension holds host permission; anywhere
+      // else this throws and there is no recovery to attempt.
+      reply = undefined
     }
   }
-  applySelection(reply)
+
+  if (reply !== undefined) {
+    staleReporter = ''
+    applySelection(reply)
+    return
+  }
+
+  // Say it once per page rather than showing nothing. "No chip" is otherwise the
+  // same picture whether the page has no selection or cannot be reached, and
+  // that question is the only reason the chip is on screen at all.
+  const url = String(tab.url ?? '')
+  if (!/^https?:/i.test(url)) return
+  const key = `${tab.id}:${url}`
+  if (staleReporter === key) return
+  staleReporter = key
+  say(t('error.reportStale'))
 }
 
 chrome.runtime.onMessage.addListener((message) => {
@@ -1337,7 +1378,6 @@ async function start() {
   // picker reports on its own, not a reason to tell the person the panel broke.
   await refreshCatalog().catch(() => {})
 
-  // Ask the page for a selection it already holds, so the panel is not blank.
   // Ask the page for the selection it already holds, so the panel is not blank
   // until the user happens to highlight something again.
   await requestSelectionFromPage().catch(() => {})
@@ -1346,6 +1386,13 @@ async function start() {
   // this the chip keeps describing the tab the panel was opened on.
   chrome.tabs.onActivated.addListener(() => {
     refreshTabs().catch(() => {})
+    requestSelectionFromPage().catch(() => {})
+  })
+
+  // Highlighting text moves focus to the page, so coming back to the panel is
+  // the moment the chip has to be right — and the moment a reporter killed by an
+  // extension reload gets its one chance to be replaced.
+  window.addEventListener('focus', () => {
     requestSelectionFromPage().catch(() => {})
   })
 

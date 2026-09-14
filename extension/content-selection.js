@@ -16,16 +16,29 @@
 
 (() => {
   /**
-   * Install once per document.
+   * One reporter per document, and the newest one wins.
    *
-   * The panel re-injects this file to recover from an extension reload, and a
-   * reload leaves the old copy in every open tab with a dead extension context
-   * — it still listens, but its messages go nowhere. Both copies share one
-   * isolated world, so this flag is what stops a recovered tab from reporting
-   * every selection twice.
+   * The panel re-injects this file to recover from an extension reload, which
+   * leaves the previous copy in the page with a dead extension context: it still
+   * listens, and its messages go nowhere. Both copies share one isolated world,
+   * so this slot is how the new copy takes over.
+   *
+   * The first version of this guard returned early when the slot was filled,
+   * which made the recovery it was meant to protect impossible: the dead copy
+   * held the slot, so re-injecting the file installed nothing at all. Taking
+   * over instead costs one call to the old copy's `dispose`, which touches only
+   * DOM APIs and therefore works even from a context Chrome has invalidated.
    */
-  if (globalThis.__dshSelectionReporter === true) return
-  globalThis.__dshSelectionReporter = true
+  const SLOT = '__dshSelectionReporter'
+  const previous = globalThis[SLOT]
+  if (previous !== null && typeof previous?.dispose === 'function') {
+    try {
+      previous.dispose()
+    } catch {
+      // Anything reaching for `chrome.*` can throw once the context is gone.
+      // The copy is being discarded either way, so there is nothing to save.
+    }
+  }
 
   /** Longest selection forwarded, matching the host's own bound. */
   const MAX_CHARS = 10_000
@@ -61,17 +74,26 @@
   function report() {
     const text = currentSelection()
     if (text === lastReported) return
+    const before = lastReported
     lastReported = text
     try {
-      chrome.runtime.sendMessage({
+      const pending = chrome.runtime.sendMessage({
         type: 'dsh-selection',
         text,
         url: location.href,
         title: document.title,
       })
+      // A dead context *rejects* rather than throwing, and the first version
+      // never looked at the answer: the text stayed marked as reported and was
+      // never tried again, so one extension reload silenced the page for the
+      // rest of its life. Roll the cache back and let the next gesture retry.
+      if (pending !== null && typeof pending?.catch === 'function') {
+        pending.catch(() => {
+          if (lastReported === text) lastReported = before
+        })
+      }
     } catch {
-      // The extension was reloaded while this page stayed open, so this copy's
-      // context is gone. The panel notices the same failure and re-injects.
+      if (lastReported === text) lastReported = before
     }
   }
 
@@ -90,10 +112,35 @@
 
   // The side panel asks for the current selection when it opens, so it is not
   // blank until the user happens to select something again.
-  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  function onRequest(message, _sender, sendResponse) {
     if (message?.type !== 'dsh-selection-request') return false
     const text = currentSelection()
     sendResponse({ text, url: location.href, title: document.title })
     return true
-  })
+  }
+
+  chrome.runtime.onMessage.addListener(onRequest)
+
+  /**
+   * Detach this copy, so the next one can install cleanly.
+   *
+   * Called by a re-injected copy before it takes the slot. `removeListener` is
+   * the only call here that can throw once the context is gone, and a copy that
+   * cannot unregister its message listener has still lost its DOM listeners,
+   * which are the ones that fire on every gesture.
+   */
+  function dispose() {
+    document.removeEventListener('selectionchange', schedule)
+    document.removeEventListener('pointerup', schedule)
+    window.removeEventListener('scroll', schedule)
+    if (timer !== undefined) clearTimeout(timer)
+    try {
+      chrome.runtime.onMessage.removeListener(onRequest)
+    } catch {
+      // The context is already invalidated; its listeners went with it.
+    }
+    if (globalThis[SLOT]?.dispose === dispose) delete globalThis[SLOT]
+  }
+
+  globalThis[SLOT] = { dispose, installedAt: Date.now() }
 })()
