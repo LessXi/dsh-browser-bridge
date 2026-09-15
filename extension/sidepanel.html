@@ -306,6 +306,48 @@
 
       .notice { color: var(--tertiary); font-size: var(--text-xs); }
 
+      /* The one place in the panel that asks a question instead of reporting
+         one. A pending approval is the turn's actual state, so the card reads
+         as part of the transcript rather than as a modal: it sits in the flow,
+         at the end, where the eye already is. */
+      .approval {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        padding: 10px 12px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-xl);
+        background: var(--lift);
+      }
+      .approval-head {
+        font-size: var(--text-xs);
+        color: var(--tertiary);
+      }
+      .approval-what {
+        font-size: var(--text-sm);
+        overflow-wrap: anywhere;
+      }
+      .approval-actions { display: flex; gap: 6px; }
+      .approval-actions button {
+        height: 28px;
+        padding: 0 12px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: Canvas;
+        color: inherit;
+        font: inherit;
+        font-size: var(--text-xs);
+        cursor: pointer;
+      }
+      .approval-actions button:hover:not(:disabled) { background: var(--hover); }
+      .approval-actions button:disabled { color: var(--faint); cursor: default; }
+      .approval-allow {
+        border-color: transparent !important;
+        background: var(--accent) !important;
+        color: #fff !important;
+      }
+      .approval-allow:hover:not(:disabled) { opacity: .9; }
+
       /* Waiting feedback: the text itself sweeps, the way the original does,
          but as one gradient-clipped element instead of two stacked copies with
          `!important` colour overrides. */
@@ -437,6 +479,17 @@
         font-size: var(--text-xs);
         color: var(--bad);
         overflow-wrap: anywhere;
+      }
+      /* The one state that has nowhere else to be said. With no host on the port
+         there is nothing to read, nothing to send, and no error to report — the
+         panel just looks broken. Quiet, because it is a status: it clears itself
+         on the next request that is answered. */
+      #offline {
+        flex: none;
+        margin: 0;
+        padding: 0 12px 6px;
+        font-size: var(--text-xs);
+        color: var(--faint);
       }
       footer { flex: none; padding: 0 10px 10px; }
       #contexts { display: flex; flex-wrap: wrap; gap: 5px; padding-bottom: 7px; }
@@ -603,6 +656,8 @@
       <section id="history" class="scroll" hidden></section>
       <button id="to-bottom" type="button" hidden></button>
     </div>
+
+    <p id="offline" hidden></p>
 
     <p id="toast" hidden></p>
 

@@ -28,6 +28,7 @@ import {
 } from './config.js'
 import { ContextAttachments } from './context.js'
 import { createChat } from './chat.js'
+import { createApprovalRelay } from './approval.js'
 import { loadPeer } from './deps.js'
 import { GrantTable } from './grants.js'
 import { createIngest } from './ingest.js'
@@ -186,6 +187,17 @@ export async function apply(ctx, _config) {
     detachStream()
     stream.dispose()
   }, 'browser-bridge: assistant stream relay')
+
+  // A turn started from the side panel can stop on an approval question, and
+  // the harness's only shipped answerer renders that question in the graphical
+  // client — a window the person is not looking at while they work in Chrome.
+  // The relay asks the panel too, and lets whichever surface answers first win.
+  const approvalRelay = createApprovalRelay({
+    bridge,
+    log: (message) => ctx.logger?.debug?.(`browser-bridge: ${message}`),
+  })
+  const detachApproval = approvalRelay.attach(ctx)
+  ctx.effect(() => () => detachApproval(), 'browser-bridge: approval relay')
 
   const attachments = new ContextAttachments({
     settings,
@@ -442,6 +454,12 @@ export async function apply(ctx, _config) {
           // different problem from `dropped` climbing, which just means no
           // extension was connected to receive it.
           stream: stream.stats(),
+          // Counters for the approval relay. `delivered: 0` during a turn that
+          // is visibly waiting means the question never reached this plugin;
+          // `delivered` climbing while `byPanel` stays 0 means the panel is
+          // being asked and nobody is answering.
+          approval: approvalRelay.stats(),
+          approvalPending: approvalRelay.pending(),
           contextDiagnostics: {
             agents: attachments.agentIds(),
             pending: attachments.pendingSessions(),
@@ -556,6 +574,17 @@ export async function apply(ctx, _config) {
         // A refusal is the normal outcome for a session that is not running
         // here, so it is a 409 with the harness's own wording rather than a 500.
         json(result.cancelled ? 200 : 409, result)
+        return
+      }
+      if (parsed.action === 'approval') {
+        // The panel answering a question it was asked, on the way back. The
+        // bridge socket carries requests one way only, so the reply rides the
+        // panel's own HTTP route.
+        const result = approvalRelay.answer(parsed.id, parsed.outcome)
+        // A refusal is ordinary — the question was answered in the graphical
+        // client first, or the turn was cancelled — so it is a 409 carrying the
+        // reason rather than a 500.
+        json(result.answered ? 200 : 409, result)
         return
       }
       if (parsed.action === 'send') {

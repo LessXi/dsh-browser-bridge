@@ -50,6 +50,10 @@ const host = {
   cancelled: [],
   /** The answer `cancel` gets, mutated per test. */
   cancel: { status: 200, payload: { cancelled: true } },
+  /** Every `POST {action:'approval'}` body, in order. */
+  approvals: [],
+  /** The answer `approval` gets, mutated per test. */
+  approval: { status: 200, payload: { answered: true } },
 }
 
 const groupsPayload = () => ({
@@ -110,6 +114,10 @@ globalThis.fetch = async (url, options = {}) => {
       host.cancelled.push(body)
       return respond(host.cancel.payload, host.cancel.status)
     }
+    if (body.action === 'approval') {
+      host.approvals.push(body)
+      return respond(host.approval.payload, host.approval.status)
+    }
     return respond({ accepted: true })
   }
   if (address.includes('/browser-bridge/health')) return respond({ connected: true })
@@ -131,6 +139,14 @@ async function settle(turns = 40) {
 function deliver(payload) {
   for (const listener of inbox) listener({ type: 'dsh-assistant-delta', payload })
 }
+
+/** Hand the panel any forwarded notification, the way the worker would. */
+function post(type, payload) {
+  for (const listener of inbox) listener({ type, payload })
+}
+
+/** The approval card currently on screen, if any. */
+const approvalCard = () => transcript.querySelector('.approval')
 
 const liveNode = () => transcript.querySelector('.live')
 const liveBody = () => transcript.querySelector('.live-body')
@@ -595,4 +611,170 @@ test('a refused clipboard says so instead of looking like it worked', async () =
   assert.equal(copy.textContent, '复制', 'a refused copy announced itself as copied')
   assert.equal(copy.dataset.state, undefined, 'the button was left in its copied state')
   assert.equal(toast.textContent, '复制失败', 'a refused clipboard failed silently')
+})
+
+// The approval card.
+//
+// This is the fix for a turn that waits forever: the harness's only shipped
+// answerer renders the question in the graphical client, so a turn started from
+// the panel and then stopped on an approval question had nobody to answer it
+// while the person worked in Chrome. These cases hold the two halves of that
+// fix in place — the question arrives and is answerable, and it goes away when
+// it is settled at the other surface instead of sitting there looking broken.
+
+/** The buttons on the card, in the order they are drawn. */
+function approvalButtons() {
+  const card = approvalCard()
+  const actions = card?.children.find((child) => child.className === 'approval-actions')
+  return actions?.children ?? []
+}
+
+/** Put one question on screen the way the worker would. */
+async function askApproval(overrides = {}) {
+  post('dsh-approval-asked', {
+    id: 'panel-1',
+    sessionId: SESSION,
+    toolName: 'browser_click',
+    reason: 'clicking on https://example.com',
+    options: ['allowed-once', 'rejected'],
+    ...overrides,
+  })
+  await settle()
+}
+
+test('a pending approval is shown as a question with exactly two answers', async () => {
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    host.approvals.length = 0
+    await askApproval()
+
+    const card = approvalCard()
+    assert.ok(card, 'a waiting turn showed no approval card')
+    assert.equal(card.dataset.approvalId, 'panel-1')
+    const buttons = approvalButtons()
+    assert.deepEqual(
+      buttons.map((button) => button.textContent),
+      ['允许一次', '拒绝'],
+      'the card does not offer exactly allow-once and reject',
+    )
+  })
+})
+
+test('the card says why, and names the tool when there is no reason', async () => {
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    await askApproval()
+    const body = approvalCard().children.find((child) => child.className === 'approval-what')
+    assert.equal(body.textContent, 'clicking on https://example.com', 'the reason was dropped')
+
+    post('dsh-approval-settled', { id: 'panel-1' })
+    await settle()
+    await askApproval({ id: 'panel-2', reason: undefined })
+    const named = approvalCard().children.find((child) => child.className === 'approval-what')
+    assert.equal(named.textContent, '要用 browser_click', 'a reasonless question did not name the tool')
+  })
+})
+
+test('answering sends the choice, and takes the card away', async () => {
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    host.approvals.length = 0
+    host.approval = { status: 200, payload: { answered: true } }
+    await askApproval()
+
+    const [allow] = approvalButtons()
+    allow.emit('click')
+    await settle()
+
+    assert.deepEqual(host.approvals, [{ action: 'approval', id: 'panel-1', outcome: 'allowed-once' }])
+    assert.equal(approvalCard(), null, 'the card outlived its answer')
+  })
+})
+
+test('rejecting sends the refusal rather than allowing the tool', async () => {
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    host.approvals.length = 0
+    host.approval = { status: 200, payload: { answered: true } }
+    await askApproval({ id: 'panel-7' })
+
+    const [, reject] = approvalButtons()
+    reject.emit('click')
+    await settle()
+
+    assert.deepEqual(host.approvals, [{ action: 'approval', id: 'panel-7', outcome: 'rejected' }])
+    assert.equal(approvalCard(), null)
+  })
+})
+
+test('a question settled at the other surface takes the card away', async () => {
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    await askApproval({ id: 'panel-9' })
+    assert.ok(approvalCard(), 'the card was never drawn')
+
+    // The graphical client answered first. A card still offering buttons for a
+    // decision already made is worse than no card: pressing one does nothing,
+    // which reads as a broken panel.
+    post('dsh-approval-settled', { id: 'panel-9', outcome: 'answered-elsewhere' })
+    await settle()
+
+    assert.equal(approvalCard(), null, 'a settled question left its card on screen')
+  })
+})
+
+test('an answer the host refuses says so and drops the stale card', async () => {
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    host.approval = { status: 409, payload: { answered: false, reason: 'that question is no longer open' } }
+    await askApproval({ id: 'panel-11' })
+
+    const [allow] = approvalButtons()
+    allow.emit('click')
+    await settle()
+
+    assert.match(toast.textContent, /没能作答/, 'a refused answer was silent')
+    assert.match(toast.textContent, /no longer open/, 'the host reason was dropped')
+    // Stale either way: the question is gone, so nothing is left to answer.
+    assert.equal(approvalCard(), null, 'a card for a closed question was left up')
+    host.approval = { status: 200, payload: { answered: true } }
+  })
+})
+
+test('a malformed question is ignored instead of drawn as dead buttons', async () => {
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    post('dsh-approval-asked', { toolName: 'browser_click' })
+    await settle()
+    assert.equal(approvalCard(), null, 'a question with no id was drawn anyway')
+
+    post('dsh-approval-asked', { id: 'panel-12', sessionId: 42 })
+    await settle()
+    assert.equal(approvalCard(), null, 'a question with no session was drawn anyway')
+  })
+})
+
+test('the buttons go inert while an answer is in flight, so one click is one answer', async () => {
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    host.approvals.length = 0
+    host.approval = { status: 200, payload: { answered: true } }
+    await askApproval({ id: 'panel-13' })
+
+    const [allow] = approvalButtons()
+    assert.equal(allow.disabled, false, 'the buttons started out inert')
+    allow.emit('click')
+
+    // Mid-flight: the same card, redrawn with its buttons disabled. Without the
+    // busy state counting as a change, this redraw is skipped entirely and a
+    // second press sends a second answer for a question that is already gone.
+    const [stillAllow, stillReject] = approvalButtons()
+    assert.equal(stillAllow.disabled, true, 'allow was still pressable mid-flight')
+    assert.equal(stillReject.disabled, true, 'reject was still pressable mid-flight')
+
+    stillAllow.emit('click')
+    stillReject.emit('click')
+    await settle()
+    assert.equal(host.approvals.length, 1, 'a second press answered twice')
+  })
 })

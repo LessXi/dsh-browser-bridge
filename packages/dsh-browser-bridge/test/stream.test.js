@@ -416,18 +416,35 @@ test('the service worker routes notifications before it looks for a request id',
   )
 })
 
-test('the extension and the host agree on the notification name', () => {
-  // These two files cannot share a constant, so the literal is checked instead.
-  // The extension half is a plain string in `relayNotification`.
-  const name = NOTIFICATIONS.assistantDelta
-  assert.ok(
-    background.includes(`'${name}'`),
-    `background.js does not mention "${name}", so live output never reaches the panel`,
-  )
-  assert.ok(
-    background.indexOf(`notify !== '${name}'`) !== -1,
-    'relayNotification no longer filters on the name; an unknown notification would be forwarded',
-  )
+test('the extension and the host agree on every notification name', () => {
+  // These two files cannot share a constant, so the literals are checked
+  // instead. The extension half names each one in `relayNotification`.
+  //
+  // The check is "filters on the name", not "filters on the name with `!==`":
+  // the relay now carries more than one kind, so a filter is still required and
+  // its shape is not. What must stay true is that an unrecognized notification
+  // is not forwarded to the panel, because the panel would have to guess at it.
+  const names = Object.values(NOTIFICATIONS)
+  assert.ok(names.length > 1, 'this test is blind now that notifications collapsed to one name')
+
+  for (const name of names) {
+    assert.ok(
+      background.includes(`'${name}'`),
+      `background.js does not mention "${name}", so it never reaches the panel`,
+    )
+    assert.ok(
+      background.includes(`notify === '${name}'`),
+      `relayNotification does not filter on "${name}"; an unknown notification would be forwarded`,
+    )
+  }
+
+  // And the panel has to be listening for what the worker forwards.
+  for (const type of ['dsh-assistant-delta', 'dsh-approval-asked', 'dsh-approval-settled']) {
+    assert.ok(
+      sidepanel.includes(`'${type}'`),
+      `sidepanel.js does not listen for "${type}"`,
+    )
+  }
 })
 
 test('the panel listens for the forwarded deltas and folds them into one live block', () => {

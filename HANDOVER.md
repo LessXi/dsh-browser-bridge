@@ -1,15 +1,52 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v12 已交付。** 下一节就是最新的一轮改动；下面标 v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v12 那一段为止即可。
+> **当前状态：v13 已交付。** 下一节就是最新的一轮改动；下面标 v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v13 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（295 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（315 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 >
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
 
+> ### v13：在侧边栏里就能回答审批（宿主 + 扩展，本次修复）
+>
+> **用户症状（逐字）**：「dsh在等待审批，用户在浏览器插件中，不切回来看永远也不知道，然后就卡住了」——
+> 侧边栏发起的回合碰到要授权的工具，整轮停住且**什么都不说**，只有切回 DSH 图形界面才看到审批框。
+>
+> **根因（一手）**：宿主从客户端组合审批作答方，而官方唯一的作答方是图形界面
+> （`dsh-client-ui-approval/lib/client.js:282` 的 `ctx.remote.$on('approval/request', …)`）。
+> 插件侧插件**可以**自己当第二个作答方（`dsh-acp/lib/index.js:1115` 就是
+> `ctx.on('approval/request', (request, next) => …)`）——我们只是从来没注册过。
+>
+> **三条不能忘的规则**
+> 1. **与图形界面赛跑，谁先答谁赢**（`Promise.race`）；输的一方收 `approval/settled` 撤卡片。
+>    一个还在为已决问题提供按钮的卡片比没有卡片更糟。
+> 2. **`unavailable` 不是答案**。它是「没有作答方接手」，未接图形界面时下游返回的正是它。
+>    当成答案 ⇒ 面板一旦是唯一界面就**拒绝每一个请求**，把「没人回答」伪装成「用户拒绝」。
+>    这是承重墙，`test/approval.test.js` 用 `race()` 断言问题此时**仍然挂着**。
+> 3. **只给两个按钮**（`PANEL_OPTIONS = ['allowed-once','rejected']`）。宿主只授予
+>    `allowed-once`（`dsh-user-approval/lib/index.js:30-35` 四个 outcome 里唯一算允许的），
+>    「永久允许本站」是桥事后用 `persistentApproval` 决定的，写成按钮就是撒谎。
+>    没有扩展连着时 relay **完全不介入**（`return next()`），没装扩展的人路径一字未变。
+>
+> **改动文件**：`lib/approval.js`（新）、`lib/protocol.js`（`approvalAsked`/`approvalSettled` 两条通知）、
+> `lib/index.js`（`createApprovalRelay` + `attach`、`POST {action:'approval'}`、health 的 `approval`/`approvalPending`）、
+> `extension/background.js`（`relayNotification` 转发两种通知）、`extension/sidepanel.js`
+> （`pendingApproval`/`answering`/`drawnApproval` 状态 + `renderApproval`/`answerApproval`）、
+> `extension/sidepanel.html`（`.approval*` 卡片样式）、`extension/locales.js`（7 键）。
+>
+> **验证**：`npm test` **315 passed / 0 failed / 0 skipped**（20 suite，新增 `test/approval.test.js` 12 条 +
+> `panel-stream.test.js` 7 条）；`npm run check:extension` exit 0。
+> 探针 3199 实测：health 出现 `approval` 七计数器；回答不存在的 id → `409 {"answered":false,"reason":"that question is no longer open"}`；
+> 非法 outcome 同样被拒；两次后 `refused: 2`（计数确实在动）。
+> **证伪**：卡片永不绘制 → 6 条红；拒绝键发 `allowed-once` → 1 条红；忙态不参与比较 → 1 条红。
+> 最后一条抓到**我自己引入的 bug**（同 id 早退跳过了「按钮转禁用」的重绘 ⇒ 双击发出两次回答），已修并补用例。
+>
+> **交付**：`lib/` + `extension/` 都改了 → 用户要**重启 `dsh web`** + **重载 Chrome 扩展**。
+> **未实测**：一次真实审批从面板作答（探针没有 provider 凭据，扩展也没连上）。
+>
 > ### v12：侧边栏能复制代码块和整条回答（扩展侧，本次新增）
 >
 > **为什么做**：此前面板**没有任何复制能力**，想拿走一段代码只能手动框选。这是每天都碰到的摩擦。

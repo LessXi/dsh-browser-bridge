@@ -239,13 +239,29 @@ function emit(event, payload) {
  * which is correct, because a transcript can always be re-read and a half
  * finished token stream cannot.
  *
+ * The approval pair is the exception that needs care. Dropping an
+ * `approval/asked` costs more than a lost frame: the harness is sitting on that
+ * question, and if nobody answers it the turn never finishes. It is still
+ * forwarded best-effort — the graphical client can always answer, and the
+ * panel closing must not strand a turn — but the panel is told, so it can show
+ * the question instead of spinning.
+ *
  * @param {string} notify - The notification name; see `NOTIFICATIONS` in `lib/protocol.js`.
  * @param {object} payload - Its payload.
  * @returns {void}
  */
 function relayNotification(notify, payload) {
-  if (notify !== 'assistant/delta') return
-  chrome.runtime.sendMessage({ type: 'dsh-assistant-delta', payload }).catch(() => {})
+  if (notify === 'assistant/delta') {
+    chrome.runtime.sendMessage({ type: 'dsh-assistant-delta', payload }).catch(() => {})
+    return
+  }
+  if (notify === 'approval/asked') {
+    chrome.runtime.sendMessage({ type: 'dsh-approval-asked', payload }).catch(() => {})
+    return
+  }
+  if (notify === 'approval/settled') {
+    chrome.runtime.sendMessage({ type: 'dsh-approval-settled', payload }).catch(() => {})
+  }
 }
 
 /**

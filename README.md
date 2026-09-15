@@ -249,7 +249,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 295 条
+npm test                          # 全部 315 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -275,7 +275,7 @@ npm run check:extension           # 扩展脚本语法检查（Chrome 加载前�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 295 条
+npm test                 # 315 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -288,7 +288,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 不会把 `@deepseek-ai/*` 拉下来。宿主库由 `lib/deps.js` 在运行时从
 `$DSH_HOME/profiles/node_modules` 解析。
 
-**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **295 passing, 0 failing, 0 skipped**，
+**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **315 passing, 0 failing, 0 skipped**，
 `npm run check:extension` exit 0。前提是这台机器上装过 DSH（宿主库要能解析到）。
 
 **验证环境**：Node **v24.15.0**。两个 `package.json` 里的 `engines.node: ">=20"` 是**保守下限**，
@@ -306,7 +306,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面四层测试，295 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
+**已自动化验证**：上面四层测试，315 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
 
 侧边栏那部分还有一组**静态**检查，防止语言和版式漂回去：两个字典的键必须完全一致、面板里每个
 `t('…')` 的键都必须存在、HTML 里不允许残留裸文案、旧版文案一个都不许出现、**字典里不允许出现整句
@@ -364,6 +364,68 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 「宿主聚合 → 走 `notify` → service worker 转给面板 → 面板逐字画出来」这一段由
 `test/stream.test.js`（真 socket 上的帧形状）+ `test/panel-stream.test.js`（真跑面板模块）分段覆盖，
 **中间那一跳（Chrome 的 `chrome.runtime.sendMessage`）只做了结构断言，没有在真 Chrome 里点过**。
+
+#### v13：在侧边栏里就能回答审批，回合不再无声卡死（本次修复）
+
+在侧边栏发一条消息，模型一旦要碰需要授权的东西（读页面正文、点某个站点上的按钮），
+**整轮就停在那里不动，而且什么都不说**。切回 DSH 图形界面才会看到一个审批框在等；
+人一直待在 Chrome 里，那一轮就永远不结束。用户的原话是「不切回来看永远也不知道，然后就卡住了」。
+
+**根因（一手，不是猜的）**
+
+宿主把审批的作答方**从客户端组合出来**，而官方随产品发布的作答方只有一个：
+`dsh-client-ui-approval/lib/client.js:282` 的 `ctx.remote.$on('approval/request', …)`，
+即图形界面。插件侧插件完全可以自己当作答方——`dsh-acp/lib/index.js:1115` 就是
+`ctx.on('approval/request', (request, next) => …)`——所以这不是「宿主不支持」，
+而是**我们从来没注册过**。会话在等一个只有另一个窗口才会出现的问题。
+
+**做了什么**
+
+1. 新增 `lib/approval.js`：`ApprovalRelay.attach(ctx)` 用 `ctx.on('approval/request', …)`
+   注册成第二个作答方，把问题通过 `NOTIFICATIONS.approvalAsked`（`approval/asked`）推给面板，
+   面板经 `POST /browser-bridge/chat {action:'approval', id, outcome}` 作答。
+   **桥接 socket 只单向承载「扩展 → 宿主」的请求**，所以回答走面板自己的 HTTP 路由。
+2. **与图形界面赛跑，谁先答谁赢**（`Promise.race`）。在 DSH 窗口里干活的人，界面一点没变；
+   输的那一方收到 `approval/settled` 把卡片撤掉——**一个还在为已决问题提供按钮的卡片，
+   比没有卡片更糟**，按下去没反应，看起来像面板坏了。
+3. **`unavailable` 不算答案**。它是宿主表示「没有作答方接手」的词，未接入图形界面时下游
+   返回的正是它。若把它当成决定，面板一旦成为唯一界面就会**拒绝每一个请求**——
+   于是「本来没人回答」被伪装成「用户拒绝了」。这一条是整个修复的承重墙，
+   `test/approval.test.js` 用 `race()` 断言此时问题**仍然挂着**。
+4. **只给两个按钮**：`PANEL_OPTIONS = ['allowed-once', 'rejected']`。宿主只授予
+   `allowed-once`（`dsh-user-approval/lib/index.js:30-35` 的四个 outcome 里唯一算「允许」的），
+   「永久允许本站」是桥自己在事后用 `persistentApproval` 决定的，写成按钮就是撒谎。
+   ACP 同样只给两个。同时 `cancelled`/`unavailable` **不是按钮**，面板发来也一律拒绝。
+5. 没有扩展连着时 `#notify` 返回 false，relay **完全不介入**（`return next()`），
+   所以没装扩展的人用的是原来那条路径，一个字都没变。
+6. `GET /browser-bridge/health` 暴露 `approval`（计数）与 `approvalPending`（在等的问题）：
+   `delivered` 一直 0 而回合在等 ⇒ 问题根本没到插件；`delivered` 涨而 `byPanel` 不涨 ⇒
+   问了但没人答。这两个计数器把「静默等待」变成可区分的状态。
+
+**同时删掉的一条噪音**：面板此前在别处已有等待行的情况下又弹一条 toast，
+这与 v4 定下的「控件说自己做什么，状态自己显示自己」相冲，已去掉。
+
+**实测**（探针 `dsh web --port 3199 --no-open`，用户线上 3080 全程只读、未触碰）
+
+| 请求 | 结果 |
+|---|---|
+| `GET /browser-bridge/health` | 出现 `approval` 七个计数器与 `approvalPending`，插件树正常加载 |
+| `POST {action:'approval', id:'panel-1', outcome:'allowed-once'}`（不存在的 id） | `409 {"answered":false,"reason":"that question is no longer open"}` |
+| `POST {action:'approval', …, outcome:'cancelled'}`（非法 outcome） | `409`，同样被拒 |
+| 两次之后的 health | `refused: 2`，`byPanel: 0` —— 计数确实在动，不是恒定值 |
+
+**证伪**（确认测试真的绑住行为，而不是恰好通过）
+
+- 让卡片永不绘制 → 新增的 6 条用例**全红**（308 passed / 6 failed）。
+- 让「拒绝」键发出 `allowed-once` → **恰好 1 条红**（313 / 1）。
+- 让忙态不参与重绘比较 → **恰好 1 条红**（314 / 1，`the buttons go inert while an answer is in flight`）。
+
+第三条抓到的是**我自己引入的 bug**：`renderApproval` 原本按 id 做早退，
+于是「同一张卡片、按钮转为禁用」这一次重绘被整个跳过，双击会发出两次回答。
+修法是把忙态并入比较键（`drawnApproval = \`${id}:${answering}\``），并补一条用例钉住它。
+
+**未实测**：一次真实的审批从面板作答（需要「有 provider 凭据的宿主 + 已连接的扩展」，
+探针两样都没有）。面板卡片本身由真跑面板模块的用例覆盖，但**那次点击没有在真 Chrome 里发生过**。
 
 #### v12：代码块与整条回答的复制（本次新增）
 
@@ -432,7 +494,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 | 项 | 结果 |
 |---|---|
-| `npm test` | **295 passing, 0 failing, 0 skipped** |
+| `npm test` | **315 passing, 0 failing, 0 skipped** |
 | `npm run check:extension` | exit 0 |
 | **把 `content-selection.js` 换回 `git show HEAD:` 的那一版，再跑新测试** | **3 条变红**（接管、死副本被替换、失败后重试），换回新版全绿 → 测试确实能抓住这两个缺陷 |
 | 旧版跑「死副本被替换」用例 | 直接把进程打崩：`Error: Extension context invalidated.` —— 无人接管的 rejection，正是线上那个缺陷的真身 |
@@ -740,7 +802,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 295 条，含真实 Chrome 端到端
+└─ test/                  # 315 条，含真实 Chrome 端到端
 
 extension/
 ├─ manifest.json

@@ -105,6 +105,16 @@ export const zh = Object.freeze({
   // opposite answers in the two cases. Reloading installs a fresh reporter.
   'error.reportStale': '请刷新页面',
   'error.notCopied': '复制失败',
+  'error.hostDown': '连不上 dsh web',
+  'error.notAnswered': '没能作答：{reason}',
+  // The one place the panel asks instead of reporting. The harness's other
+  // answerer is the graphical client, so this card is often the only thing
+  // standing between a running turn and one that waits forever.
+  'approval.asking': '需要你确认',
+  'approval.wants': '要用 {tool}',
+  'approval.aTool': '一个工具',
+  'approval.allow': '允许一次',
+  'approval.reject': '拒绝',
 })
 
 /** English. Same keys as {@link zh}. */
@@ -164,6 +174,13 @@ export const en = Object.freeze({
   'error.attachmentRefused': 'Attachment refused: {reason}',
   'error.reportStale': 'Reload the page',
   'error.notCopied': 'Could not copy',
+  'error.hostDown': 'dsh web is not running',
+  'error.notAnswered': 'Could not answer: {reason}',
+  'approval.asking': 'Needs your call',
+  'approval.wants': 'Wants to use {tool}',
+  'approval.aTool': 'a tool',
+  'approval.allow': 'Allow once',
+  'approval.reject': 'Reject',
 })
 
 /** Every dictionary, by locale tag. */

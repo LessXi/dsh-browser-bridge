@@ -123,6 +123,37 @@ export const NOTIFICATIONS = Object.freeze({
    * which point the panel re-reads the committed transcript.
    */
   assistantDelta: 'assistant/delta',
+
+  /**
+   * One pending approval, carried to the surface the person is actually looking
+   * at.
+   *
+   * The harness composes its answerers from the client, and the only one that
+   * ships is the graphical client's. A turn started from the side panel that
+   * touches a gated tool therefore blocks on a question rendered in a window the
+   * person has no reason to be looking at: the turn waits, the panel shows a
+   * spinner, and nothing anywhere says why. This notification is the question,
+   * addressed to the panel; the answer comes back over the HTTP routes, because
+   * the socket's request direction is extension→host only.
+   *
+   * Payload: `{ id, sessionId, toolName, reason?, callId?, options }`.
+   * `options` is the closed vocabulary the panel is allowed to answer with, so
+   * a stale or hostile panel cannot invent an outcome the harness never
+   * accepts.
+   */
+  approvalAsked: 'approval/asked',
+
+  /**
+   * One question that is no longer open, so the panel drops its card.
+   *
+   * A question can be settled at either surface, and the loser has to be told:
+   * a card still offering buttons for a decision already made is worse than no
+   * card, because pressing one does nothing and looks like a broken panel.
+   *
+   * Payload: `{ id, outcome }`, where `outcome` is the winning outcome or the
+   * literal `answered-elsewhere`.
+   */
+  approvalSettled: 'approval/settled',
 })
 
 /**

@@ -64,6 +64,7 @@ const transcript = document.getElementById('transcript')
 const history = document.getElementById('history')
 const toBottom = document.getElementById('to-bottom')
 const toast = document.getElementById('toast')
+const offline = document.getElementById('offline')
 const contexts = document.getElementById('contexts')
 const input = document.getElementById('input')
 const sendButton = document.getElementById('send')
@@ -92,6 +93,29 @@ let sending = false
 let stopping = false
 /** `'chat'` or `'history'`. */
 let view = 'chat'
+/**
+ * The approval question the panel is currently showing, if any.
+ *
+ * The harness asks its answerers in parallel, so this can be answered here or
+ * in the graphical client, whichever comes first — and when the other one wins,
+ * `dsh-approval-settled` arrives and the card goes away. Holding the id is what
+ * lets the answer name the question it belongs to instead of guessing at "the
+ * current one", which would be wrong the moment two turns overlap.
+ *
+ * @type {{ id: string, sessionId: string, toolName: string, reason?: string } | null}
+ */
+let pendingApproval = null
+/** True while an approval answer is in flight, so the buttons cannot double-fire. */
+let answering = false
+/**
+ * What the approval card currently on screen represents.
+ *
+ * `renderApproval` is called from paths that repaint the transcript, so it has
+ * to know whether the card it would draw is the one already there. Keeping the
+ * key here rather than reading it back off the DOM is what lets the busy state
+ * count as a difference.
+ */
+let drawnApproval = ''
 /**
  * The `tabId:url` whose reporter was last found unreachable.
  *
@@ -205,6 +229,36 @@ function paintStaticCopy() {
   drawSend()
   modelButton.setAttribute('aria-label', t('model.select'))
   document.title = t('panel.title')
+  offline.textContent = t('error.hostDown')
+}
+
+/**
+ * Say whether anything is answering on the harness port.
+ *
+ * With no host there is nothing to read, nothing to send and no error to
+ * report, so the panel simply looks broken: an empty transcript, a dead send
+ * button. This is the one line that turns that into a state. It clears itself
+ * on the next successful request, so it is a status, never a warning to dismiss.
+ *
+ * @returns {void}
+ */
+function renderOffline() {
+  offline.hidden = hostReachable
+}
+
+/**
+ * Record whether anything answered on the harness port.
+ *
+ * Every request the panel makes learns this, so it goes through one place: the
+ * three callers each used to assign the flag and only one of them remembered to
+ * repaint anything.
+ *
+ * @param {boolean} reachable - Whether a request got an answer.
+ * @returns {void}
+ */
+function setHostReachable(reachable) {
+  hostReachable = reachable
+  renderOffline()
 }
 
 /** The session row on screen, when the listing knows it. */
@@ -654,6 +708,7 @@ function drawTranscript(next) {
   if (signature === drawnSignature) {
     renderWorking()
     renderLive()
+    renderApproval()
     updateToBottom()
     return
   }
@@ -667,6 +722,9 @@ function drawTranscript(next) {
   transcript.replaceChildren(fragment)
   renderWorking()
   renderLive()
+  // After `renderWorking`, because both append to the transcript and the
+  // question belongs below the row that says the turn is still running.
+  renderApproval()
 
   if (followed) transcript.scrollTop = transcript.scrollHeight
   else transcript.scrollTop = keep
@@ -690,6 +748,107 @@ function renderWorking() {
   // The composer's action depends on the same fact this row does, so they are
   // drawn together: there is no path that shows "running" without offering stop.
   drawSend()
+}
+
+/**
+ * Draw the pending approval question, or take it away.
+ *
+ * The waiting row says a turn is running; this says *why nothing is happening*,
+ * which is the fact the person actually needs. It is drawn at the end of the
+ * transcript because that is where the eye already is, and it is the only place
+ * in the panel that asks a question — everything else reports.
+ *
+ * @returns {void}
+ */
+function renderApproval() {
+  const existing = transcript.querySelector('.approval')
+  const wanted = view === 'chat' && pendingApproval !== null
+  if (!wanted) {
+    existing?.remove()
+    drawnApproval = ''
+    return
+  }
+  // What is on screen is compared as a whole, not by id alone: the busy state
+  // changes the buttons, and an early return that ignored it would leave them
+  // live while a request is already in flight.
+  const key = `${pendingApproval.id}:${answering}`
+  if (existing !== null && drawnApproval === key) return
+  existing?.remove()
+  drawnApproval = key
+
+  const card = document.createElement('div')
+  card.className = 'approval'
+  card.dataset.approvalId = pendingApproval.id
+
+  const head = document.createElement('div')
+  head.className = 'approval-head'
+  head.textContent = t('approval.asking')
+  card.append(head)
+
+  const what = document.createElement('div')
+  what.className = 'approval-what'
+  what.textContent = pendingApproval.reason ?? t('approval.wants', { tool: pendingApproval.toolName })
+  card.append(what)
+
+  const actions = document.createElement('div')
+  actions.className = 'approval-actions'
+  const allow = document.createElement('button')
+  allow.type = 'button'
+  allow.className = 'approval-allow'
+  allow.textContent = t('approval.allow')
+  allow.disabled = answering
+  allow.addEventListener('click', () => answerApproval('allowed-once'))
+  const reject = document.createElement('button')
+  reject.type = 'button'
+  reject.className = 'approval-reject'
+  reject.textContent = t('approval.reject')
+  reject.disabled = answering
+  reject.addEventListener('click', () => answerApproval('rejected'))
+  actions.append(allow, reject)
+  card.append(actions)
+
+  transcript.append(card)
+  if (stickToBottom) transcript.scrollTop = transcript.scrollHeight
+}
+
+/**
+ * Answer the question on screen, at this surface.
+ *
+ * A refusal is ordinary — the graphical client may have answered first, or the
+ * turn may have been cancelled while the card was up — and in every one of
+ * those cases the card is stale, so it goes away rather than staying to imply
+ * the answer was lost.
+ *
+ * @param {'allowed-once' | 'rejected'} outcome - Which answer the user chose.
+ * @returns {Promise<void>} Resolves once the host has been told.
+ */
+async function answerApproval(outcome) {
+  const question = pendingApproval
+  if (question === null || answering) return
+  answering = true
+  renderApproval()
+  try {
+    const stored = await chrome.storage.local.get({ port: '3080' })
+    const port = String(stored.port ?? '3080')
+    const result = await fetch(`http://127.0.0.1:${port}/browser-bridge/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'approval', id: question.id, outcome }),
+    })
+    const payload = await result.json().catch(() => ({}))
+    if (payload?.answered !== true) {
+      say(t('error.notAnswered', { reason: payload?.reason ?? `HTTP ${result.status}` }))
+    }
+  } catch (error) {
+    say(t('error.notAnswered', { reason: error?.message ?? String(error) }))
+  } finally {
+    // Either it was answered, or it is no longer open. Both mean this card has
+    // nothing left to offer.
+    if (pendingApproval?.id === question.id) pendingApproval = null
+    answering = false
+    renderApproval()
+    refreshTranscript().catch(() => {})
+  }
 }
 
 /**
@@ -792,11 +951,11 @@ async function refreshTranscript() {
     body: { action: 'messages', sessionId: currentSessionId, limit: 60 },
   })
   if (status === 0) {
-    hostReachable = false
+    setHostReachable(false)
     renderContexts()
     return
   }
-  hostReachable = true
+  setHostReachable(true)
   const messages = Array.isArray(payload?.messages) ? payload.messages : []
   const session = currentSession()
   if (session !== undefined && typeof payload?.title === 'string' && payload.title.length > 0) {
@@ -944,7 +1103,7 @@ function showView(next) {
  */
 async function refreshHealth() {
   const { payload, status } = await bridge('/browser-bridge/health')
-  hostReachable = status !== 0
+  setHostReachable(status !== 0)
   bridgeConnected = hostReachable && payload?.connected === true
   renderContexts()
   drawSend()
@@ -958,7 +1117,7 @@ async function refreshGroups() {
   const stored = await chrome.storage.local.get({ port: '3080', panelSessionId: '' })
   harnessPort = String(stored.port ?? '3080')
   const { payload, status } = await bridge('/browser-bridge/chat')
-  hostReachable = status !== 0
+  setHostReachable(status !== 0)
 
   // A 200 whose body has no `groups` is not an empty list: it is a host running
   // code from before this panel existed. Saying so once is far better than
@@ -1423,6 +1582,37 @@ async function requestSelectionFromPage() {
 chrome.runtime.onMessage.addListener((message) => {
   if (message?.type === 'dsh-assistant-delta') {
     applyDelta(message.payload ?? {})
+    return false
+  }
+  if (message?.type === 'dsh-approval-asked') {
+    const question = message.payload ?? {}
+    // Only the shape this panel can answer is kept; anything else would render
+    // buttons that cannot say what they are answering.
+    if (typeof question.id === 'string' && typeof question.sessionId === 'string') {
+      pendingApproval = {
+        id: question.id,
+        sessionId: question.sessionId,
+        toolName: typeof question.toolName === 'string' ? question.toolName : t('approval.aTool'),
+        ...(typeof question.reason === 'string' ? { reason: question.reason } : {}),
+      }
+      renderApproval()
+      // The question is about a turn, and the turn may be in a session the
+      // panel is not showing; following it is what makes the card reachable
+      // instead of appearing on a different session's transcript.
+      // `selectSession` is synchronous and already handles its own failures, so
+      // there is nothing to await or catch here.
+      if (question.sessionId !== currentSessionId && hostReachable) {
+        selectSession(question.sessionId)
+      }
+    }
+    return false
+  }
+  if (message?.type === 'dsh-approval-settled') {
+    const id = message.payload?.id
+    if (pendingApproval !== null && (id === undefined || id === pendingApproval.id)) {
+      pendingApproval = null
+      renderApproval()
+    }
     return false
   }
   if (message?.type !== 'dsh-selection-changed') return false
