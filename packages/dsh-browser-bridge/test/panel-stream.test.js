@@ -54,6 +54,8 @@ const host = {
   approvals: [],
   /** The answer `approval` gets, mutated per test. */
   approval: { status: 200, payload: { answered: true } },
+  /** Extra fields for the health body; `approvalPending` is set per test. */
+  health: {},
 }
 
 const groupsPayload = () => ({
@@ -74,6 +76,22 @@ const { document, registry } = makeDocument()
 const inbox = []
 
 globalThis.document = document
+// `start` registers a focus listener, so a panel run without `window` throws
+// partway through and never arms a single interval. Omitting it did not make
+// these tests stricter — it silently truncated the thing under test.
+//
+// Aliasing `globalThis` is not enough: Node's global has no `addEventListener`.
+// The panel touches exactly three members, so the stub is those three, and the
+// focus listeners are recorded rather than dropped so a test can fire one.
+/** @type {(() => unknown)[]} */
+const focusListeners = []
+globalThis.window = {
+  addEventListener: (type, listener) => {
+    if (type === 'focus') focusListeners.push(listener)
+  },
+  innerWidth: 400,
+  innerHeight: 800,
+}
 globalThis.chrome = {
   i18n: { getUILanguage: () => 'zh-CN' },
   runtime: {
@@ -120,15 +138,36 @@ globalThis.fetch = async (url, options = {}) => {
     }
     return respond({ accepted: true })
   }
-  if (address.includes('/browser-bridge/health')) return respond({ connected: true })
+  if (address.includes('/browser-bridge/health')) return respond({ connected: true, ...host.health })
   return realFetch === undefined ? respond({}) : realFetch(url, options)
 }
 
-// Intervals are not stubbed out of caution: the panel arms four of them in
-// `start`, and a five-second poll firing mid-test would rewrite the transcript
-// under an assertion. Nothing else in this run uses them.
+// Intervals are captured but never run: the panel arms four of them in `start`,
+// and a five-second poll firing mid-test would rewrite the transcript under an
+// assertion. Recording the callbacks is what lets a test drive one on purpose —
+// the health poll is the only way a panel that was not listening when a
+// question was asked can still learn about it.
 const realSetInterval = globalThis.setInterval
-globalThis.setInterval = () => 0
+/** @type {(() => unknown)[]} */
+const clocks = []
+globalThis.setInterval = (body) => {
+  clocks.push(body)
+  return clocks.length
+}
+
+/**
+ * Run the panel's health poll once, the way the interval would.
+ *
+ * @returns {Promise<void>} Resolves once the refresh has settled.
+ */
+async function pollHealth() {
+  if (typeof clocks[1] !== 'function') {
+    throw new Error(`health clock missing: captured ${startupClocks}; start said "${startupToast}"`)
+  }
+  // `start` arms them in order: groups, health, tabs, transcript.
+  await clocks[1]()
+  await settle()
+}
 
 /** Let the panel's promise chains run to a standstill. */
 async function settle(turns = 40) {
@@ -182,8 +221,16 @@ async function idle() {
 }
 
 await import(pathToFileURL(join(extensionDir, 'sidepanel.js')).href)
-await settle()
+// `start` arms its intervals only after its opening round of fetches resolves,
+// which takes macrotask turns, not just microtask ones. Waiting for the count
+// rather than for a duration keeps the stub in place exactly as long as needed.
+for (let attempt = 0; attempt < 60 && clocks.length < 4; attempt += 1) {
+  await new Promise((resolve) => setImmediate(resolve))
+}
 globalThis.setInterval = realSetInterval
+/** Whatever `start` reported on its way up, captured before tests overwrite it. */
+const startupToast = registry.get('toast')?.textContent ?? ''
+const startupClocks = clocks.length
 transcript = registry.get('transcript')
 sendButton = registry.get('send')
 input = registry.get('input')
@@ -402,6 +449,20 @@ async function settleToIdle() {
   host.running = false
   host.cancel = { status: 200, payload: { cancelled: true } }
   await press()
+}
+
+/**
+ * Take down whatever question is on screen, and forget it on the host too.
+ *
+ * A card left over from an earlier test would be mistaken for one this test
+ * adopted, and the health poll would then be judging the wrong question.
+ *
+ * @returns {Promise<void>} Resolves once the card is gone.
+ */
+async function clearApproval() {
+  host.health = { approvalPending: [] }
+  await pollHealth()
+  host.health = {}
 }
 
 /** Get the panel into the state a running turn leaves it in. */
@@ -776,5 +837,104 @@ test('the buttons go inert while an answer is in flight, so one click is one ans
     stillReject.emit('click')
     await settle()
     assert.equal(host.approvals.length, 1, 'a second press answered twice')
+  })
+})
+
+test('a panel opened after the question learns about it from health', async () => {
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    assert.equal(approvalCard(), null, 'the card was on screen before the question existed')
+
+    // `approval/asked` is a notification: delivered to whoever is connected at
+    // that instant, never replayed. A panel that opened, reloaded, or was closed
+    // while it went out would otherwise show a spinning turn with no way to
+    // answer — the same stuck turn, reached by a different route.
+    await clearApproval()
+    host.health = {
+      approvalPending: [{ id: 'panel-20', sessionId: SESSION, toolName: 'browser_click' }],
+    }
+    await pollHealth()
+
+    const card = approvalCard()
+    assert.ok(card, 'a question open on the host was invisible to a freshly opened panel')
+    assert.equal(card.dataset.approvalId, 'panel-20')
+    assert.deepEqual(
+      approvalButtons().map((button) => button.textContent),
+      ['允许一次', '拒绝'],
+    )
+    host.health = {}
+  })
+})
+
+test('a card is taken away when the host says the question closed', async () => {
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    await clearApproval()
+    host.health = { approvalPending: [{ id: 'panel-21', sessionId: SESSION, toolName: 'browser_click' }] }
+    await pollHealth()
+    assert.ok(approvalCard(), 'the question was never adopted')
+
+    // Answered in the graphical client, and the settled notification was missed
+    // because the panel was not the one listening. Health is the recovery path.
+    host.health = { approvalPending: [] }
+    await pollHealth()
+    assert.equal(approvalCard(), null, 'a settled question was left on screen')
+    host.health = {}
+  })
+})
+
+test('a host too old to report open questions does not have its card taken away', async () => {
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    await askApproval({ id: 'panel-22' })
+    assert.ok(approvalCard(), 'the card was never drawn')
+
+    // No `approvalPending` field at all is "this host cannot say", not "nothing
+    // is open". Reading it as the latter would pull down a card the
+    // notification path had legitimately put up.
+    host.health = {}
+    await pollHealth()
+    assert.ok(approvalCard(), 'an older host silently withdrew a live question')
+
+    post('dsh-approval-settled', { id: 'panel-22' })
+    await settle()
+    assert.equal(approvalCard(), null)
+  })
+})
+
+test('the panel finishes starting up, with every poll armed', async () => {
+  // `start` is a chain of awaits, and a missing global aborts it partway. The
+  // panel still drew a transcript, so every test that only touched the
+  // transcript passed while all four intervals went unarmed and the focus
+  // listener was never registered — the failure was invisible for want of an
+  // assertion that startup reached the end at all.
+  assert.equal(startupToast, '', 'startup reported a failure')
+  assert.equal(startupClocks, 4, `start armed ${startupClocks} poll(s), expected 4`)
+  assert.equal(focusListeners.length, 1, 'the focus listener that refreshes the chip was not registered')
+})
+
+test('an IME candidate committed with Enter does not send the message', async () => {
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    host.sent.length = 0
+    type('逐字节一致')
+
+    // Writing Chinese, Japanese, or Korean means pressing Enter to accept a
+    // candidate. Sending on that keystroke turns every such message into a
+    // half-finished line, so this is not an edge case for those users.
+    input.emit('keydown', { key: 'Enter', isComposing: true, preventDefault() {} })
+    await settle()
+    assert.equal(host.sent.length, 0, 'an IME Enter sent the message')
+
+    // The legacy signal for the same thing, for IMEs that do not set the flag.
+    input.emit('keydown', { key: 'Enter', keyCode: 229, preventDefault() {} })
+    await settle()
+    assert.equal(host.sent.length, 0, 'keyCode 229 was treated as a send')
+
+    // A real Enter still sends, so the guard is not simply eating the key.
+    input.emit('keydown', { key: 'Enter', preventDefault() {} })
+    await settle()
+    assert.equal(host.sent.length, 1, 'a plain Enter no longer sends')
+    assert.equal(host.sent[0].text, '逐字节一致')
   })
 })

@@ -1,15 +1,46 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v13 已交付。** 下一节就是最新的一轮改动；下面标 v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v13 那一段为止即可。
+> **当前状态：v14 已交付。** 下一节就是最新的一轮改动；下面标 v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v14 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（315 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（320 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 >
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
 
+> ### v14：输入法 Enter、后开面板、以及测试一直在跑半启动的面板（扩展侧，本次修复）
+>
+> 三处，前两处是产品缺陷，第三处是**测试自身的盲区**。
+>
+> 1. **中文输入法按 Enter 会发送消息**（`extension/sidepanel.js` 的 `input` keydown）。
+>    写中文时按 Enter 选候选词是每一步的常规动作，所以这不是边界情况，**是每一条消息**。
+>    修法：`if (event.isComposing === true || event.keyCode === 229) return`。真 Enter 仍发送
+>    （有用例专门断言，免得守卫变成吃掉键）。
+> 2. **问题发出之后才打开的面板永远学不到它**。`approval/asked` 是通知，不重放；面板没开／
+>    在重载／在别的窗口 → 转圈的回合 + 没有按钮 = v13 要消灭的卡死换条路进来。
+>    v13 已在 health 里加了 `approvalPending`，**但面板从来没读它**（加好却没人用的字段与
+>    「本来就没有问题」形状相同）。现在 `refreshHealth()` → `adoptOpenApproval(payload)`：
+>    认领仍开着的问题；问题已不在列表里就撤卡。
+>    **必须保留的守卫**：老宿主没有 `approvalPending` 字段 ⇒ `Array.isArray` 为假是「说不了」，
+>    不是「没有未决问题」；当成后者会无故撤掉通知通道刚挂上的卡片。
+> 3. **`globalThis.window` 从来没在测试桩里定义**，而 `start()` 有
+>    `window.addEventListener('focus', …)` ⇒ `start()` 在**挂载四个 setInterval 之前**就抛，
+>    被 `start().catch(…)` 写成 toast，而**所有只碰消息区的用例照样全绿**：四个轮询从未挂上、
+>    focus 监听器从未注册，320 条里没有一条发现。修法：补 `window` 桩（面板只用
+>    `addEventListener`/`innerWidth`/`innerHeight` 三个成员；focus 监听器改为**记录**），
+>    `setInterval` 也改为**记录回调**（否则测试无法主动触发 health 轮询，后开面板的恢复路径
+>    就只能靠轮询到达）；并新增断言 `startupToast === ''`、`startupClocks === 4`、
+>    focus 监听器恰好 1 个。**判据：新增功能若只能靠轮询到达，测试就必须能驱动那个轮询。**
+>
+> **证伪三次**（每次先 `node --check`）：去掉 IME 守卫 → 1 红；删掉 `adoptOpenApproval` 调用 →
+> 2 红；删掉 `window` 桩 → **4 红**（含新启动断言，证明确实绑住了缺陷）。第一次用正则拼补丁拼出
+> 语法错误（exit 1），**那一轮不算证伪**，重做才有效。
+>
+> **测试 315 → 320**；`npm run check:extension` exit 0。
+> **交付：只改 `extension/` → 重载 Chrome 扩展即可，不需要重启 `dsh web`。**
+>
 > ### v13：在侧边栏里就能回答审批（宿主 + 扩展，本次修复）
 >
 > **用户症状（逐字）**：「dsh在等待审批，用户在浏览器插件中，不切回来看永远也不知道，然后就卡住了」——

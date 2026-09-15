@@ -249,7 +249,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 315 条
+npm test                          # 全部 320 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -275,7 +275,7 @@ npm run check:extension           # 扩展脚本语法检查（Chrome 加载前�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 315 条
+npm test                 # 320 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -288,7 +288,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 不会把 `@deepseek-ai/*` 拉下来。宿主库由 `lib/deps.js` 在运行时从
 `$DSH_HOME/profiles/node_modules` 解析。
 
-**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **315 passing, 0 failing, 0 skipped**，
+**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **320 passing, 0 failing, 0 skipped**，
 `npm run check:extension` exit 0。前提是这台机器上装过 DSH（宿主库要能解析到）。
 
 **验证环境**：Node **v24.15.0**。两个 `package.json` 里的 `engines.node: ">=20"` 是**保守下限**，
@@ -306,7 +306,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面四层测试，315 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
+**已自动化验证**：上面四层测试，320 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
 
 侧边栏那部分还有一组**静态**检查，防止语言和版式漂回去：两个字典的键必须完全一致、面板里每个
 `t('…')` 的键都必须存在、HTML 里不允许残留裸文案、旧版文案一个都不许出现、**字典里不允许出现整句
@@ -364,6 +364,67 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 「宿主聚合 → 走 `notify` → service worker 转给面板 → 面板逐字画出来」这一段由
 `test/stream.test.js`（真 socket 上的帧形状）+ `test/panel-stream.test.js`（真跑面板模块）分段覆盖，
 **中间那一跳（Chrome 的 `chrome.runtime.sendMessage`）只做了结构断言，没有在真 Chrome 里点过**。
+
+#### v14：两个「输入法」与「后开面板」缺陷，外加测试一直在跑半启动的面板（本次修复）
+
+这一轮从「还有什么会让商业产品显得不专业」出发，找到三处：前两处是产品缺陷，第三处是
+**我的测试自己骗了自己**。
+
+**缺陷 1：中文输入法按 Enter 会被当成「发送」**
+
+`extension/sidepanel.js` 的 Enter 处理只有 `event.key !== 'Enter' || event.shiftKey` 两个条件。
+而写中文／日文／韩文时，**按 Enter 选中候选词**是每一步都要做的动作——于是「打一句话再确认候选」
+会变成「把半句话发出去」。对中文用户这不是边界情况，**是每一条消息**。
+
+修法是补上 IME 的两个信号：`event.isComposing === true`（现代浏览器）与
+`event.keyCode === 229`（老式输入法的等价信号）。真正的 Enter 仍然发送——测试里专门断言了
+这一点，免得守卫变成「把键吃掉」。
+
+**缺陷 2：问题问出去之后才打开的面板，永远不知道有这回事**
+
+`approval/asked` 是**通知**：只投给那一刻连着的那一个面板，不会重放。于是「问题发出时面板没开／
+正在重载／在另一个窗口」→ 面板显示一个转圈的回合，**没有任何按钮**，而这恰好就是 v13 要消灭的
+那个卡死，只是换了条路进来。
+
+v13 我已经在 health 里放了 `approvalPending`，**但面板从来没读它**——一个加好了却没人用的字段，
+形状和「本来就没有问题」一模一样。现在 `refreshHealth()` 会调 `adoptOpenApproval(payload)`：
+认领仍开着的问题，并在问题已经不在列表里时把卡片撤掉（答案是别人给的，`settled` 没收到）。
+
+**一个不能省的判断**：老版本宿主**根本没有 `approvalPending` 字段**。`Array.isArray` 为假时是
+「这个宿主说不了」，不是「没有未决问题」；当成后者会把通知通道刚刚合法挂上的卡片无故撤掉。
+同一个坑 v13 已经踩过一次（`surfaceRules` 的三态），所以这次直接写成守卫。
+
+**缺陷 3（最重要）：测试一直在测一个半启动的面板**
+
+`globalThis.window` **从来没在测试桩里定义过**，而 `start()` 里有一句
+`window.addEventListener('focus', …)`。于是 `start()` 在**挂载四个轮询之前**就抛异常、被
+`start().catch(…)` 吃掉，写入一条 toast——**而所有只碰消息区的用例照样全绿**。
+
+也就是说：四个 setInterval 从未被挂上，focus 监听器从未注册，而 300 多条测试没有一条发现。
+这正是「死掉的 accessor 和空结果形状相同」的又一例：面板**看起来在工作**（消息区正常），
+所以没人问它还少做了什么。
+
+修法不只是补桩，而是**把桩补全并加一条断言**：`window` 只被用到三个成员
+（`addEventListener`/`innerWidth`/`innerHeight`），focus 监听器改成被**记录**而不是丢弃；
+新增用例断言 `startupToast === ''`、`startupClocks === 4`、focus 监听器恰好 1 个。
+`setInterval` 也改成**记录**回调而不再丢弃，这才让测试能主动触发一次 health 轮询
+（后开面板的恢复路径只能靠轮询到达）。
+
+**证伪（三次，全部先过 `node --check`）**
+
+| 把什么改坏 | 结果 |
+|---|---|
+| 去掉 IME 守卫（`if (false) return`） | **1 条红**（IME 用例） |
+| 删掉 `adoptOpenApproval(payload)` 调用 | **2 条红**（认领 + 撤卡） |
+| 删掉 `window` 桩（回到修复前） | **4 条红**，含新的启动断言 |
+
+第三次格外重要：它证明**新加的启动断言确实绑住了那个隐蔽缺陷**。第一次尝试我用正则拼补丁，
+拼出了语法错误（`node --check` exit 1）——那轮结果**不算证伪**，重做后才有效。
+
+**测试**：315 → **320**（`npm test` 320 passed / 0 failed / 0 skipped）；`npm run check:extension` exit 0。
+新增 5 条：启动完整性、IME 候选不发送、后开面板认领、已被别人答掉则撤卡、老宿主不误撤卡。
+
+**交付**：只改 `extension/` → **重载 Chrome 扩展**即可，不需要重启 `dsh web`。
 
 #### v13：在侧边栏里就能回答审批，回合不再无声卡死（本次修复）
 
@@ -494,7 +555,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 | 项 | 结果 |
 |---|---|
-| `npm test` | **315 passing, 0 failing, 0 skipped** |
+| `npm test` | **320 passing, 0 failing, 0 skipped** |
 | `npm run check:extension` | exit 0 |
 | **把 `content-selection.js` 换回 `git show HEAD:` 的那一版，再跑新测试** | **3 条变红**（接管、死副本被替换、失败后重试），换回新版全绿 → 测试确实能抓住这两个缺陷 |
 | 旧版跑「死副本被替换」用例 | 直接把进程打崩：`Error: Extension context invalidated.` —— 无人接管的 rejection，正是线上那个缺陷的真身 |
@@ -802,7 +863,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 315 条，含真实 Chrome 端到端
+└─ test/                  # 320 条，含真实 Chrome 端到端
 
 extension/
 ├─ manifest.json

@@ -1105,8 +1105,53 @@ async function refreshHealth() {
   const { payload, status } = await bridge('/browser-bridge/health')
   setHostReachable(status !== 0)
   bridgeConnected = hostReachable && payload?.connected === true
+  adoptOpenApproval(payload)
   renderContexts()
   drawSend()
+}
+
+/**
+ * Pick up a question that was asked before this panel was listening.
+ *
+ * `approval/asked` is a notification: it is delivered to whatever is connected
+ * at that instant and never replayed. So a panel that opens, reloads, or was
+ * closed while the question went out would show a spinning turn with no way to
+ * answer it — the exact stuck turn the relay exists to remove, just reached by
+ * a different route. The health route carries the open questions, which is what
+ * makes the panel's view of them recoverable rather than dependent on having
+ * been present at the right moment.
+ *
+ * A question already on screen is left alone: re-adopting it would rebuild the
+ * card under the pointer every 5 seconds.
+ *
+ * @param {any} payload - The health body.
+ * @returns {void}
+ */
+function adoptOpenApproval(payload) {
+  if (view !== 'chat') return
+  // A host from before this feature sends no `approvalPending` at all. That is
+  // "cannot say", not "nothing is open", and treating it as the latter would
+  // take away a card the notification path had legitimately put up.
+  if (!Array.isArray(payload?.approvalPending)) return
+  const open = payload.approvalPending
+  if (pendingApproval !== null) {
+    // Already showing one. If it is no longer open, the answer landed
+    // somewhere else and the settled notification was missed.
+    if (!open.some((entry) => entry?.id === pendingApproval.id)) {
+      pendingApproval = null
+      renderApproval()
+    }
+    return
+  }
+  const next = open.find((entry) => typeof entry?.id === 'string' && typeof entry?.sessionId === 'string')
+  if (next === undefined) return
+  pendingApproval = {
+    id: next.id,
+    sessionId: next.sessionId,
+    toolName: typeof next.toolName === 'string' ? next.toolName : t('approval.aTool'),
+    ...(typeof next.reason === 'string' ? { reason: next.reason } : {}),
+  }
+  renderApproval()
 }
 
 /**
@@ -1411,6 +1456,12 @@ sendButton.addEventListener('click', () => {
 
 input.addEventListener('keydown', (event) => {
   if (event.key !== 'Enter' || event.shiftKey) return
+  // An IME commits its candidate with Enter. Sending on that keystroke would
+  // turn "type 你好 and accept it" into "type 你好 and send a half-finished
+  // line", which is the normal way to write Chinese, Japanese, or Korean — so
+  // the guard is not an edge case for those users, it is every message.
+  // `keyCode === 229` is the older signal for the same thing.
+  if (event.isComposing === true || event.keyCode === 229) return
   event.preventDefault()
   sendMessage().catch((error) => say(t('error.generic', { reason: error.message })))
 })
