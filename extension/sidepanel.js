@@ -75,8 +75,8 @@ const modelMenu = document.getElementById('model-menu')
 
 /** @type {{ text: string, url: string, title: string }} */
 let currentSelection = { text: '', url: '', title: '' }
-/** @type {{ id?: number, url: string, title: string }} */
-let currentTab = { url: '', title: '' }
+/** @type {{ id?: number, url: string, title: string, icon: string }} */
+let currentTab = { url: '', title: '', icon: '' }
 /** Tabs the bridge has grouped, listed in the history view. */
 let controlledTabs = []
 /** Whether the harness answered at all, and whether the extension is attached to it. */
@@ -526,6 +526,27 @@ async function chooseModel(patch) {
 }
 
 /**
+ * The tab's icon, when it is one the panel can actually load.
+ *
+ * `favIconUrl` is absent for a page that never declared one, and Chrome reports
+ * an internal `chrome://` or `chrome-extension://` URL on its own pages — which
+ * a side panel cannot fetch, and which would render as a broken-image box. Both
+ * cases degrade to no icon, and the chip then shows the title alone.
+ *
+ * `data:` is allowed because a page may declare an inline icon, and refusing it
+ * would be refusing a perfectly loadable image. The list is an allow-list rather
+ * than a deny-list of `chrome:` so a scheme nobody thought of degrades to "no
+ * icon" instead of to a broken image.
+ *
+ * @param {{ favIconUrl?: string }} tab - A tab from `chrome.tabs.query`.
+ * @returns {string} A loadable icon URL, or an empty string.
+ */
+function faviconOf(tab) {
+  const url = typeof tab?.favIconUrl === 'string' ? tab.favIconUrl : ''
+  return /^(https?|data):/.test(url) ? url : ''
+}
+
+/**
  * Repaint the chips that say what will travel with the next send.
  *
  * The tab's identity is a standing fact while the panel is open, so it is shown
@@ -544,13 +565,31 @@ function renderContexts() {
     const chip = document.createElement('span')
     chip.className = 'chip'
     if (!bridgeConnected) chip.dataset.warn = 'true'
+    const title = currentTab.title || currentTab.url
+    // The icon carries "this is the current tab", which is what the words
+    // 「当前标签页 · 」 used to say. Measured at 392px: the label gets 360px and
+    // this title wants 400px, so the prefix was costing exactly the width the
+    // title needed — the chip rendered `当前标签页 · Network Edge Inference for
+    // Large Language Mo…`, spending its space on a label and then truncating the
+    // thing the reader came for. The official panel does the same: its compact
+    // source renders an icon and hides the words.
+    if (bridgeConnected && currentTab.icon.length > 0) {
+      const icon = document.createElement('img')
+      icon.className = 'site'
+      icon.src = currentTab.icon
+      icon.alt = ''
+      // A favicon that 404s must not leave a broken-image box in the row.
+      icon.addEventListener('error', () => icon.remove())
+      chip.append(icon)
+    }
     const label = document.createElement('span')
     label.className = 'label'
-    const title = currentTab.title || currentTab.url
-    label.textContent = bridgeConnected
-      ? `${t('context.tab')} · ${title}`
-      : t('context.offline')
-    chip.title = bridgeConnected ? title : t('context.offline')
+    label.textContent = bridgeConnected ? title : t('context.offline')
+    // The chip is a fact, not a control, so its full name is carried here rather
+    // than spelled out on screen. It matters most in the offline case, where the
+    // icon is gone and 「未连接」 alone would not say what is offline.
+    chip.title = bridgeConnected ? `${t('context.tab')} · ${title}` : t('context.offline')
+    chip.setAttribute('aria-label', chip.title)
     chip.append(label)
     chips.push(chip)
   }
@@ -1539,7 +1578,7 @@ async function refreshTabs() {
     tabs = await chrome.tabs.query({})
     const [active] = await chrome.tabs.query({ active: true, currentWindow: true })
     if (active !== undefined) {
-      currentTab = { id: active.id, url: active.url ?? '', title: active.title ?? '' }
+      currentTab = { id: active.id, url: active.url ?? '', title: active.title ?? '', icon: faviconOf(active) }
     }
   } catch {
     tabs = []

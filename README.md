@@ -249,7 +249,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 352 条
+npm test                          # 全部 355 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -275,7 +275,7 @@ npm run check:extension           # 扩展脚本语法检查（Chrome 加载前�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 352 条
+npm test                 # 355 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -288,7 +288,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 不会把 `@deepseek-ai/*` 拉下来。宿主库由 `lib/deps.js` 在运行时从
 `$DSH_HOME/profiles/node_modules` 解析。
 
-**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **352 passing, 0 failing, 0 skipped**，
+**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **355 passing, 0 failing, 0 skipped**，
 `npm run check:extension` exit 0。前提是这台机器上装过 DSH（宿主库要能解析到）。
 
 **验证环境**：Node **v24.15.0**。两个 `package.json` 里的 `engines.node: ">=20"` 是**保守下限**，
@@ -306,7 +306,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面四层测试，352 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
+**已自动化验证**：上面四层测试，355 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
 
 侧边栏那部分还有一组**静态**检查，防止语言和版式漂回去：两个字典的键必须完全一致、面板里每个
 `t('…')` 的键都必须存在、HTML 里不允许残留裸文案、旧版文案一个都不许出现、**字典里不允许出现整句
@@ -364,6 +364,71 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 「宿主聚合 → 走 `notify` → service worker 转给面板 → 面板逐字画出来」这一段由
 `test/stream.test.js`（真 socket 上的帧形状）+ `test/panel-stream.test.js`（真跑面板模块）分段覆盖，
 **中间那一跳（Chrome 的 `chrome.runtime.sendMessage`）只做了结构断言，没有在真 Chrome 里点过**。
+
+#### v19：那个 chip 把宽度花在标签上，然后截断标题（本次修复）
+
+**症状**：底部那行 chip 在每个截图里都写着
+
+```
+当前标签页 · Network Edge Inference for Large Language Mo…
+```
+
+**它把宽度花在「当前标签页 · 」上，然后截断读者真正要看的标题。**
+
+**量化（无头 Chrome 的 `--dump-dom` + 探针量，不是目测）**：在 392px 面板宽度下，
+chip 的 label 拿到 **360px**，而这个标题需要 **400px**——前缀正好吃掉缺的那 40px。
+前置的「当前标签页 · 」自己就要 40–50px。
+
+**一手依据（官方面板怎么做）**：`at-mention-list-D3gGVteY.css` 全文只有 154 字节：
+
+```css
+._CompactSource_3pdaq_2 { display: var(--display-icon-compact, contents) }
+._LeadingSource_3pdaq_6 { display: var(--display-icon-leading, none) }
+```
+
+两个 CSS 变量控制「紧凑图标」与「前置文字」的显隐，而 `--icon-leading-size` 是
+`16px`（`--icon-leading-size: calc(var(--spacing) * 5)`）。**它用图标代替文字。**
+
+**修法**
+
+1. `currentTab` 增加 `icon` 字段，`refreshTabs` 从 `active.favIconUrl` 取。
+2. 新增 `faviconOf(tab)`，**按协议白名单**（`^(https?|data):`）而不是黑名单 `chrome:`：
+   想不到的协议降级成「没有图标」，而不是降级成一个破图。
+3. chip 里在有图标时先放 `<img class="site">`，label 只放标题。**完整名字没有丢**——
+   它移到 `title` 与 `aria-label` 上（`${t('context.tab')} · ${title}`），
+   悬停和读屏仍然完整。
+4. favicon 用 `error` 回调自我移除：404 的图标不能留下一个破图方框。
+5. CSS `.chip .site { width: 14px; height: 14px }` —— **14px 而不是官方的 16px**：
+   chip 的文字是 12px，16px 的图标比行高更高，胶囊会鼓一个包。
+
+**实测（无头 Chrome 截图 + `--dump-dom` 量宽）**
+
+| 判据 | 修复前 | 修复后 |
+|---|---|---|
+| label 的文本 | `当前标签页 · Network Edge Inference for Large Language Models` | `Network Edge Inference for Large Language Models` |
+| label 可用 / 需要 | 360 / 400 px | 300 / 325 px |
+| 实际渲染 | `…Large Language Mo…` | `…Large Language Models`（**完整**） |
+| 320px 窄面板 | — | 图标 + 标题（省略号截断），chip 共 300px |
+
+**一个被自己的守卫挡住的真 bug**：`faviconOf` 第一版只认 `http(s)`，
+于是**预览里那张 `data:` 图标被丢掉**——`<img>` 一个都没渲染出来。
+真实 Chrome 里 `favIconUrl` 也确实可能是 `data:`（页面自己声明内联图标），
+所以这是**真的过窄**，不是预览的人造问题。放宽成按协议白名单后修复。
+
+**证伪**（先 `node --check`，改完确认确实改到了）
+
+| 改坏什么 | 结果 |
+|---|---|
+| 图标分支短路 | 2 红（353/2） |
+| 白名单收窄回只认 `http(s)` | 1 红（354/1）——正是 `data:` 那条 |
+
+**测试**：352 → **355 passed / 0 failed / 0 skipped**。新增 3 条。
+顺带发现测试桩的一个不真实处：它让 `chrome.tabs.query` 返回空数组，
+所以 chip 从来没有被测过；一旦给上 tab，`start()` 就会去问页面要选区，
+而桩的 `sendMessage` 返回 `{}` ⇒ 面板正确判定「上报脚本失联」并提示刷新。
+**行为是对的，桩是错的**——改成返回 `{ text: '', url, title }`。
+
+**交付**：只改 `extension/` ⇒ **重载 Chrome 扩展**即可。
 
 #### v18：连点两次「＋」会建出两个会话，其中一个变成孤儿（本次修复）
 
@@ -843,7 +908,7 @@ v13 我已经在 health 里放了 `approvalPending`，**但面板从来没读它
 
 | 项 | 结果 |
 |---|---|
-| `npm test` | **352 passing, 0 failing, 0 skipped** |
+| `npm test` | **355 passing, 0 failing, 0 skipped** |
 | `npm run check:extension` | exit 0 |
 | **把 `content-selection.js` 换回 `git show HEAD:` 的那一版，再跑新测试** | **3 条变红**（接管、死副本被替换、失败后重试），换回新版全绿 → 测试确实能抓住这两个缺陷 |
 | 旧版跑「死副本被替换」用例 | 直接把进程打崩：`Error: Extension context invalidated.` —— 无人接管的 rejection，正是线上那个缺陷的真身 |
@@ -1151,7 +1216,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 352 条，含真实 Chrome 端到端
+└─ test/                  # 355 条，含真实 Chrome 端到端
 
 extension/
 ├─ manifest.json

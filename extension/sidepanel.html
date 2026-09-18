@@ -542,6 +542,16 @@
         color: var(--muted);
       }
       .chip .label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      /* The site's own icon, in place of the words 「当前标签页 ·」. 14px because
+         the chip's text is 12px: at 16px (the official panel's icon slot) the
+         mark is taller than the line it sits on and the pill grows a bump. */
+      .chip .site {
+        flex: none;
+        width: 14px;
+        height: 14px;
+        border-radius: 3px;
+        object-fit: contain;
+      }
       .chip button { padding: 0 5px; color: var(--faint); border-radius: 999px; }
       .chip button:hover { color: CanvasText; }
       /* The selection chip is the one line in the panel that answers "will my

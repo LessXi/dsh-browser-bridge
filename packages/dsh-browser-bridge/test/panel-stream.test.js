@@ -64,6 +64,15 @@ const host = {
   holdCreate: null,
   /** Set while a held `create` is waiting; calling it answers. */
   releaseCreate: null,
+  /** The active tab the panel sees. `icon` is swapped per test. */
+  tab: {
+    id: 7,
+    url: 'https://dl.acm.org/doi/10.1145/3809166',
+    title: 'Network Edge Inference for Large Language Models',
+    active: true,
+    groupId: 3,
+    favIconUrl: 'https://dl.acm.org/favicon.ico',
+  },
   /** Extra fields for the health body; `approvalPending` is set per test. */
   health: {},
 }
@@ -112,8 +121,15 @@ globalThis.chrome = {
     lastError: undefined,
   },
   tabs: {
-    query: async () => [],
-    sendMessage: async () => ({}),
+    // A tab with an icon, so the context chip has something to draw. The panel
+    // reads the active tab from the second `query` call, so the same fixture
+    // answers both.
+    query: async (filter) => (filter?.active === true ? [host.tab] : [host.tab]),
+    // The reply a live content script sends. Returning `{}` here instead was
+    // caught by the startup assertion: the panel reads a reply without a string
+    // `text` as a dead reporter and tells the user to reload the page, which is
+    // the right behaviour and the wrong fixture.
+    sendMessage: async () => ({ text: '', url: host.tab.url, title: host.tab.title }),
     onActivated: { addListener: () => {} },
     onUpdated: { addListener: () => {} },
   },
@@ -209,8 +225,57 @@ function post(type, payload) {
 /** The approval card currently on screen, if any. */
 const approvalCard = () => transcript.querySelector('.approval')
 
+/**
+ * Re-read the tab list, which is what repaints the context chips.
+ *
+ * The chips are drawn from `chrome.tabs.query`, so a test that swaps
+ * `host.tab.favIconUrl` has to make the panel look again. `start` arms this as
+ * one of its four polls; driving the captured callback is the same call the
+ * interval would make.
+ *
+ * @returns {Promise<void>} Resolves once the chips have been repainted.
+ */
+async function refreshChips() {
+  await pollHealth()
+  // `refreshTabs` is not one of the four captured clocks, so the status-button
+  // refresh is driven directly through the same path the panel uses.
+  await clockOf('tabs')
+}
+
+/**
+ * Run one captured poll by position.
+ *
+ * `start` arms them in order: groups, health, tabs, transcript.
+ *
+ * @param {'groups'|'health'|'tabs'|'transcript'} name - Which poll.
+ * @returns {Promise<void>} Resolves once that poll has settled.
+ */
+async function clockOf(name) {
+  const at = { groups: 0, health: 1, tabs: 2, transcript: 3 }[name]
+  const body = clocks[at]
+  if (typeof body !== 'function') throw new Error(`${name} poll was never armed`)
+  await body()
+  await settle()
+}
+
 const liveNode = () => transcript.querySelector('.live')
 const liveBody = () => transcript.querySelector('.live-body')
+
+/**
+ * The chip describing the current tab.
+ *
+ * Told apart from the selection chip by its content: the selection chip is the
+ * one with a drop button. `querySelectorAll` is used rather than the shorthand
+ * `contexts.querySelector('.chip')` because the shim's matcher reads a compound
+ * selector as one node's own classes, so a descendant selector like
+ * `.chip .label` never matches anything.
+ *
+ * @returns {object|null} The chip, or null when there is none.
+ */
+function tabChip() {
+  const chips = contexts.querySelectorAll('span')
+  return chips.find((chip) => chip.className.includes('chip') && chip.querySelector('button') === null) ?? null
+}
 
 /** Start a fresh attempt and return nothing; the assertions read the DOM. */
 function startAttempt(sessionId = SESSION) {
@@ -223,6 +288,7 @@ let sendButton
 let input
 let toast
 let newButton
+let contexts
 let turn = 0
 
 /**
@@ -259,6 +325,7 @@ sendButton = registry.get('send')
 input = registry.get('input')
 toast = registry.get('toast')
 newButton = registry.get('new')
+contexts = registry.get('contexts')
 
 // The import must have reached the host: if it did not, every assertion below
 // would be testing a panel that never selected a session and would pass
@@ -1236,4 +1303,59 @@ test('a stale host says so instead of a bare failure', async () => {
 
   assert.equal(newButton.disabled, false, 'the button was left inert after a stale-host refusal')
   assert.notEqual(toast.textContent, '', 'a refused create said nothing')
+})
+
+test('the current-tab chip leads with the site icon instead of a label', async () => {
+  // Measured at 392px with the reported title: the label got 360px and the
+  // title wanted 400px, so 「当前标签页 · 」 cost exactly the width the title
+  // needed and the chip read `…Large Language Mo…`. The icon says the same
+  // thing in 14px.
+  await settleToIdle()
+  await refreshChips()
+
+  const chip = tabChip()
+  assert.notEqual(chip, null, 'the tab chip is gone')
+
+  const label = chip.querySelector('.label')
+  assert.notEqual(label, null, 'the tab chip lost its label')
+  assert.equal(label.textContent, host.tab.title, 'the chip is still spending its width on a text prefix')
+  assert.equal(label.textContent.includes('当前标签页'), false, 'the words came back')
+
+  const icon = chip.querySelector('img')
+  assert.notEqual(icon, null, 'the chip draws no site icon')
+  assert.equal(icon.getAttribute('src'), host.tab.favIconUrl)
+  // The whole name survives on the chip even though the words left the screen,
+  // which is what keeps it readable on hover and to a screen reader.
+  assert.equal(chip.getAttribute('title'), `${zh['context.tab']} · ${host.tab.title}`)
+  assert.equal(chip.getAttribute('aria-label'), `${zh['context.tab']} · ${host.tab.title}`)
+})
+
+test('a page with no usable icon still names its tab', async () => {
+  // `favIconUrl` is absent on a page that declares none, and Chrome reports an
+  // internal URL on its own pages. Neither can be drawn, and neither may leave
+  // a broken-image box or an unlabelled chip behind.
+  await settleToIdle()
+  for (const icon of ['', 'chrome://theme/IDR_EXTENSIONS_FAVICON', undefined, 'chrome-extension://abc/icon.png']) {
+    host.tab = { ...host.tab, favIconUrl: icon }
+    await refreshChips()
+    const chip = tabChip()
+    assert.equal(chip.querySelector('img'), null, `an unusable icon was drawn for ${JSON.stringify(icon)}`)
+    assert.equal(chip.querySelector('.label')?.textContent, host.tab.title, 'the title was dropped along with the icon')
+  }
+  host.tab = { ...host.tab, favIconUrl: 'https://dl.acm.org/favicon.ico' }
+})
+
+test('an inline data icon is used, because a page may declare one', async () => {
+  // The allow-list is by scheme: refusing `data:` would refuse a perfectly
+  // loadable image, and this is the case that caught it.
+  await settleToIdle()
+  host.tab = { ...host.tab, favIconUrl: 'data:image/svg+xml,%3Csvg%2F%3E' }
+  await refreshChips()
+  assert.equal(
+    tabChip().querySelector('img')?.getAttribute('src'),
+    'data:image/svg+xml,%3Csvg%2F%3E',
+    'a data-URL icon was refused',
+  )
+  host.tab = { ...host.tab, favIconUrl: 'https://dl.acm.org/favicon.ico' }
+  await refreshChips()
 })

@@ -1,14 +1,52 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v18 已交付。** 下一节就是最新的一轮改动；下面标 v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v18 那一段为止即可。
+> **当前状态：v19 已交付。** 下一节就是最新的一轮改动；下面标 v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v19 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（352 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（355 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 >
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
+
+> ### v19：那个 chip 把宽度花在标签上，然后截断标题（扩展侧，本次修复）
+>
+> **症状**：底部 chip 在每个截图里都是
+> `当前标签页 · Network Edge Inference for Large Language Mo…` ——
+> **宽度花在「当前标签页 · 」上，然后截断读者真正要看的标题。**
+>
+> **量化**（`--dump-dom` + 探针量，不是目测）：392px 面板下 label 拿到 **360px**、
+> 标题需要 **400px**，前缀正好吃掉缺的那 40px。
+>
+> **一手依据**：官方 `at-mention-list-D3gGVteY.css` 全文只有 154 字节：
+> `._CompactSource_3pdaq_2{display:var(--display-icon-compact,contents)}` /
+> `._LeadingSource_3pdaq_6{display:var(--display-icon-leading,none)}`，
+> 而 `--icon-leading-size: calc(var(--spacing) * 5)` = 16px。**它用图标代替文字。**
+>
+> **修法**：`currentTab` 加 `icon`（取 `active.favIconUrl`）；新增 `faviconOf(tab)`
+> **按协议白名单**（`^(https?|data):`）而非黑名单 `chrome:` —— 想不到的协议降级成
+> 「没图标」而不是「破图」；chip 有图标时先放 `<img class="site">`，label 只放标题，
+> **完整名字移到 `title` 与 `aria-label`**；favicon `error` 时自我移除；
+> CSS `.chip .site{width:14px;height:14px}` —— **14 而非官方的 16**：
+> chip 文字 12px，16px 图标比行高更高会让胶囊鼓包。
+>
+> **实测**：label 文本由 `当前标签页 · Network Edge…` 变为 `Network Edge…`；
+> 可用/需要 由 360/400 变为 **300/325**；渲染由 `…Language Mo…` 变为
+> **`…Language Models`（完整）**；320px 窄面板同样正常（chip 共 300px）。
+>
+> **被自己的守卫挡住的真 bug**：`faviconOf` 第一版只认 `http(s)`，于是 `data:` 图标被丢，
+> `<img>` 一个都没渲染。真实 Chrome 里 `favIconUrl` 确实可能是 `data:`（页面声明内联图标），
+> **所以这是真的过窄**，不是预览的人造问题。
+>
+> **证伪**：图标分支短路 → 2 红；白名单收窄回 `http(s)` → 1 红（正是 `data:` 那条）。
+>
+> **测试 352 → 355**。顺带发现桩的不真实处：`chrome.tabs.query` 原本返回空数组，
+> **chip 从来没被测过**；给上 tab 后 `start()` 会去问页面要选区，而桩的 `sendMessage`
+> 返回 `{}` ⇒ 面板正确判定「上报脚本失联」并提示刷新。**行为对、桩错**，
+> 改成返回 `{ text: '', url, title }`。
+>
+> **交付：只改 `extension/` ⇒ 重载 Chrome 扩展即可。**
 
 > ### v18：连点两次「＋」会建出两个会话，其中一个变成孤儿（扩展侧，本次修复）
 >
