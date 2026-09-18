@@ -249,7 +249,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 381 条
+npm test                          # 全部 383 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -275,7 +275,7 @@ npm run check:extension           # 扩展脚本语法检查（Chrome 加载前�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 381 条
+npm test                 # 383 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -288,7 +288,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 不会把 `@deepseek-ai/*` 拉下来。宿主库由 `lib/deps.js` 在运行时从
 `$DSH_HOME/profiles/node_modules` 解析。
 
-**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **381 passing, 0 failing, 0 skipped**，
+**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **383 passing, 0 failing, 0 skipped**，
 `npm run check:extension` exit 0。前提是这台机器上装过 DSH（宿主库要能解析到）。
 
 **验证环境**：Node **v24.15.0**。两个 `package.json` 里的 `engines.node: ">=20"` 是**保守下限**，
@@ -306,7 +306,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面四层测试，381 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
+**已自动化验证**：上面四层测试，383 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
 
 侧边栏那部分还有一组**静态**检查，防止语言和版式漂回去：两个字典的键必须完全一致、面板里每个
 `t('…')` 的键都必须存在、HTML 里不允许残留裸文案、旧版文案一个都不许出现、**字典里不允许出现整句
@@ -364,6 +364,56 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 「宿主聚合 → 走 `notify` → service worker 转给面板 → 面板逐字画出来」这一段由
 `test/stream.test.js`（真 socket 上的帧形状）+ `test/panel-stream.test.js`（真跑面板模块）分段覆盖，
 **中间那一跳（Chrome 的 `chrome.runtime.sendMessage`）只做了结构断言，没有在真 Chrome 里点过**。
+
+#### v26：看着「历史」视图时，正在流式输出的回答被丢掉（本次修复）
+
+**v25 只修了一半。** 上一轮我修的是「历史视图下被问到审批」这一条，但同样的形状在面板里
+**一共四处**——凡是 `view === 'chat'` 才画的东西，在历史视图下都不画，而 `showView()` 不重绘。
+
+这一轮把四处全查了：
+
+| 渲染器 | 历史视图下的行为 | 后果 |
+|---|---|---|
+| `renderWorking`（等待行） | `existing?.remove()` | 切回来「思考中…」不见了 |
+| `renderLive`（流式块） | **`existing?.remove()`** | **正在流式输出的回答被丢掉** |
+| `renderApproval`（审批卡） | `existing?.remove()` | v25 已修 |
+| `updateToBottom`（回到底部键） | `hidden = true` | 切回来可能不显示（见下） |
+
+**最严重的是 `renderLive`**：它不只是**不画**，而是**把已经在屏幕上的节点删掉**。
+所以历史视图打开期间，模型流进来的每个字都被**丢弃**，切回来时：
+
+- 如果回合还在跑 —— 要等下一个 token 才重新出现；
+- 如果回合已经结束 —— **`refreshTranscript` 之前什么都看不到**。
+
+**修法**：`showView()` 在**两个方向**都重绘这三个渲染器。
+
+**为什么两个方向都要**：进入历史时若不重绘，等待行与流式块会**留在 DOM 里**
+（`transcript.hidden = true` 只是隐藏，不删除），切回来时它们和新画的重复。
+这一点是**证伪抓到的**——我第一版只修了「返回」方向，`noLeave` 那次证伪红了 2 条。
+
+**顺带量掉一个我担心的东西（结论：不用改）**：`updateToBottom` 读 `transcript.scrollHeight`
+与 `clientHeight`，而历史视图下它们是 0。我担心切回对话时布局还没算好、导致「回到底部」键
+错误地不显示。**用真实浏览器量了**：
+
+```
+un-hide 后同一 tick: 599x529    强制回流后: 599x529
+```
+
+同一 tick 里布局就是可用的，所以这个担心不成立，**没有为它做任何改动**。
+
+**证伪**（先 `node --check`，改完确认确实改到了）
+
+| 改坏什么 | 结果 |
+|---|---|
+| 完全不重绘 | 3 红（三个测试都红） |
+| 不重绘等待行 | 2 红（等待行 + 审批） |
+| 只重绘「返回」方向 | 2 红（流式 + 等待行） |
+
+**三个测试各红各的**，说明它们钉的是不同的东西。
+
+**测试**：381 → **383 passed / 0 failed / 0 skipped**（新增 2 条：流式不丢、等待行回来）。
+
+**交付**：只改 `extension/` ⇒ **重载 Chrome 扩展**即可。
 
 #### v25：看着「历史」视图时被问到审批，回合永远卡住（本次修复）
 
@@ -1189,7 +1239,7 @@ v13 我已经在 health 里放了 `approvalPending`，**但面板从来没读它
 
 | 项 | 结果 |
 |---|---|
-| `npm test` | **381 passing, 0 failing, 0 skipped** |
+| `npm test` | **383 passing, 0 failing, 0 skipped** |
 | `npm run check:extension` | exit 0 |
 | **把 `content-selection.js` 换回 `git show HEAD:` 的那一版，再跑新测试** | **3 条变红**（接管、死副本被替换、失败后重试），换回新版全绿 → 测试确实能抓住这两个缺陷 |
 | 旧版跑「死副本被替换」用例 | 直接把进程打崩：`Error: Extension context invalidated.` —— 无人接管的 rejection，正是线上那个缺陷的真身 |
@@ -1528,7 +1578,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 381 条，含真实 Chrome 端到端
+└─ test/                  # 383 条，含真实 Chrome 端到端
 
 extension/
 ├─ manifest.json

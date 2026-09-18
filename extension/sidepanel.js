@@ -1473,8 +1473,20 @@ function showView(next) {
   history.hidden = next !== 'history'
   renderTitle()
   titleButton.setAttribute('aria-expanded', String(next === 'history'))
-  if (next === 'history') drawHistory()
-  else adoptFromLastHealth()
+  if (next === 'history') {
+    drawHistory()
+  } else {
+    adoptFromLastHealth()
+  }
+  // Three renderers skip drawing unless the conversation is the visible view,
+  // and the live block removes what is already on screen rather than leaving it
+  // hidden. So a switch in either direction has to repaint all three: leaving
+  // without this leaves the waiting row and the live block sitting on a hidden
+  // transcript, and coming back without it drops the nodes a reply streamed into
+  // while the history was open.
+  renderLive()
+  renderWorking()
+  renderApproval()
   updateToBottom()
 }
 

@@ -1208,6 +1208,82 @@ test('a host too old to report open questions does not have its card taken away'
   })
 })
 
+test('a reply that arrives while the history is open is not thrown away', async () => {
+  // Three renderers skip drawing unless the conversation is the visible view —
+  // a working row, a live block, and the card — because each of them belongs to
+  // a transcript nobody is looking at while the history is up. The live block
+  // does not merely skip the draw, it *removes* what is there. So a reply
+  // streaming in during a look at the history is destroyed as it arrives, and
+  // coming back shows nothing until the next token — or, if the turn finished
+  // while the history was open, nothing at all until the next re-read.
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    await clearApproval()
+
+    // A turn is running with text already streamed into it.
+    await startTurn()
+    deliver({ sessionId: SESSION, kind: 'start' })
+    await settle()
+    deliver({ sessionId: SESSION, kind: 'text', text: '正在写的回答' })
+    await settle()
+    assert.notEqual(liveNode(), null, 'the live block was never drawn, so this test cannot prove anything')
+
+    // The history is opened mid-turn, and the model keeps writing.
+    registry.get('title').click()
+    await settle()
+    assert.equal(liveNode(), null, 'the live block was drawn over the history')
+
+    deliver({ sessionId: SESSION, kind: 'text', text: '，还有后半段' })
+    await settle()
+    deliver({ sessionId: SESSION, kind: 'text', text: '。' })
+    await settle()
+
+    // Back to the conversation: the text that arrived meanwhile has to be there.
+    registry.get('title').click()
+    await settle()
+    const live = liveNode()
+    assert.notEqual(live, null, 'the reply that streamed in during the history was thrown away')
+    assert.equal(
+      liveBody().textContent,
+      '正在写的回答，还有后半段。',
+      'the live block lost the text that arrived while the history was open',
+    )
+
+    // Settle the attempt and hand the suite back an idle panel: the tests share
+    // one instance, and a live block left behind would be adopted by whichever
+    // test runs next.
+    host.messages = [{ kind: 'assistant', text: 'settled' }]
+    deliver({ sessionId: SESSION, kind: 'end' })
+    await settle()
+    host.running = false
+    await settleToIdle()
+    assert.equal(liveNode(), null, 'the suite was handed back a live block')
+  })
+})
+
+test('the working row comes back with the conversation', async () => {
+  // The same shape as the live block, one step earlier in a turn: before the
+  // first token the waiting row is the only thing saying the turn is running.
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    await clearApproval()
+    await startTurn()
+
+    registry.get('title').click()
+    await settle()
+    assert.equal(transcript.querySelector('.working'), null, 'the waiting row was drawn over the history')
+
+    registry.get('title').click()
+    await settle()
+    assert.notEqual(
+      transcript.querySelector('.working'),
+      null,
+      'the turn was running and the waiting row never came back',
+    )
+    await settleToIdle()
+  })
+})
+
 test('a question asked while the history is open is there on the way back', async () => {
   // The card is adopted from the health poll, and that poll skips the adoption
   // unless the conversation is the visible view — a card drawn over the history
