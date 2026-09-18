@@ -1506,6 +1506,16 @@ async function sendMessage() {
     currentSessionRunning = true
     renderLive()
     renderWorking()
+    // Put the message on screen now. Until this, the panel emptied the composer
+    // and showed 「思考中…」 while the sent line existed nowhere: the transcript
+    // is only re-read after 800ms, and a turn that dies before then left the
+    // message looking as though it had never been typed.
+    //
+    // It is an echo, not a record. `rows` still holds what the host last sent,
+    // so the next `refreshTranscript` replaces the whole list and the echo goes
+    // with it — which is why it cannot drift, and why a send the host quietly
+    // drops does not leave a message on screen that was never delivered.
+    drawTranscript([...rows, { kind: 'user', text }])
     for (const delay of [800, 2000, 4000, 8000, 15000]) {
       setTimeout(() => {
         refreshTranscript().catch(() => {})

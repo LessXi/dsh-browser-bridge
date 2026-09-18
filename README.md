@@ -249,7 +249,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 358 条
+npm test                          # 全部 360 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -275,7 +275,7 @@ npm run check:extension           # 扩展脚本语法检查（Chrome 加载前�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 358 条
+npm test                 # 360 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -288,7 +288,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 不会把 `@deepseek-ai/*` 拉下来。宿主库由 `lib/deps.js` 在运行时从
 `$DSH_HOME/profiles/node_modules` 解析。
 
-**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **358 passing, 0 failing, 0 skipped**，
+**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **360 passing, 0 failing, 0 skipped**，
 `npm run check:extension` exit 0。前提是这台机器上装过 DSH（宿主库要能解析到）。
 
 **验证环境**：Node **v24.15.0**。两个 `package.json` 里的 `engines.node: ">=20"` 是**保守下限**，
@@ -306,7 +306,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面四层测试，358 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
+**已自动化验证**：上面四层测试，360 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
 
 侧边栏那部分还有一组**静态**检查，防止语言和版式漂回去：两个字典的键必须完全一致、面板里每个
 `t('…')` 的键都必须存在、HTML 里不允许残留裸文案、旧版文案一个都不许出现、**字典里不允许出现整句
@@ -364,6 +364,50 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 「宿主聚合 → 走 `notify` → service worker 转给面板 → 面板逐字画出来」这一段由
 `test/stream.test.js`（真 socket 上的帧形状）+ `test/panel-stream.test.js`（真跑面板模块）分段覆盖，
 **中间那一跳（Chrome 的 `chrome.runtime.sendMessage`）只做了结构断言，没有在真 Chrome 里点过**。
+
+#### v21：按下发送后，自己那句话消失了（本次修复）
+
+**症状**：按下发送，输入框清空、按钮变成停止、屏幕显示「思考中…」——
+**而刚打的那句话在屏幕上不存在**。
+
+**怎么发现的**：这一轮我本来想量端到端延迟，追发送路径时读到这段：
+
+```js
+input.value = ''                                    // 输入框立刻清空
+...
+for (const delay of [800, 2000, 4000, 8000, 15000]) // 到 800ms 才第一次重读
+```
+
+**中间那 800ms 没有任何东西把用户的消息画到屏幕上。** 而且不只是延迟：
+如果宿主在这 800ms 内没答上（回合失败、宿主重启），**那句话就再也不出现了**。
+
+**实测（预览宿主新增 `?s=gapsend` 场景）**：让宿主接受发送但**不让 transcript 变化**，
+这就精确复现了那个窗口。1200ms 时刻的真实渲染：
+
+| 时刻 | 修复前 | 修复后 |
+|---|---|---|
+| 1200ms | 输入框空、按钮=停止、「思考中…」，**消息不存在** | 消息气泡 + 「思考中…」 |
+
+**修法：乐观回显。** 发送被接受后立刻 `drawTranscript([...rows, { kind: 'user', text }])`。
+
+**为什么这不是「说谎」**——这一层的设计是承重的：
+
+- `rows` 仍然只保存**宿主上次给的行**，回显只进这一帧的绘制，不进 `rows`。
+- 下一次 `refreshTranscript` 会用宿主的列表**整体替换**，回显随之消失。
+- 所以「宿主其实没收下这条消息」的情况下，回显活不过一次重读——**它不可能变成一条假的记录**。
+- 有测试钉住这条：写入回显 → 让宿主的列表不含它 → 触发一次重读 → 断言它已消失。
+
+**证伪**
+
+| 改坏什么 | 结果 |
+|---|---|
+| 去掉 `drawTranscript([...rows, ...])` | 2 红 |
+
+**测试**：358 → **360 passed / 0 failed / 0 skipped**。
+既有的 `sending swaps the same slot to stop` 断言了输入框清空、按钮变停止、
+消息到达宿主——**唯独没有断言消息出现在屏幕上**，这就是缺陷活到现在的原因。
+
+**交付**：只改 `extension/` ⇒ **重载 Chrome 扩展**即可。
 
 #### v20：选区的完整文本在面板里根本读不到（本次修复）
 
@@ -956,7 +1000,7 @@ v13 我已经在 health 里放了 `approvalPending`，**但面板从来没读它
 
 | 项 | 结果 |
 |---|---|
-| `npm test` | **358 passing, 0 failing, 0 skipped** |
+| `npm test` | **360 passing, 0 failing, 0 skipped** |
 | `npm run check:extension` | exit 0 |
 | **把 `content-selection.js` 换回 `git show HEAD:` 的那一版，再跑新测试** | **3 条变红**（接管、死副本被替换、失败后重试），换回新版全绿 → 测试确实能抓住这两个缺陷 |
 | 旧版跑「死副本被替换」用例 | 直接把进程打崩：`Error: Extension context invalidated.` —— 无人接管的 rejection，正是线上那个缺陷的真身 |
@@ -1264,7 +1308,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 358 条，含真实 Chrome 端到端
+└─ test/                  # 360 条，含真实 Chrome 端到端
 
 extension/
 ├─ manifest.json

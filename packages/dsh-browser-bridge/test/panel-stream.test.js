@@ -621,6 +621,57 @@ test('sending swaps the same slot to stop, and the send reached the host', async
   })
 })
 
+test('the message is on screen the moment it is sent, not 800ms later', async () => {
+  // The panel emptied the composer and showed the waiting row while the sent
+  // line existed nowhere. The transcript is re-read on a [800, 2000, 4000,
+  // 8000, 15000] ladder, so for the first 800ms — and forever, if the turn died
+  // before the first read — the person's own message was simply gone.
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    type('那再帮我列一下常见的坑')
+    await press()
+
+    const bubbles = transcript.querySelectorAll('.bubble')
+    const shown = bubbles.map((node) => node.textContent)
+    assert.ok(
+      shown.includes('那再帮我列一下常见的坑'),
+      `the sent message is not on screen yet: ${JSON.stringify(shown)}`,
+    )
+    // And the row it was appended to is a normal user row, so it looks like the
+    // record it is standing in for rather than like a special case.
+    const row = transcript.querySelectorAll('.row').find((node) => node.dataset.kind === 'user')
+    assert.notEqual(row, undefined, 'the echo was drawn outside a user row')
+  })
+})
+
+test('the echo is replaced by the host\'s own rows, so it cannot become a lie', async () => {
+  // The echo is a stand-in. `rows` still holds what the host last sent, so the
+  // next read replaces the whole list — which is what keeps a message the host
+  // never accepted from lingering on screen as though it had been.
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    type('这一句不会出现在宿主的记录里')
+    await press()
+
+    assert.equal(
+      transcript.querySelectorAll('.bubble').map((node) => node.textContent).includes('这一句不会出现在宿主的记录里'),
+      true,
+      'the echo was never drawn, so this test cannot prove anything',
+    )
+
+    // The host's transcript does not contain it, and the next read says so.
+    host.messages = [{ kind: 'assistant', text: '宿主记得的是别的' }]
+    await clockOf('transcript')
+
+    const shown = transcript.querySelectorAll('.bubble').map((node) => node.textContent)
+    assert.equal(
+      shown.includes('这一句不会出现在宿主的记录里'),
+      false,
+      'the echo outlived the read that should have replaced it',
+    )
+  })
+})
+
 test('pressing stop cancels that session, and cancels rather than sends', async () => {
   await onStoppedClock(async () => {
     host.cancel = { status: 200, payload: { cancelled: true } }
