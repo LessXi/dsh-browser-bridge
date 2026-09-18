@@ -73,6 +73,33 @@ const host = {
     groupId: 3,
     favIconUrl: 'https://dl.acm.org/favicon.ico',
   },
+  /**
+   * Every tab the panel can see, which is what the `@` picker offers.
+   *
+   * `lastAccessed` decides the order, so the second one is deliberately more
+   * recent than the first: a test that mentions "the other tab" must be taking
+   * a row it did not get by luck.
+   */
+  tabs: [
+    {
+      id: 7,
+      url: 'https://dl.acm.org/doi/10.1145/3809166',
+      title: 'Network Edge Inference for Large Language Models',
+      active: true,
+      groupId: 3,
+      lastAccessed: 100,
+      favIconUrl: 'https://dl.acm.org/favicon.ico',
+    },
+    {
+      id: 11,
+      url: 'https://github.com/LessXi/dsh-browser-bridge',
+      title: 'DSH Browser Bridge',
+      active: false,
+      groupId: 3,
+      lastAccessed: 900,
+      favIconUrl: '',
+    },
+  ],
   /** Extra fields for the health body; `approvalPending` is set per test. */
   health: {},
 }
@@ -124,7 +151,7 @@ globalThis.chrome = {
     // A tab with an icon, so the context chip has something to draw. The panel
     // reads the active tab from the second `query` call, so the same fixture
     // answers both.
-    query: async (filter) => (filter?.active === true ? [host.tab] : [host.tab]),
+    query: async (filter) => (filter?.active === true ? [host.tab] : host.tabs),
     // The reply a live content script sends. Returning `{}` here instead was
     // caught by the startup assertion: the panel reads a reply without a string
     // `text` as a dead reporter and tells the user to reload the page, which is
@@ -288,6 +315,65 @@ function tabChip() {
 function selectionChip() {
   const chips = contexts.querySelectorAll('span')
   return chips.find((chip) => chip.className.includes('chip') && chip.querySelector('button') !== null) ?? null
+}
+
+/**
+ * How many chips are on the context row.
+ *
+ * Counted rather than compared against a constant: the suite shares one panel
+ * instance, and an earlier test leaves a selection attached, so the absolute
+ * number depends on what ran before. What matters in each test below is the
+ * change the mention makes.
+ *
+ * @returns {number} The chip count.
+ */
+function chipCount() {
+  return contexts.querySelectorAll('span').filter((node) => node.className.includes('chip')).length
+}
+
+/**
+ * Take the mentioned tab off the row, if there is one.
+ *
+ * The mentioned chip and the selection chip both carry a dismiss button, so
+ * "click the button" is not specific enough. The mentioned one is told apart by
+ * its title, which names a tab rather than a passage.
+ *
+ * @returns {void}
+ */
+function dropMentioned() {
+  const chips = contexts.querySelectorAll('span').filter((node) => node.className.includes('chip'))
+  const chip = chips.find((each) => each.getAttribute('title')?.startsWith(`${zh['at.list']} · `) === true)
+  if (chip === undefined) return
+  chip.querySelector('button').click()
+}
+
+/**
+ * Type `@`, narrow to one tab, and take it.
+ *
+ * The mention path runs through the composer because that is the only way in —
+ * there is no message the worker sends to open it, and driving it through the
+ * keyboard is what makes these tests cover the key handling too.
+ *
+ * @param {string} title - The tab's title, which is what the query matches.
+ * @returns {Promise<void>} Resolves once the mention is installed.
+ */
+async function mentionTab(title) {
+  // A distinctive word from the title, so the query narrows to one row.
+  const word = title.split(/\s+/)[0]
+  input.value = `@${word}`
+  input.setSelectionRange(input.value.length, input.value.length)
+  input.emit('input')
+  await settle()
+
+  const menu = registry.get('at-menu')
+  const options = menu?.querySelectorAll('button') ?? []
+  assert.ok(options.length > 0, `the picker offered nothing for @${word}`)
+  // The menu is rebuilt on every keystroke, so what it holds now is what the
+  // query matches. Taking a row by title rather than by position keeps this
+  // honest when the ranking puts another tab first.
+  const wanted = options.find((row) => row.textContent.includes(title.split(/\s+/).slice(0, 2).join(' '))) ?? options[0]
+  wanted.emit('mousedown', { preventDefault() {} })
+  await settle()
 }
 
 /** Start a fresh attempt and return nothing; the assertions read the DOM. */
@@ -1482,5 +1568,84 @@ test('the whole selection survives on the chip, so nothing is sent unseen', asyn
     selectionChip().querySelector('.label').textContent,
     long,
     'the chip is clamping the text in JS instead of letting the width decide',
+  )
+})
+
+test('mentioning the tab already in front does not promise a second one', async () => {
+  // `@` lists the current tab first, because it is the most recently used, so
+  // picking it is the easy mistake to make. The host dedupes on the URL — one
+  // attachment reaches the model — and drawing two chips would be the panel
+  // promising something it does not deliver.
+  await settleToIdle()
+  const before = chipCount()
+  await mentionTab('Network')
+
+  assert.equal(chipCount(), before, 'the same page was promised twice')
+
+  // If the panel has lost track of the current tab, the guard in
+  // `pendingAttachments` cannot fire and the tab travels twice. That is a
+  // different defect from the one this test is named for, so it is checked
+  // separately rather than showing up as a confusing "travelled twice".
+  const titles = contexts
+    .querySelectorAll('span')
+    .filter((node) => node.className.includes('chip'))
+    .map((chip) => chip.getAttribute('title'))
+  assert.ok(
+    titles.some((title) => title?.startsWith(`${zh['context.tab']} · `) === true),
+    `the panel lost the current tab, so nothing could be deduped: ${JSON.stringify(titles)}`,
+  )
+
+  host.sent.length = 0
+  type('对比一下')
+  await press()
+  // Only the tab attachments: an earlier test leaves a selection attached, and
+  // a selection carries the URL of the page it came from, so counting URLs
+  // alone would report a duplicate that is really a second, different kind of
+  // context travelling on purpose.
+  const tabs = host.sent[0].attachments.filter((each) => each.kind === 'tab').map((each) => each.url)
+  assert.deepEqual(tabs, [host.tab.url], 'the same tab travelled twice')
+})
+
+test('mentioning a different tab adds one chip and sends both', async () => {
+  // The case `@` exists for: the message is about a page other than the one in
+  // front, so both travel. The suite shares one panel, so the mention from an
+  // earlier test is taken off first — otherwise this measures the previous
+  // test's leftovers.
+  await settleToIdle()
+  dropMentioned()
+  const before = chipCount()
+  const other = host.tabs.find((each) => each.id === 11)
+  assert.notEqual(other, undefined, 'the fixture lost the second tab')
+  await mentionTab('DSH')
+
+  assert.equal(chipCount(), before + 1, 'the mentioned tab did not get a chip of its own')
+
+  host.sent.length = 0
+  type('对比这两个页面')
+  await press()
+  const urls = host.sent[0].attachments.filter((each) => each.kind === 'tab').map((each) => each.url)
+  assert.deepEqual(urls, [other.url, host.tab.url], 'the mention did not travel, or travelled in the wrong order')
+})
+
+test('dismissing a mentioned tab takes its chip away and stops it travelling', async () => {
+  // The mention is a decision that has to be reversible, the same way the
+  // selection chip is: a page attached by accident must be removable without
+  // starting the message over.
+  await settleToIdle()
+  dropMentioned()
+  const before = chipCount()
+  await mentionTab('DSH')
+  assert.equal(chipCount(), before + 1, 'the mention never got a chip, so this test cannot prove anything')
+
+  dropMentioned()
+  assert.equal(chipCount(), before, 'the dismissed mention left its chip behind')
+
+  host.sent.length = 0
+  type('只对比当前这个')
+  await press()
+  assert.equal(
+    host.sent[0].attachments.some((each) => each.url === 'https://github.com/LessXi/dsh-browser-bridge'),
+    false,
+    'the dismissed mention still travelled',
   )
 })

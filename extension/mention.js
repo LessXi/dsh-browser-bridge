@@ -181,7 +181,13 @@ export function mentionRows(tabs) {
   return (Array.isArray(tabs) ? tabs : []).map((tab, at) => ({
     id: tab?.id,
     title: titled[at],
-    url: shortUrl(tab?.url),
+    // The real URL travels; the shortened one is only ever drawn. They are
+    // separate fields because conflating them loses the identity: the panel
+    // compares a chosen tab against the current one by URL to decide whether
+    // mentioning it adds anything, and `dl.acm.org/doi/…` never equals the URL
+    // Chrome reports.
+    url: typeof tab?.url === 'string' ? tab.url : '',
+    where: shortUrl(tab?.url),
     icon: typeof tab?.favIconUrl === 'string' && /^(https?|data):/.test(tab.favIconUrl) ? tab.favIconUrl : '',
     group: 'tabs',
     showUrl: (counts.get(titled[at]) ?? 0) > 1,

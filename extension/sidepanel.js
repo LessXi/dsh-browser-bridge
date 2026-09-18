@@ -599,7 +599,7 @@ function drawMentionRows(options, state) {
     if (option.showUrl) {
       const where = document.createElement('span')
       where.className = 'where'
-      where.textContent = option.url
+      where.textContent = option.where
       text.append(where)
     }
     row.append(text)
@@ -757,7 +757,7 @@ function renderContexts() {
   contexts.replaceChildren()
   const chips = []
 
-  if (mentioned !== null) {
+  if (mentionAddsSomething()) {
     // Styled like a decision, because it is one: this page is attached because
     // someone asked for it, not because it happened to be in front.
     const chip = document.createElement('span')
@@ -1610,7 +1610,7 @@ function restoreDraft() {
  */
 function pendingAttachments() {
   const attachments = []
-  if (mentioned !== null) {
+  if (mentionAddsSomething()) {
     // A mentioned tab travels as its own attachment rather than replacing the
     // current-tab one: the message may well be about a page other than the one
     // in front, which is the whole reason `@` exists.
@@ -1705,6 +1705,26 @@ async function stopTurn() {
   }
   say(t('error.notStopped', { reason: payload.reason ?? `HTTP ${result.status}` }))
   drawSend()
+}
+
+/**
+ * Whether the mention says anything the current tab does not.
+ *
+ * Mentioning the page already in front of you is the easy mistake to make —
+ * `@` lists it first, because it is the most recently used — and the two are
+ * the same attachment. The host dedupes on the URL, so sending both would put
+ * one attachment in the prompt while the chip row showed two, which is the
+ * panel promising something it does not deliver.
+ *
+ * A mention with no URL can never equal the current tab, so it always counts:
+ * an attachment with nothing to identify it is not silently dropped.
+ *
+ * @returns {boolean} True when the mention should be staged on its own.
+ */
+function mentionAddsSomething() {
+  if (mentioned === null) return false
+  if (currentTab.url.length === 0) return true
+  return mentioned.url !== currentTab.url
 }
 
 /**

@@ -122,8 +122,13 @@ test('a URL is only drawn when two candidates would read the same', () => {
     tab({ id: 2, title: 'Pruning', url: 'https://b.example.com/two' }),
   ])
   assert.deepEqual(same.map((row) => row.showUrl), [true, true], 'two rows read the same and nothing told them apart')
-  assert.equal(same[0].url, 'a.example.com/one')
-  assert.equal(same[1].url, 'b.example.com/two')
+  // The drawn URL is shortened; the one that travels is not. Keeping them in
+  // separate fields is what lets the panel compare a chosen tab against the
+  // current one and notice they are the same page.
+  assert.equal(same[0].where, 'a.example.com/one')
+  assert.equal(same[1].where, 'b.example.com/two')
+  assert.equal(same[0].url, 'https://a.example.com/one', 'the row lost the real URL')
+  assert.equal(same[1].url, 'https://b.example.com/two')
 })
 
 test('a candidate carries the icon only when it is one the panel can load', () => {

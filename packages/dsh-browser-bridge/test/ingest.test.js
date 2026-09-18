@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { assert, test } from './harness.js'
-import { ContextAttachments } from '../lib/context.js'
+import { ContextAttachments, renderAttachment } from '../lib/context.js'
 import { EVENTS } from '../lib/protocol.js'
 import { createIngest } from '../lib/ingest.js'
 
@@ -241,4 +241,93 @@ test('listenToExtension subscribes to both events and survives a throwing handle
   await Promise.resolve()
   await Promise.resolve()
   assert.ok(f.notes.some((note) => /hostile payload/.test(note)))
+})
+
+test('a send can carry the tab in front and a mentioned one at once', () => {
+  // What the `@` picker produces: the panel attaches the page in front of you
+  // *and* the page the message is about. They are both `kind: 'tab'`, so the
+  // only thing keeping them apart is the URL — and the store dedupes on
+  // `kind + url + text`, which means two different pages survive and the same
+  // page twice does not.
+  const f = fixture()
+  try {
+    const result = f.ingest.stageRequested([
+      { kind: 'tab', url: 'https://github.com/LessXi/dsh-browser-bridge', title: 'DSH Browser Bridge', tabId: 11 },
+      { kind: 'tab', url: 'https://dl.acm.org/doi/10.1145/3809166', title: 'Network Edge Inference', tabId: 7 },
+    ], 's1')
+
+    assert.deepEqual(result, { staged: 2, refused: [] })
+    const stored = f.attachments.list('s1')
+    assert.equal(stored.length, 2, 'only one of the two tabs was kept')
+    assert.deepEqual(
+      stored.map((each) => each.title),
+      ['DSH Browser Bridge', 'Network Edge Inference'],
+    )
+    // The model needs to tell them apart, and the header alone does not do it:
+    // both render as `tab from <host>`. The Source line is what carries the
+    // identity, so it has to be there for both.
+    const rendered = stored.map((each) => renderAttachment(each)).join('\n')
+    assert.ok(rendered.includes('Source: https://github.com/LessXi/dsh-browser-bridge'), 'the mentioned tab has no source line')
+    assert.ok(rendered.includes('Source: https://dl.acm.org/doi/10.1145/3809166'), 'the current tab has no source line')
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('the same page named twice is one attachment, not two', () => {
+  // Mentioning the tab you are already on must not double it. This is what the
+  // dedupe key is for, and it is the case a user hits by typing `@` and picking
+  // the page already in front of them.
+  const f = fixture()
+  try {
+    const result = f.ingest.stageRequested([
+      { kind: 'tab', url: 'https://example.com/page', title: 'Page', tabId: 7 },
+      { kind: 'tab', url: 'https://example.com/page', title: 'Page', tabId: 7 },
+    ], 's1')
+    assert.equal(result.staged, 1, 'the same page was staged twice')
+    assert.equal(f.attachments.list('s1').length, 1)
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('stageRequested reports what it could not take, and takes the rest', () => {
+  // A refusal has to be visible: an attachment that was promised by a chip and
+  // silently dropped is the failure this reporting exists for.
+  const f = fixture()
+  try {
+    const result = f.ingest.stageRequested([
+      { kind: 'selection', text: '', url: 'https://example.com/page' },
+      { kind: 'tab', url: 'https://example.com/other', title: 'Other' },
+    ], 's1')
+    assert.equal(result.staged, 1, 'the usable attachment was dropped along with the bad one')
+    assert.deepEqual(result.refused, ['a selection attachment with no text'])
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('stageRequested refuses everything when there is no session to attach to', () => {
+  const f = fixture()
+  try {
+    const result = f.ingest.stageRequested([{ kind: 'tab', url: 'https://example.com/page' }], '')
+    assert.deepEqual(result, { staged: 0, refused: ['no session to attach to'] })
+    assert.equal(f.attachments.list('').length, 0)
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('an unknown kind is stored as a tab rather than rejected', () => {
+  // A newer panel may send a kind this host has never heard of. Storing it as
+  // `tab` keeps the attachment reachable; refusing it would lose the context
+  // with nothing said.
+  const f = fixture()
+  try {
+    const result = f.ingest.stageRequested([{ kind: 'screenshot', url: 'https://example.com/page' }], 's1')
+    assert.equal(result.staged, 1)
+    assert.equal(f.attachments.list('s1')[0].kind, 'tab')
+  } finally {
+    f.cleanup()
+  }
 })

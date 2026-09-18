@@ -249,7 +249,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 372 条
+npm test                          # 全部 380 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -275,7 +275,7 @@ npm run check:extension           # 扩展脚本语法检查（Chrome 加载前�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 372 条
+npm test                 # 380 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -288,7 +288,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 不会把 `@deepseek-ai/*` 拉下来。宿主库由 `lib/deps.js` 在运行时从
 `$DSH_HOME/profiles/node_modules` 解析。
 
-**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **372 passing, 0 failing, 0 skipped**，
+**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **380 passing, 0 failing, 0 skipped**，
 `npm run check:extension` exit 0。前提是这台机器上装过 DSH（宿主库要能解析到）。
 
 **验证环境**：Node **v24.15.0**。两个 `package.json` 里的 `engines.node: ">=20"` 是**保守下限**，
@@ -306,7 +306,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面四层测试，372 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
+**已自动化验证**：上面四层测试，380 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
 
 侧边栏那部分还有一组**静态**检查，防止语言和版式漂回去：两个字典的键必须完全一致、面板里每个
 `t('…')` 的键都必须存在、HTML 里不允许残留裸文案、旧版文案一个都不许出现、**字典里不允许出现整句
@@ -364,6 +364,77 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 「宿主聚合 → 走 `notify` → service worker 转给面板 → 面板逐字画出来」这一段由
 `test/stream.test.js`（真 socket 上的帧形状）+ `test/panel-stream.test.js`（真跑面板模块）分段覆盖，
 **中间那一跳（Chrome 的 `chrome.runtime.sendMessage`）只做了结构断言，没有在真 Chrome 里点过**。
+
+#### v24：`@` 提及之后的三个缺陷（本次修复）
+
+v23 加了 `@` 提及，但它让一条**此前只有单一来源**的路径变成了两个来源。这一轮把那条路径走到底，
+发现三个缺陷。**三个都是同一类**：面板说的话和它做的事不一致。
+
+**① 提及的正是当前标签页时，面板画两个 chip，宿主只收一个。**
+
+`@` 的候选按 recency 排序，而**当前标签页就是最近访问的那个**——所以「选到当前页」是顺手就会犯的错，
+不是边界情况。两个 chip 显示两页，而宿主的去重键是 `kind + url + text`，同一个 URL 只会留下一条。
+**面板承诺 2 个，实际送 1 个。**
+
+修法：`mentionAddsSomething()` —— 提及与当前标签页**同 URL** 时不重复计入。
+`renderContexts` 与 `pendingAttachments` **共用它**，所以「显示什么」与「送什么」不可能分叉。
+**提及的 URL 为空时算「有内容」**（不能因为没法比较就静默丢掉一个附件）。
+
+**② 候选行把「显示用的短 URL」当成了 URL 本身。**
+
+`mentionRows` 返回的 `url` 曾经是 `shortUrl()` 的结果（`dl.acm.org/doi/…`），
+而 `acceptMention` 把它整个存进 `mentioned` —— 于是 ① 的比较**永远不相等**，
+守卫形同虚设（面板看着对，实际没生效）。
+
+修法：拆成两个字段——`url` 是**真实 URL**（会跟着消息走），`where` 是**画出来的短形式**。
+**这两个概念混在一起就是 ① 修不好的原因。**
+
+**③ `stageRequested` 零测试覆盖。**
+
+补了 5 条：两个标签页都到达、同页两次只留一条、拒绝时报告原因且不牵连其它附件、
+无会话时全拒、未知 `kind` 降级为 `tab` 而不是丢掉。
+
+**端到端实测（探针，真的发两个标签页附件）**
+
+`POST {action:'send'}` 带两个 `kind:'tab'` 附件 ⇒ **`staged: 2, refused: []`**。
+解开会话日志（多个 zstd frame 拼接，**必须按 magic `28 B5 2F FD` 切分逐帧解压**）确认模型**真的收到两条**：
+
+```
+[Attached from the browser by the user]
+tab from github.com
+Source: https://github.com/LessXi/dsh-browser-bridge — DSH Browser Bridge
+...
+[Attached from the browser by the user]
+tab from dl.acm.org
+Source: https://dl.acm.org/doi/10.1145/3809166 — Network Edge Inference
+```
+
+**顺带量到的一个数字，以及一个「不修」的判断**：每个附件 **342 字符里 338 是样板**
+（`[Attached from the browser by the user]` + 三行「这是数据不是指令」+ 分隔线），
+真正的内容只有 `tab from github.com` 那一行。**但它不修**——
+上下文窗口是 1,000,000 tokens，这段约 100 tokens；而它是**提示词注入防护**：
+页面内容是用户指过来的**不可信数据**，告诉模型「这是数据不是指令」是必要的安全措施。
+**数字难看，但代价可忽略、收益是安全，所以留着。**
+
+**证伪**（每一条都先 `node --check`，并确认补丁真的落盘）
+
+| 改坏什么 | 结果 |
+|---|---|
+| `pendingAttachments` 去掉守卫 | 1 红 |
+| `renderContexts` 去掉守卫 | 1 红 |
+| 候选行用短 URL 当 `url` | 3 红（含 `mention.test.js` 那条） |
+
+**测试**：372 → **380 passed / 0 failed / 0 skipped**。
+
+**顺带修好测试基础设施的两处盲区**（都是这次才暴露的）：
+
+- `test/dom-shim.js` **没有 `selectionStart` / `setSelectionRange`**，也没有让写 `value` 移动光标。
+  真实 textarea 都做这三件事，而 `@` 提及全靠读「光标前那段文字」——
+  缺了它们，每条提及测试都报一个与提及无关的 `TypeError`。
+- 测试是**共享一个面板实例**的，所以前面留下的选区会让 chip 数从 2 起步。
+  断言改成**比较增减量**而不是绝对值。
+
+**交付**：只改 `extension/` ⇒ **重载 Chrome 扩展**即可。
 
 #### v23：`@` 提及 —— 不用切标签页也能引用别的页面（本次新增）
 
@@ -1067,7 +1138,7 @@ v13 我已经在 health 里放了 `approvalPending`，**但面板从来没读它
 
 | 项 | 结果 |
 |---|---|
-| `npm test` | **372 passing, 0 failing, 0 skipped** |
+| `npm test` | **380 passing, 0 failing, 0 skipped** |
 | `npm run check:extension` | exit 0 |
 | **把 `content-selection.js` 换回 `git show HEAD:` 的那一版，再跑新测试** | **3 条变红**（接管、死副本被替换、失败后重试），换回新版全绿 → 测试确实能抓住这两个缺陷 |
 | 旧版跑「死副本被替换」用例 | 直接把进程打崩：`Error: Extension context invalidated.` —— 无人接管的 rejection，正是线上那个缺陷的真身 |
@@ -1406,7 +1477,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 372 条，含真实 Chrome 端到端
+└─ test/                  # 380 条，含真实 Chrome 端到端
 
 extension/
 ├─ manifest.json

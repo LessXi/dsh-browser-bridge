@@ -26,7 +26,9 @@ class Element {
     this.dataset = {}
     this.style = {}
     this.hidden = false
-    this.value = ''
+    this.#value = ''
+    this.selectionStart = 0
+    this.selectionEnd = 0
     this.type = ''
     this.placeholder = ''
     this.title = ''
@@ -44,6 +46,7 @@ class Element {
 
   #text
   #children
+  #value
 
   get children() {
     return this.#children
@@ -179,6 +182,35 @@ class Element {
   /** Fire the listeners registered for `type`. Handlers may read `event`. */
   emit(type, event = {}) {
     for (const listener of [...(this.listeners.get(type) ?? [])]) listener(event)
+  }
+
+  /**
+   * The caret, which is where a real textarea puts it.
+   *
+   * The `@` picker reads `selectionStart` to know which word is being completed
+   * and writes it back after removing that word, so a shim without these makes
+   * every mention test fail with a TypeError that says nothing about the picker.
+   */
+  setSelectionRange(start, end = start) {
+    this.selectionStart = start
+    this.selectionEnd = end
+  }
+
+  /**
+   * Read or write the control's text, moving the caret to the end on a write.
+   *
+   * A real textarea does exactly that, and the `@` picker depends on it: it
+   * reads the text before the caret, so a shim that left the caret where it was
+   * would have the picker complete a word nobody is typing any more.
+   */
+  get value() {
+    return this.#value ?? ''
+  }
+
+  set value(next) {
+    this.#value = String(next ?? '')
+    this.selectionStart = this.#value.length
+    this.selectionEnd = this.#value.length
   }
 
   /** Reset scroll metrics, for tests that drive the follow-the-bottom rule. */
