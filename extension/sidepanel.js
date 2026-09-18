@@ -600,10 +600,26 @@ function renderContexts() {
     // Styled as an active decision rather than another fact: this is the one
     // line in the panel that answers "will my highlight be sent?".
     chip.dataset.attached = 'true'
+    const mark = document.createElement('span')
+    mark.className = 'mark'
+    mark.textContent = '“'
+    mark.setAttribute('aria-hidden', 'true')
     const label = document.createElement('span')
     label.className = 'label'
-    const text = currentSelection.text
-    label.textContent = `${t('context.selection')} · ${text.length > 40 ? `${text.slice(0, 39)}…` : text}`
+    // The text itself is the label. `选中内容 ·` used to lead here, and it cost
+    // the same 60px it cost the tab chip — while the quote mark beside it and
+    // the accent fill already say what this is. Measured on a 56-glyph Chinese
+    // selection, that prefix was a fifth of what the row could show.
+    //
+    // No character-count clamp: the width is what decides, and CSS already does
+    // that with `max-width` plus `text-overflow`. A clamp at 39 characters is
+    // 39 CJK glyphs, roughly twice the width of 39 Latin ones, so it never fit
+    // the chip it was written for and only made the truncation happen twice.
+    label.textContent = currentSelection.text
+    // The whole selection is still reachable: the chip names itself for a
+    // screen reader, and hovering shows the beginning of what will be sent.
+    chip.title = `${t('context.selection')} · ${currentSelection.text}`
+    chip.setAttribute('aria-label', chip.title)
     const drop = document.createElement('button')
     drop.type = 'button'
     drop.textContent = '×'
@@ -613,7 +629,7 @@ function renderContexts() {
       selectionAttached = false
       renderContexts()
     })
-    chip.append(label, drop)
+    chip.append(mark, label, drop)
     chips.push(chip)
   }
 

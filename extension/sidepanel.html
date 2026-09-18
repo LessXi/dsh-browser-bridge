@@ -542,6 +542,10 @@
         color: var(--muted);
       }
       .chip .label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      /* Says "highlighted text" where 「选中内容 ·」 used to, in one glyph. The
+         opening quote is the mark a quotation gets, so it reads as punctuation
+         rather than as a new piece of chrome. */
+      .chip .mark { flex: none; color: var(--tertiary); font-family: Georgia, serif; line-height: 1; }
       /* The site's own icon, in place of the words 「当前标签页 ·」. 14px because
          the chip's text is 12px: at 16px (the official panel's icon slot) the
          mark is taller than the line it sits on and the pill grows a bump. */

@@ -277,6 +277,19 @@ function tabChip() {
   return chips.find((chip) => chip.className.includes('chip') && chip.querySelector('button') === null) ?? null
 }
 
+/**
+ * The chip describing the highlighted text.
+ *
+ * Told apart from the tab chip by its dismiss button, which is the control that
+ * makes "not this time" possible.
+ *
+ * @returns {object|null} The chip, or null when there is none.
+ */
+function selectionChip() {
+  const chips = contexts.querySelectorAll('span')
+  return chips.find((chip) => chip.className.includes('chip') && chip.querySelector('button') !== null) ?? null
+}
+
 /** Start a fresh attempt and return nothing; the assertions read the DOM. */
 function startAttempt(sessionId = SESSION) {
   deliver({ sessionId, kind: 'start' })
@@ -1358,4 +1371,65 @@ test('an inline data icon is used, because a page may declare one', async () => 
   )
   host.tab = { ...host.tab, favIconUrl: 'https://dl.acm.org/favicon.ico' }
   await refreshChips()
+})
+
+test('the selection chip shows the text itself, with the whole of it reachable', async () => {
+  // The panel sends `currentSelection.text` in full. What is on screen is a
+  // truncated view of it, and before this the full text was nowhere at all —
+  // the chip had no `title`, so there was no way to read what was about to be
+  // sent without sending it. Measured on a 56-glyph Chinese selection at 392px:
+  // 27 glyphs visible, and this is what makes the other 29 reachable.
+  await settleToIdle()
+  const long = '这种剪枝方式会移除模型中的整套架构单元，例如多层感知机中的神经元或通道、注意力头，甚至整层，而非仅针对单个权重。'
+  post('dsh-selection-changed', { text: long, url: host.tab.url, title: host.tab.title })
+  await settle()
+
+  const chip = selectionChip()
+  assert.notEqual(chip, null, 'the selection chip was not drawn')
+  const label = chip.querySelector('.label')
+  assert.equal(label.textContent, long, 'the chip is not showing the selection text itself')
+  assert.equal(
+    label.textContent.includes('选中内容'),
+    false,
+    'the prefix is back, and it costs the width the selection needs',
+  )
+  assert.equal(chip.getAttribute('title'), `${zh['context.selection']} · ${long}`)
+  assert.equal(chip.getAttribute('aria-label'), `${zh['context.selection']} · ${long}`)
+  // The mark says what the chip is, so the words do not have to.
+  assert.equal(chip.querySelector('.mark')?.textContent, '“')
+  assert.equal(chip.querySelector('.mark')?.getAttribute('aria-hidden'), 'true')
+
+  // And the drop control is still there, because it is the only way to say
+  // "not this time" short of re-selecting on the page.
+  const drop = chip.querySelector('button')
+  assert.notEqual(drop, null, 'the selection chip lost its dismiss button')
+  assert.equal(drop.getAttribute('aria-label'), zh['action.drop'])
+})
+
+test('dismissing the selection takes the chip away, without touching the tab chip', async () => {
+  await settleToIdle()
+  post('dsh-selection-changed', { text: '结构化剪枝', url: host.tab.url, title: host.tab.title })
+  await settle()
+  assert.notEqual(selectionChip(), null, 'the selection chip was not drawn')
+
+  selectionChip().querySelector('button').click()
+  await settle()
+  assert.equal(selectionChip(), null, 'the dismissed chip came back')
+  assert.notEqual(tabChip(), null, 'dismissing the selection also removed the tab chip')
+})
+
+test('the whole selection survives on the chip, so nothing is sent unseen', async () => {
+  // A character-count clamp lived here and was removed: `slice(0, 39)` is 39 CJK
+  // glyphs, about twice the width of 39 Latin ones, so it never matched the box
+  // it was written for and only made the truncation happen twice — once in JS,
+  // once in CSS. The width decides, and CSS is what knows the width.
+  await settleToIdle()
+  const long = '一二三四五六七八九十'.repeat(12)
+  post('dsh-selection-changed', { text: long, url: host.tab.url, title: host.tab.title })
+  await settle()
+  assert.equal(
+    selectionChip().querySelector('.label').textContent,
+    long,
+    'the chip is clamping the text in JS instead of letting the width decide',
+  )
 })

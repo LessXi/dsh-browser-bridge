@@ -249,7 +249,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 355 条
+npm test                          # 全部 358 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -275,7 +275,7 @@ npm run check:extension           # 扩展脚本语法检查（Chrome 加载前�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 355 条
+npm test                 # 358 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -288,7 +288,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 不会把 `@deepseek-ai/*` 拉下来。宿主库由 `lib/deps.js` 在运行时从
 `$DSH_HOME/profiles/node_modules` 解析。
 
-**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **355 passing, 0 failing, 0 skipped**，
+**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **358 passing, 0 failing, 0 skipped**，
 `npm run check:extension` exit 0。前提是这台机器上装过 DSH（宿主库要能解析到）。
 
 **验证环境**：Node **v24.15.0**。两个 `package.json` 里的 `engines.node: ">=20"` 是**保守下限**，
@@ -306,7 +306,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面四层测试，355 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
+**已自动化验证**：上面四层测试，358 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
 
 侧边栏那部分还有一组**静态**检查，防止语言和版式漂回去：两个字典的键必须完全一致、面板里每个
 `t('…')` 的键都必须存在、HTML 里不允许残留裸文案、旧版文案一个都不许出现、**字典里不允许出现整句
@@ -364,6 +364,54 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 「宿主聚合 → 走 `notify` → service worker 转给面板 → 面板逐字画出来」这一段由
 `test/stream.test.js`（真 socket 上的帧形状）+ `test/panel-stream.test.js`（真跑面板模块）分段覆盖，
 **中间那一跳（Chrome 的 `chrome.runtime.sendMessage`）只做了结构断言，没有在真 Chrome 里点过**。
+
+#### v20：选区的完整文本在面板里根本读不到（本次修复）
+
+**症状**：第二个 chip 写着 `选中内容 · 这种剪枝方式会移除模型中的整套架构单元，例如多层感知…`。
+发送时送的是**全文**，但屏幕上只有一段截断——而且**旧 chip 没有 `title`**，
+所以想知道「到底会送出去什么」，只有发出去这一条路。
+
+**我原本以为的问题，和实测出来的是两回事。** 这一轮值得原样记下来。
+
+我上一轮说「去掉前缀能多显示一截」。量完之后：
+
+| 版本 | label 宽 | 字符数 | **可见** | 其中真实内容 | 悬停看全文 |
+|---|---|---|---|---|---|
+| 改前 | 337px | 47 | **30** | 25 字（5 字是前缀） | **不能**（无 `title`） |
+| 改后 | 328px | 56 | **27** | **26 字** | **能** |
+
+**宽度收益没有兑现，而且可见字符还少了 3 个。** 原因：旧版把文本硬截到 39 字、
+剩下的交给 CSS；新版把全文交给 CSS。前缀省下的 60px，被「多出来的 17 个字」吃光了。
+**净效果是内容多了 1 个字**——不是我承诺的一截。
+
+**所以这轮真正的修复是另一件事**：`title` / `aria-label` 现在带全文，
+悬停就能读到会送出去什么。**那 29 个看不见的字从此可达**，而不是靠更宽的 chip。
+
+**顺带删掉一处双重截断**：旧代码 `text.slice(0, 39)` 是**按字符数**截断，
+而 39 个 CJK 字形的宽度约是 39 个拉丁字形的两倍——这个数字从来没对上它所在的框。
+结果是**先 JS 截一次、再 CSS 截一次**。现在只有 CSS 截，因为只有 CSS 知道宽度。
+
+**改动**
+
+- `extension/sidepanel.js`：选区 chip 的 label 直接放 `currentSelection.text`（去掉前缀、去掉 `slice`）；
+  前缀的意思交给 `<span class="mark">“</span>` 一个字形（`aria-hidden`），
+  chip 本身的含义由旁边的引号与 accent 底色表达。
+- `chip.title` / `chip.setAttribute('aria-label', ...)` = `${t('context.selection')} · ${全文}`。
+- `extension/sidepanel.html`：新增 `.chip .mark { flex: none; color: var(--tertiary); font-family: Georgia, serif; line-height: 1 }`。
+- **`×` 保留**：它是唯一明确的「这次不送选区」途径，去掉它用户只能回页面重新选词。
+
+**证伪**（先确认补丁真的落盘，再 `node --check`）
+
+| 改坏什么 | 结果 |
+|---|---|
+| 把 `选中内容 · ` 前缀加回来 | 3 红（含既有的「不许给可见字段赋字面句子」断言） |
+| 去掉 `chip.title` | 2 红 |
+
+**测试**：355 → **358 passed / 0 failed / 0 skipped**。新增 3 条。
+**选区 chip 在此之前零覆盖**——第一个版本的测试夹具让 `chrome.tabs.query` 返回空数组，
+所以两个 chip 一个都没被测过（v19 修了 tab chip，这轮补上选区 chip）。
+
+**交付**：只改 `extension/` ⇒ **重载 Chrome 扩展**即可。
 
 #### v19：那个 chip 把宽度花在标签上，然后截断标题（本次修复）
 
@@ -908,7 +956,7 @@ v13 我已经在 health 里放了 `approvalPending`，**但面板从来没读它
 
 | 项 | 结果 |
 |---|---|
-| `npm test` | **355 passing, 0 failing, 0 skipped** |
+| `npm test` | **358 passing, 0 failing, 0 skipped** |
 | `npm run check:extension` | exit 0 |
 | **把 `content-selection.js` 换回 `git show HEAD:` 的那一版，再跑新测试** | **3 条变红**（接管、死副本被替换、失败后重试），换回新版全绿 → 测试确实能抓住这两个缺陷 |
 | 旧版跑「死副本被替换」用例 | 直接把进程打崩：`Error: Extension context invalidated.` —— 无人接管的 rejection，正是线上那个缺陷的真身 |
@@ -1216,7 +1264,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 355 条，含真实 Chrome 端到端
+└─ test/                  # 358 条，含真实 Chrome 端到端
 
 extension/
 ├─ manifest.json
