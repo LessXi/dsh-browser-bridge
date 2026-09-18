@@ -249,7 +249,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 336 条
+npm test                          # 全部 347 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -275,7 +275,7 @@ npm run check:extension           # 扩展脚本语法检查（Chrome 加载前�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 336 条
+npm test                 # 347 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -288,7 +288,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 不会把 `@deepseek-ai/*` 拉下来。宿主库由 `lib/deps.js` 在运行时从
 `$DSH_HOME/profiles/node_modules` 解析。
 
-**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **336 passing, 0 failing, 0 skipped**，
+**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **347 passing, 0 failing, 0 skipped**，
 `npm run check:extension` exit 0。前提是这台机器上装过 DSH（宿主库要能解析到）。
 
 **验证环境**：Node **v24.15.0**。两个 `package.json` 里的 `engines.node: ">=20"` 是**保守下限**，
@@ -306,7 +306,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面四层测试，336 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
+**已自动化验证**：上面四层测试，347 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
 
 侧边栏那部分还有一组**静态**检查，防止语言和版式漂回去：两个字典的键必须完全一致、面板里每个
 `t('…')` 的键都必须存在、HTML 里不允许残留裸文案、旧版文案一个都不许出现、**字典里不允许出现整句
@@ -364,6 +364,112 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 「宿主聚合 → 走 `notify` → service worker 转给面板 → 面板逐字画出来」这一段由
 `test/stream.test.js`（真 socket 上的帧形状）+ `test/panel-stream.test.js`（真跑面板模块）分段覆盖，
 **中间那一跳（Chrome 的 `chrome.runtime.sendMessage`）只做了结构断言，没有在真 Chrome 里点过**。
+
+#### v16：失败信息把 provider 的开发者日志原样贴给用户（本次修复）
+
+**症状**：v15 让失败的回合开口说话了，但说的是这一句——
+
+```
+llm-deepseek: no API key for provider route "deepseek-official"; store DEEPSEEK_API_KEY
+through the credentials service (the web Models page writes it), or export DEEPSEEK_API_KEY
+in the launching environment
+```
+
+在 360px 宽的面板里用红字铺满四行：英文、含环境变量名、含「provider route」这种词，
+还教用户去改配置文件。这正是用户抱怨的「为什么有这么多提示性文字」，也是最糟的一种——
+**它不是提示，是日志**。
+
+**怎么看出来的**：本轮第一次把面板真的渲染出来看（无头 Chrome 截图 + `read_image`，
+见下），`failed` 场景一眼就是这个样子。
+
+**根因**：失败信息带着两样东西（`assistant/attempt` 的 `finish` chunk 与 `turn/end` 的
+`reason.error` 都是这个形状）：
+
+```json
+{ "message": "llm-deepseek: no API key …", "code": "MISSING_CREDENTIAL" }
+```
+
+`message` 是写给读日志的人的，`code` 才是机器可判断的。原来的实现**只带了 `message`**，
+`code` 在三个地方被丢掉（`deltaOfFrame`、relay 重建 payload、`describeEvents`），
+面板除了把日志贴出来别无选择。
+
+**修法：code 决定句子，message 降级成细节。**
+
+1. `lib/stream.js` 的 `deltaOfFrame` 把 `code` 一起返回；relay 那一跳
+   （`#send({sessionId, kind:'failed', …})` 是**按 `kind` 重建 payload 的**）也补上，
+   否则派发路径上又丢一次——这一跳最容易漏，因为它不碰 `deltaOfFrame`。
+2. `lib/chat.js` 的 `turn/end` 分支同样带上 `code`，否则**冷重放/重载后**又退回原始日志。
+3. **新增 `extension/failure.js`**（纯函数，可脱离 DOM 测试）：`failureSentence(code, t)`
+   把 12 个宿主错误码映射成一句人话，`failureDetail(text)` 把原始 message 压成一行。
+   放在 `extension/` 而不是 `lib/`，因为面板跑在 `chrome-extension://` 源，
+   **无法 import 扩展目录外的文件**（v7 踩过同一个坑）。
+4. 面板两处都改：实时 toast 用 `failureSentence(payload.code, t)`（toast 几秒就消失、
+   不能选中也不能搜索，是贴日志最糟的位置）；持久行 `.failure` 放句子、
+   `.failure-detail` 放降级后的原话。
+
+**词表**（zh/en 各 8 键，都是可行动的一句话，不是把错误码换个说法）：
+`error.code.credential`「模型还没配置密钥」/ `quota` / `rateLimited` / `tooLong` /
+`noImages` / `reasoning` / `unreachable` / `empty`。**没有命中的码回落到
+`error.turnFailed`「这一轮没能跑起来」**——不是回落到原始 message：通用句子虽然信息更少，
+但它是读者看得懂的语言、而且不会在文件路径中间断掉；原话留在 `.failure-detail` 里，
+真要搜索时还在。**没有 `code` 时连 detail 都不渲染**（截图里第三例验证过）。
+
+**布局坑（截图抓到的，测试抓不到）**：`.row` 是 `display:flex`，所以句子和细节
+变成了**并排两列**，「模型还没配置密钥」被挤成一列一个字竖着排。
+修法是 `.row[data-kind="failed"] { flex-direction: column }`，
+并且为它加了一条回归测试——这种错看代码是看不出来的。
+
+**本轮的方法突破：无头 Chrome 截图**
+
+前三轮一直靠用户截图验证，这一轮找到了自己的眼睛：
+
+```powershell
+& "C:\Program Files\Google\Chrome\Application\chrome.exe" --headless=new --disable-gpu `
+  --user-data-dir="$env:TEMP\panel-preview\chrome-profile" --window-size=392,812 `
+  --virtual-time-budget=8000 --screenshot="out.png" "http://127.0.0.1:3399/?s=failed"
+```
+
+配合 `read_image` 读回 PNG，**像素级缺陷我自己就能看见**。`%TEMP%\panel-preview\preview.mjs`
+把 `extension/` 的五个文件复制出来、注入最小 `chrome.*` 桩与打桩 `fetch`，在 3399 上提供
+8 个场景（`?s=chat|failed|failedBare|empty|working|approval|long|history`）。
+**用户浏览器全程未碰**（用户原话「不要影响到我正在使用浏览器」）。
+
+**预览宿主自身的三个坑**（都是我的桩写错，不是产品缺陷，但会浪费一整轮）：
+
+| 现象 | 真因 |
+|---|---|
+| 每个场景都显示「思考中…」 | `running` 来自**会话列表**（`GROUPS`）而不是 messages 响应，我的桩把它写死成 `true` |
+| 审批卡片完全不出现 | `approvalPending` 的每一项**必须带 `sessionId`**（真实形状见 `lib/approval.js` 的 `pending()`） |
+| 模型选择器显示「模型列表不可用」 | 面板读的是 `payload?.catalog`，我直接返回了目录本身 |
+
+以及一个几何陷阱：**headless Chrome 不遵守 `--window-size` 的布局**（它按 500x717 排版再把
+截图裁成你要的尺寸），于是右侧的相对时间看着像被切掉。预览改成按 `?w=` 固定面板宽度，
+并用 `--dump-dom` 读回 `body.scrollWidth` 来**量**而不是**看**——实测 392 与 320 两个宽度下
+`scrollWidth` 都等于面板宽度，**没有溢出**。顺带确认历史视图在 320px 下也正常：
+分组、相对时间、当前会话高亮、空会话不显示，都成立。
+
+**实测**
+
+| 判据 | 实测 |
+|---|---|
+| 探针发一条必然失败的请求 | health `stream.failed` 由 0 → **1**（`ends:1`，`failed:1`） |
+| 同一会话回读 | 2 行：`kind=user code=(无)` + **`kind=failed code=MISSING_CREDENTIAL`** |
+| 渲染结果 | 红字「模型还没配置密钥」+ 灰色小字原始 message（截图确认） |
+| 无 code 的失败 | 只有「这一轮没能跑起来」，**不贴原话**（截图确认） |
+| 用户线上 3080 | 本轮全程只读；`stream` 出现 `failed` 字段 ⇒ 用户已重启过 `dsh web`，v15 生效且真实失败已被计数 |
+
+**证伪**（先 `node --check`，改完确认确实改到了）
+
+| 改坏什么 | 结果 |
+|---|---|
+| `failure.js` 不映射 `MISSING_CREDENTIAL` | 3 红（344/3） |
+| relay 那一跳不转发 `code` | 3 红（344/3） |
+
+**测试**：325 → **347 passed / 0 failed / 0 skipped**（新增 `test/failure.test.js` 10 条 +
+改写 7 条原本钉住旧行为的断言：它们断言的正是「把日志贴出来」）。
+**7 条变红是对的**——那些期望已经错了，不是测试坏了。
+
+**交付**：`lib/` + `extension/` 都改了 ⇒ 重启 `dsh web` + 重载 Chrome 扩展。
 
 #### v15：回合失败长得像「模型没话说」，因为我第一次找错了信号（本次修复）
 
@@ -630,7 +736,7 @@ v13 我已经在 health 里放了 `approvalPending`，**但面板从来没读它
 
 | 项 | 结果 |
 |---|---|
-| `npm test` | **336 passing, 0 failing, 0 skipped** |
+| `npm test` | **347 passing, 0 failing, 0 skipped** |
 | `npm run check:extension` | exit 0 |
 | **把 `content-selection.js` 换回 `git show HEAD:` 的那一版，再跑新测试** | **3 条变红**（接管、死副本被替换、失败后重试），换回新版全绿 → 测试确实能抓住这两个缺陷 |
 | 旧版跑「死副本被替换」用例 | 直接把进程打崩：`Error: Extension context invalidated.` —— 无人接管的 rejection，正是线上那个缺陷的真身 |
@@ -938,7 +1044,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 336 条，含真实 Chrome 端到端
+└─ test/                  # 347 条，含真实 Chrome 端到端
 
 extension/
 ├─ manifest.json

@@ -1,14 +1,80 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v15 已交付。** 下一节就是最新的一轮改动；下面标 v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v15 那一段为止即可。
+> **当前状态：v16 已交付。** 下一节就是最新的一轮改动；下面标 v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v16 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（336 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（347 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 >
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
+
+> ### v16：失败信息把 provider 的开发者日志原样贴给用户（宿主 + 扩展，本次修复）
+>
+> **症状**：v15 让失败回合开口了，但说的是 `llm-deepseek: no API key for provider route
+> "deepseek-official"; store DEEPSEEK_API_KEY through the credentials service, or export
+> DEEPSEEK_API_KEY in the launching environment` —— 在 360px 面板里红字铺满四行，
+> 英文、含环境变量名、教用户改配置文件。**这不是提示，是日志**，正是用户抱怨的
+> 「为什么有这么多提示性文字」的最糟形态。
+>
+> **怎么发现的**：本轮第一次把面板真的渲染出来看（无头 Chrome 截图 + `read_image`），
+> `failed` 场景一眼就是那样。**此前的轮次只靠用户截图，看不见自己造的东西。**
+>
+> **根因**：失败信息带两样东西 —— `message`（写给读日志的人）与 `code`（机器可判断）。
+> 原实现**只带 `message`**，`code` 在**三个地方各丢一次**：
+> `deltaOfFrame` 只取 `reason.failure?.message`；relay 的 `#send({sessionId, kind:'failed'})`
+> **按 `kind` 重建 payload**（最容易漏，因为它不碰 `deltaOfFrame`）；`describeEvents` 的
+> `turn/end` 分支同理。面板因此除了贴日志别无选择。
+>
+> **修法：`code` 决定句子，`message` 降级成细节。**
+> 1. `lib/stream.js` 的 `deltaOfFrame` 返回 `{kind:'failed', text, code}`；relay 那一跳补
+>    `...(delta.code === undefined ? {} : { code: delta.code })`。
+> 2. `lib/chat.js` 的 `turn/end` 分支同样带 `code`，否则**冷重放/重载后又退回原始日志**。
+> 3. **新增 `extension/failure.js`**（纯函数，可脱离 DOM 测）：`failureSentence(code, t)`
+>    映射 12 个宿主错误码，`failureDetail(text)` 把原话压成一行。
+>    **必须放 `extension/` 而不是 `lib/`**：面板跑在 `chrome-extension://` 源，
+>    **无法 import 扩展目录外的文件**（v7 踩过同一个坑）。
+> 4. 面板两处都用句子：实时 toast 用 `failureSentence(payload.code, t)`
+>    （**toast 是贴日志最糟的位置**：几秒消失、不能选中、不能搜索）；
+>    持久行 `.failure` 放句子、`.failure-detail` 放降级原话。
+>
+> **没有命中的码回落到 `error.turnFailed`，不是回落到 message**：通用句子信息更少，
+> 但是读者看得懂的语言、且不会在文件路径中间断掉；原话留在 `.failure-detail` 里。
+> **没有 `code` 时连 detail 都不渲染。**
+>
+> **布局坑（截图抓到，测试抓不到）**：`.row` 是 `display:flex`，句子与细节变成**并排两列**，
+> 「模型还没配置密钥」被挤成一列一个字。修法 `.row[data-kind="failed"]{flex-direction:column}`
+> 并加回归测试 —— 这种错看代码看不出来。
+>
+> **本轮的方法突破：无头 Chrome 截图**（用户浏览器全程未碰，用户原话「不要影响到我正在使用浏览器」）：
+> ```powershell
+> & "C:\Program Files\Google\Chrome\Application\chrome.exe" --headless=new --disable-gpu `
+>   --user-data-dir="$env:TEMP\panel-preview\chrome-profile" --window-size=392,812 `
+>   --virtual-time-budget=8000 --screenshot="out.png" "http://127.0.0.1:3399/?s=failed"
+> ```
+> 配 `read_image` 读回 PNG ⇒ **像素级缺陷自己就能看见**。宿主在 `%TEMP%\panel-preview\preview.mjs`
+> （复制 `extension/` 五个文件、注入最小 `chrome.*` 桩与打桩 `fetch`，3399 端口，
+> `?s=chat|failed|failedBare|empty|working|approval|long|history`，`?w=` 指定面板宽度）。
+> **几何要「量」不要「看」**：headless Chrome **不遵守 `--window-size` 的布局**（按 500x717
+> 排版再裁图），所以右侧相对时间看着像被切掉。预览改为按 `?w=` 固定宽度，用 `--dump-dom`
+> 读回 `body.scrollWidth` —— 实测 392 与 320 下都等于面板宽度，**没有溢出**；
+> 历史视图在 320px 下分组、相对时间、当前会话高亮、空会话隐藏全部正常。
+> **预览宿主自身的三个桩错**（不是产品缺陷，但各会浪费一轮）：`running` 来自**会话列表**
+> 不是 messages 响应；`approvalPending` 每项**必须带 `sessionId`**；模型目录要包成
+> `payload.catalog`。
+>
+> **实测**：探针发一条必然失败的请求 ⇒ health `stream.failed` 0 → **1**；回读 2 行
+> `kind=user code=(无)` + **`kind=failed code=MISSING_CREDENTIAL`**；渲染为红字
+> 「模型还没配置密钥」+ 灰字原话（截图确认）；无 `code` 的失败只显示「这一轮没能跑起来」。
+> 用户线上 3080 全程只读，其 `stream` 出现 `failed` 字段 ⇒ 用户已重启，v15 生效。
+>
+> **证伪**：`failure.js` 不映射 `MISSING_CREDENTIAL` → 3 红；relay 不转发 `code` → 3 红。
+> **测试 325 → 347 passed / 0 failed / 0 skipped**。其中 **7 条原本变红是对的**——
+> 它们断言的正是「把日志原样贴出来」这个已错行为（含 `panel-i18n` 的死键扫描：
+> 新键在 `failure.js` 里，必须把该文件加进扫描名单）。
+>
+> **交付：`lib/` + `extension/` 都改了 ⇒ 重启 `dsh web` + 重载 Chrome 扩展。**
 
 > ### v15：回合失败长得像「模型没话说」，因为我第一次找错了信号（宿主 + 扩展，本次修复）
 >

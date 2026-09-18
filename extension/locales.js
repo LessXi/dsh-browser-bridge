@@ -108,6 +108,18 @@ export const zh = Object.freeze({
   'error.hostDown': '连不上 dsh web',
   'error.notAnswered': '没能作答：{reason}',
   'error.turnFailed': '这一轮没能跑起来',
+  // Why the turn failed, said in the reader's language. The provider's own
+  // message is a log line — it names environment variables and points at config
+  // files — so it becomes the detail, and these decide the headline. Each is
+  // written as something a person can act on, not as a restatement of the code.
+  'error.code.credential': '模型还没配置密钥',
+  'error.code.quota': '额度用完了',
+  'error.code.rateLimited': '请求太频繁，稍后再试',
+  'error.code.tooLong': '这段对话超出模型长度',
+  'error.code.noImages': '这个模型看不了图片',
+  'error.code.reasoning': '这个模型不支持该推理强度',
+  'error.code.unreachable': '连不上模型服务',
+  'error.code.empty': '模型没有返回内容',
   // The one place the panel asks instead of reporting. The harness's other
   // answerer is the graphical client, so this card is often the only thing
   // standing between a running turn and one that waits forever.
@@ -178,6 +190,14 @@ export const en = Object.freeze({
   'error.hostDown': 'dsh web is not running',
   'error.notAnswered': 'Could not answer: {reason}',
   'error.turnFailed': 'The turn did not run',
+  'error.code.credential': 'No model key is set',
+  'error.code.quota': 'The quota is used up',
+  'error.code.rateLimited': 'Too many requests, try later',
+  'error.code.tooLong': 'This chat is too long',
+  'error.code.noImages': 'This model cannot see images',
+  'error.code.reasoning': 'This model lacks that effort',
+  'error.code.unreachable': 'Cannot reach the model service',
+  'error.code.empty': 'The model returned nothing',
   'approval.asking': 'Needs your call',
   'approval.wants': 'Wants to use {tool}',
   'approval.aTool': 'a tool',

@@ -336,7 +336,11 @@ export function describeEvents(events, api) {
         // person did themselves, and a normal turn ends with no reason at all.
         if (data?.reason?.kind !== 'error') break
         const text = oneLine(asText(data.reason.error?.message), FAILURE_TEXT_MAX)
-        rows.push({ kind: 'failed', text })
+        const code = asText(data.reason.error?.code)
+        // The code is what the panel turns into a sentence; the message is the
+        // developer's own wording and only reaches the screen when the code is
+        // one the panel has no words for.
+        rows.push({ kind: 'failed', text, ...(code !== '' ? { code } : {}) })
         break
       }
 

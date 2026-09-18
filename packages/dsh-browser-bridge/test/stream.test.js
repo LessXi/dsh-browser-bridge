@@ -206,6 +206,9 @@ test('an attempt that threw says so, instead of looking like an empty answer', (
   assert.deepEqual(deltaOfFrame(failureFrame(SESSION)), {
     kind: 'failed',
     text: 'llm-deepseek: no API key for provider route "deepseek-official"',
+    // The code travels alongside, because it is what the panel turns into a
+    // sentence — the message is a log line and must not be the headline.
+    code: 'MISSING_CREDENTIAL',
   })
 
   // A finish chunk with no message still reports a failure; the panel falls back
@@ -213,6 +216,13 @@ test('an attempt that threw says so, instead of looking like an empty answer', (
   assert.deepEqual(
     deltaOfFrame(chunkFrame(SESSION, { type: 'finish', reason: { kind: 'error', failure: {} } })),
     { kind: 'failed', text: '' },
+  )
+
+  // A failure with a message but no code still reaches the panel; the panel has
+  // nothing to translate with and says its generic sentence.
+  assert.deepEqual(
+    deltaOfFrame(chunkFrame(SESSION, { type: 'finish', reason: { kind: 'error', failure: { message: 'boom' } } })),
+    { kind: 'failed', text: 'boom' },
   )
 
   // Stopping a turn on purpose is not a failure — the panel already shows that
@@ -481,6 +491,9 @@ test('the failure survives the relay, not just the frame reduction', () => {
         sessionId: SESSION,
         kind: 'failed',
         text: 'llm-deepseek: no API key for provider route "deepseek-official"',
+        // The code has to survive this hop as well: rebuilding the payload from
+        // `kind` alone leaves the panel holding a log line it cannot translate.
+        code: 'MISSING_CREDENTIAL',
       },
     ],
   )
@@ -536,7 +549,16 @@ test('a failed turn still ends, so the panel stops animating either way', () => 
 
   assert.deepEqual(
     socket.sent.map((entry) => entry.payload),
-    [{ sessionId: SESSION, kind: 'start' }, { sessionId: SESSION, kind: 'failed', text: 'llm-deepseek: no API key for provider route "deepseek-official"' }, { sessionId: SESSION, kind: 'end' }],
+    [
+      { sessionId: SESSION, kind: 'start' },
+      {
+        sessionId: SESSION,
+        kind: 'failed',
+        text: 'llm-deepseek: no API key for provider route "deepseek-official"',
+        code: 'MISSING_CREDENTIAL',
+      },
+      { sessionId: SESSION, kind: 'end' },
+    ],
   )
   assert.equal(relay.stats().failed, 1)
   assert.equal(relay.stats().ends, 1)

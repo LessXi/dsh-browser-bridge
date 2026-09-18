@@ -98,7 +98,17 @@ export function deltaOfFrame(frame) {
     const reason = chunk.reason
     if (typeof reason === 'object' && reason !== null && reason.kind === 'error') {
       const message = reason.failure?.message
-      return { kind: 'failed', text: typeof message === 'string' ? message : '' }
+      const code = reason.failure?.code
+      // The code travels with the message because it is what the panel turns
+      // into a sentence. The message itself is written for whoever reads a log —
+      // it names environment variables and tells the reader to edit a config
+      // file — and painting that into a 360px panel is what made a failed turn
+      // look like a stack trace left on the screen.
+      return {
+        kind: 'failed',
+        text: typeof message === 'string' ? message : '',
+        ...(typeof code === 'string' && code !== '' ? { code } : {}),
+      }
     }
   }
   return undefined
@@ -200,7 +210,14 @@ export class AssistantStreamRelay {
       // Flush first: the buffered tail belongs to this attempt, and the panel
       // stops animating on `failed` just as it does on `end`.
       this.flush()
-      this.#send({ sessionId, kind: 'failed', ...(delta.text === '' ? {} : { text: delta.text }) })
+      this.#send({
+        sessionId,
+        kind: 'failed',
+        ...(delta.text === '' ? {} : { text: delta.text }),
+        // The code has to survive this hop too, or the panel is left with the
+        // developer-facing message and nothing to translate.
+        ...(delta.code === undefined ? {} : { code: delta.code }),
+      })
       return
     }
 

@@ -618,26 +618,47 @@ test('a failed turn is still visible after the panel is reloaded', async () => {
   // The live toast is gone the moment the panel is rebuilt. The host puts the
   // failure in the transcript so a reload, a cold replay, or a second window
   // all still explain why the conversation stops after the user's message.
+  //
+  // What it says is the sentence for the code, not the provider's message: that
+  // message names environment variables and tells the reader to edit a config
+  // file, and painting it into a 360px panel is what made a failed turn look
+  // like a stack trace left on the screen.
   await show([
     { kind: 'user', text: 'probe' },
-    { kind: 'failed', text: 'no API key for provider route "deepseek-official"' },
+    {
+      kind: 'failed',
+      code: 'MISSING_CREDENTIAL',
+      text: 'no API key for provider route "deepseek-official"; store DEEPSEEK_API_KEY through the credentials service',
+    },
   ])
 
   const row = transcript.querySelector('.row[data-kind="failed"]')
   assert.notEqual(row, null, 'the failed turn left no row behind')
+  assert.equal(row.querySelector('.failure').textContent, zh['error.code.credential'])
+  // The provider's words are still reachable, one step down.
   assert.equal(
-    row.querySelector('.failure').textContent,
-    'no API key for provider route "deepseek-official"',
-    'the row does not carry the reason the host sent',
+    row.querySelector('.failure-detail').textContent,
+    'no API key for provider route "deepseek-official"; store DEEPSEEK_API_KEY through the credentials service',
   )
 })
 
-test('a failure row with no reason of its own still says something', async () => {
+test('a failure the panel has no words for still says something', async () => {
   // An empty row would be the same silence, just harder to notice.
   await show([{ kind: 'failed', text: '' }])
 
   const row = transcript.querySelector('.row[data-kind="failed"]')
   assert.equal(row.querySelector('.failure').textContent, zh['error.turnFailed'])
+})
+
+test('a failure with no code does not paste the provider message', async () => {
+  // The case the translation cannot cover. A generic sentence is worse than the
+  // provider's own — but it is short, it is in the reader's language, and it
+  // does not trail off mid-file-path, and that is the trade this makes.
+  await show([{ kind: 'failed', text: 'Some provider wrote a paragraph with no code at all.' }])
+
+  const row = transcript.querySelector('.row[data-kind="failed"]')
+  assert.equal(row.querySelector('.failure').textContent, zh['error.turnFailed'])
+  assert.equal(row.querySelector('.failure-detail'), null, 'a message with no code was still pasted in')
 })
 
 test('a code block can be copied without selecting it by hand', async () => {
@@ -947,17 +968,25 @@ test('a turn that died says so, rather than going quiet', async () => {
     toast.textContent = ''
 
     // What a refused provider request looks like by the time it reaches the
-    // panel: a `failed` frame carrying the provider's own words. Nothing was
-    // committed, so the re-read that normally swaps the live block for parsed
-    // markdown finds the same transcript as before — left alone, the shimmer
-    // just stops and the person watching is told nothing.
-    deliver({ sessionId: SESSION, kind: 'failed', text: 'no API key for provider route "deepseek-official"' })
+    // panel: a `failed` frame carrying the code and the provider's own words.
+    // Nothing was committed, so the re-read that normally swaps the live block
+    // for parsed markdown finds the same transcript as before — left alone, the
+    // shimmer just stops and the person watching is told nothing.
+    deliver({
+      sessionId: SESSION,
+      kind: 'failed',
+      code: 'MISSING_CREDENTIAL',
+      text: 'no API key for provider route "deepseek-official"',
+    })
     await settle()
 
+    // The toast says the translated sentence. A toast is the worst possible
+    // place for the raw message: it is gone in seconds and cannot be re-read,
+    // selected, or searched for the variable it names.
     assert.equal(
       toast.textContent,
-      'no API key for provider route "deepseek-official"',
-      `the panel did not repeat the host's reason (toast was "${toast.textContent}")`,
+      zh['error.code.credential'],
+      `the panel did not translate the failure (toast was "${toast.textContent}")`,
     )
     assert.equal(
       transcript.querySelector('.working'),

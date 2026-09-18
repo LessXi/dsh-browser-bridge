@@ -308,7 +308,7 @@ test('no dictionary entry is dead weight', () => {
   // reached through a literal `t('…')`, and `relativeTime` builds its own from
   // inside `locales.js`, so that file is part of the search.
   const names = [
-    'locales.js', 'sidepanel.js', 'background.js', 'options.js',
+    'locales.js', 'sidepanel.js', 'failure.js', 'background.js', 'options.js',
     'markdown.js', 'model-menu.js', 'content-selection.js', 'page-distill.js',
   ]
   const sources = names.map((name) => readExtensionFile(name)).join('\n')

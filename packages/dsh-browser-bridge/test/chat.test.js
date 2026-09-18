@@ -161,7 +161,13 @@ test('a turn that died leaves a lasting row, not just a live toast', () => {
   // made a crash look like a conversation that simply stopped.
   assert.deepEqual(describeEvents([userEvent('probe'), FAILED_TURN], SURFACE), [
     { kind: 'user', text: 'probe' },
-    { kind: 'failed', text: 'llm-deepseek: no API key for provider route "deepseek-official"' },
+    {
+      kind: 'failed',
+      text: 'llm-deepseek: no API key for provider route "deepseek-official"',
+      // The code is what lets the panel say "no model key is set" instead of
+      // pasting the provider's paragraph about which variable to export.
+      code: 'MISSING_CREDENTIAL',
+    },
   ])
 })
 

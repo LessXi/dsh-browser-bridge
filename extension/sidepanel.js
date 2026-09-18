@@ -39,6 +39,7 @@
 import { pickLocale, relativeTime, translator } from './locales.js'
 import { modelLabel, modelMenuModel } from './model-menu.js'
 import { renderMarkdown } from './markdown.js'
+import { failureDetail, failureSentence } from './failure.js'
 
 const locale = pickLocale(globalThis.chrome?.i18n?.getUILanguage?.())
 const t = translator(locale)
@@ -665,13 +666,28 @@ function renderRow(row, index) {
     // A durable record that a turn died. It is what the live toast leaves
     // behind: without it, reloading the panel turned a failed turn back into a
     // conversation that simply stopped after the user's message.
+    //
+    // The sentence is chosen by the harness's failure code, not by the
+    // provider's message. That message is a log line — environment variables,
+    // config paths, a paragraph of remediation — and it was being painted here
+    // in red at 12px, which read as a stack trace rather than an explanation.
     const wrapper = document.createElement('div')
     wrapper.className = 'row'
     wrapper.dataset.kind = 'failed'
     const line = document.createElement('div')
     line.className = 'failure'
-    line.textContent = typeof row.text === 'string' && row.text !== '' ? row.text : t('error.turnFailed')
+    line.textContent = failureSentence(row.code, t)
     wrapper.append(line)
+    // The provider's own words stay reachable, but demoted: they are the detail
+    // behind the sentence, and they are what someone pastes into a search when
+    // the sentence is not specific enough.
+    const detail = failureDetail(row.text)
+    if (detail !== '' && row.code !== undefined) {
+      const more = document.createElement('div')
+      more.className = 'failure-detail'
+      more.textContent = detail
+      wrapper.append(more)
+    }
     return wrapper
   }
 
@@ -938,11 +954,12 @@ function applyDelta(payload) {
     renderWorking()
     // The attempt committed no assistant message, so re-reading finds the same
     // transcript as before and the shimmer would simply stop — an empty answer
-    // with no explanation, which reads as the model having nothing to say. The
-    // host carries the provider's own words, so they are shown when present and
-    // the bare statement is used when they are not.
-    const reason = typeof payload.text === 'string' && payload.text !== '' ? payload.text : t('error.turnFailed')
-    say(reason)
+    // with no explanation, which reads as the model having nothing to say.
+    //
+    // The sentence comes from the failure code, not from the provider's message:
+    // that message is a log line, and a toast is the worst possible place for
+    // one because it is gone in seconds and cannot be re-read or searched.
+    say(failureSentence(payload.code, t))
     refreshTranscript().catch(() => {})
     refreshGroups().catch(() => {})
     return

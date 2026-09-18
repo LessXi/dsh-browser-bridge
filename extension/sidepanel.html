@@ -309,11 +309,25 @@
       /* A turn that died leaves this behind. It is deliberately not a bubble and
          not an alert: it is one line of the transcript, coloured like an error
          so it is found when scanning, and quiet enough that a conversation
-         which recovered does not look broken. */
+         which recovered does not look broken.
+         The column layout is load-bearing: `.row` is a flex row, so without it
+         the sentence and its detail sit side by side and the sentence is crushed
+         into a one-character-wide sliver. */
+      .row[data-kind="failed"] { flex-direction: column; }
       .failure {
         color: var(--bad);
         font-size: var(--text-xs);
         line-height: 1.5;
+        overflow-wrap: anywhere;
+      }
+      /* The provider's own wording, one step down from the sentence above it.
+         Muted rather than red, because it is no longer the message — it is the
+         thing someone copies into a search when the sentence is too general. */
+      .failure-detail {
+        margin-top: 2px;
+        color: var(--faint);
+        font-size: var(--text-xs);
+        line-height: 1.45;
         overflow-wrap: anywhere;
       }
 
