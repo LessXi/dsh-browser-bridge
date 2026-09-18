@@ -249,7 +249,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 347 条
+npm test                          # 全部 349 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -275,7 +275,7 @@ npm run check:extension           # 扩展脚本语法检查（Chrome 加载前�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 347 条
+npm test                 # 349 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -288,7 +288,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 不会把 `@deepseek-ai/*` 拉下来。宿主库由 `lib/deps.js` 在运行时从
 `$DSH_HOME/profiles/node_modules` 解析。
 
-**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **347 passing, 0 failing, 0 skipped**，
+**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **349 passing, 0 failing, 0 skipped**，
 `npm run check:extension` exit 0。前提是这台机器上装过 DSH（宿主库要能解析到）。
 
 **验证环境**：Node **v24.15.0**。两个 `package.json` 里的 `engines.node: ">=20"` 是**保守下限**，
@@ -306,7 +306,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面四层测试，347 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
+**已自动化验证**：上面四层测试，349 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
 
 侧边栏那部分还有一组**静态**检查，防止语言和版式漂回去：两个字典的键必须完全一致、面板里每个
 `t('…')` 的键都必须存在、HTML 里不允许残留裸文案、旧版文案一个都不许出现、**字典里不允许出现整句
@@ -364,6 +364,69 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 「宿主聚合 → 走 `notify` → service worker 转给面板 → 面板逐字画出来」这一段由
 `test/stream.test.js`（真 socket 上的帧形状）+ `test/panel-stream.test.js`（真跑面板模块）分段覆盖，
 **中间那一跳（Chrome 的 `chrome.runtime.sendMessage`）只做了结构断言，没有在真 Chrome 里点过**。
+
+#### v17：一个回合进行中，面板把「它在干活」说了两遍（本次修复）
+
+**症状**：这是用户最早那句「我就发了个 11，怎么跳出来这么多莫名其妙的东西」的最后一块。
+一个回合进行中，屏幕上同时有两处在报告状态：
+
+| 阶段 | 修复前 |
+|---|---|
+| 刚发出、还没有 token | 「思考中…」✓ |
+| 推理中 | 「思考 ⌄」**和**「思考中…」——两行说同一件事 |
+| 回答开始流式输出 | `看完了。▌` **和**「思考中…」——回答已经在写了，下面还说它在思考 |
+
+**为什么之前的截图看不见**：v16 之前我只看**已提交的行**。这个重叠只存在于流**打开的时候**，
+一提交就消失了。所以本轮先在预览宿主里加了三个真实时序的场景
+（`?s=waiting|thinking|streaming`，用 `dsh-assistant-delta` 按 160ms 逐条投递），
+才第一次看到它。
+
+**根因**：`renderWorking()` 与 `renderLive()` 是**两个渲染器在报告同一个事实**，
+而前者只看 `currentSessionRunning`，不知道后者已经有话可说了：
+
+```js
+const wanted = view === 'chat' && (currentSessionRunning || sending)
+```
+
+**修法：每个阶段只有一个东西在说话。**
+
+1. **`renderWorking` 让位**——只有当 `live` 还没有内容时（`live.text` 与 `live.reasoning` 都为空，
+   即首个 token 之前）才画等待行。有了内容，那段内容本身就是证据。
+2. **`renderLive` 接管**——推理阶段由 live 块自己说；为此把 `.live-think` 从
+   「标签 + 段落」改成**一行**：标签 + 预览文字，`white-space: nowrap` + `text-overflow: ellipsis`。
+   **一手依据**：官方面板把 `Thinking` 与预览放在同一行，并且它的推理预览 `maxHeightByState`
+   三种状态都是 `8.75rem`——是**限高**，不是另起一行。
+3. **空光标消失**——推理阶段 `.live-body` 还没有文本，`::after` 的闪烁竖线是空行上的光标，
+   指不到任何东西。加 `.live-body:empty::after { display: none }`。
+
+**顺带修掉一个我自己引入的真缺陷**（证伪时抓到的）：`sendMessage()` 设
+`currentSessionRunning = true` 后调 `renderWorking()`，**但没有清上一轮的 `live`**。
+上一轮的 live 靠 `end` 帧或 `done` 清掉，而用户主动发新消息时两条路都不走
+（宿主重启、中途重载面板都会留下一个 stale `live`）。这个残块既会显示**上一轮的文字**，
+又会因为 `hasContent` 为真而**压掉等待行**——正是「发了消息却看不出在跑」。
+修法是在 `sendMessage` 里显式 `live = null; renderLive()`。
+
+**实测（三个阶段的真实渲染，无头 Chrome 截图）**
+
+| 场景 | 结果 |
+|---|---|
+| `waiting`（只有 `start`） | 一行「思考中…」，**没有空光标** |
+| `thinking`（只有 reasoning） | **一行**：「思考」+ 预览，超长处以省略号截断；没有第二行 |
+| `streaming`（reasoning → tool → text） | 只有 `看完了。▌`；等待行已退场 |
+
+**证伪**（先 `node --check`，改完确认确实改到了）
+
+| 改坏什么 | 结果 |
+|---|---|
+| `renderWorking` 的判据去掉 `&& !hasContent` | 3 红（346/3） |
+| `sendMessage` 里去掉 `live = null` | 2 红（347/2）——**红的正是 stop 路径的两条**，说明残留 live 会压掉等待行 |
+
+**测试**：347 → **349 passed / 0 failed / 0 skipped**。新增 3 条（三阶段各只有一处报告状态、
+推理预览是单行且不能回退成多行），改写 4 条原本钉住「两行同显」的旧断言。
+其中一条顺带改了语义：`a start frame shows the waiting line and no empty live block`
+原本断言「live 块在等待行**上方**」，现在断言「有文本后等待行**消失**」。
+
+**交付**：只改 `extension/` ⇒ **重载 Chrome 扩展**即可，不需要重启 `dsh web`。
 
 #### v16：失败信息把 provider 的开发者日志原样贴给用户（本次修复）
 
@@ -736,7 +799,7 @@ v13 我已经在 health 里放了 `approvalPending`，**但面板从来没读它
 
 | 项 | 结果 |
 |---|---|
-| `npm test` | **347 passing, 0 failing, 0 skipped** |
+| `npm test` | **349 passing, 0 failing, 0 skipped** |
 | `npm run check:extension` | exit 0 |
 | **把 `content-selection.js` 换回 `git show HEAD:` 的那一版，再跑新测试** | **3 条变红**（接管、死副本被替换、失败后重试），换回新版全绿 → 测试确实能抓住这两个缺陷 |
 | 旧版跑「死副本被替换」用例 | 直接把进程打崩：`Error: Extension context invalidated.` —— 无人接管的 rejection，正是线上那个缺陷的真身 |
@@ -1044,7 +1107,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 347 条，含真实 Chrome 端到端
+└─ test/                  # 349 条，含真实 Chrome 端到端
 
 extension/
 ├─ manifest.json

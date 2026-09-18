@@ -411,15 +411,27 @@
         animation: caret 1s steps(2, start) infinite;
       }
       .live[data-done='true'] .live-body::after { display: none; }
+      /* A caret on an empty line is a cursor with nothing to point at — during
+         the reasoning phase the body has no text yet, and the blinking bar was
+         the only thing there. */
+      .live-body:empty::after { display: none; }
+      /* Reasoning while it is the only thing on screen. It is one line — a label
+         and the text running after it — rather than a label above a paragraph:
+         the official panel renders `Thinking` and its preview on the same line,
+         and a two-line version pushes the answer down for something the reader
+         is about to stop needing. The text is clamped so a long monologue cannot
+         take the whole panel before the answer exists. */
       .live-think {
+        display: block;
         color: var(--faint);
         font-size: var(--text-xs);
         line-height: 1.5;
-        white-space: pre-wrap;
-        overflow-wrap: anywhere;
-        max-height: 4.5em;
+        white-space: nowrap;
         overflow: hidden;
+        text-overflow: ellipsis;
       }
+      .live-think-label { color: var(--tertiary); }
+      .live-think-text { margin-left: 6px; }
       @keyframes caret {
         0%, 50% { opacity: 1; }
         50.01%, 100% { opacity: 0; }

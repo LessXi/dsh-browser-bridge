@@ -765,7 +765,12 @@ function drawTranscript(next) {
 /** Show the waiting row while the session has a turn in flight. */
 function renderWorking() {
   const existing = transcript.querySelector('.working')
-  const wanted = view === 'chat' && (currentSessionRunning || sending)
+  // The row is for the gap before the first token arrives. Once the model has
+  // produced anything, that text is itself the evidence that it is working, and
+  // keeping the row would put two lines on screen saying the same thing — which
+  // is what 「思考中…」 sitting under an answer that is already streaming is.
+  const hasContent = live !== null && (live.text.length > 0 || live.reasoning.length > 0)
+  const wanted = view === 'chat' && (currentSessionRunning || sending) && !hasContent
   if (!wanted) {
     existing?.remove()
   } else if (existing === null) {
@@ -904,6 +909,14 @@ function renderLive() {
     node.className = 'live'
     const think = document.createElement('div')
     think.className = 'live-think'
+    // The label is what says the model is working once the preview is on
+    // screen. Before this, the separate waiting row said it — and once tokens
+    // arrived the two were on screen together, both saying the same thing.
+    const label = document.createElement('span')
+    label.className = 'live-think-label'
+    const preview = document.createElement('span')
+    preview.className = 'live-think-text'
+    think.append(label, preview)
     const body = document.createElement('div')
     body.className = 'answer live-body'
     node.append(think, body)
@@ -915,11 +928,18 @@ function renderLive() {
 
   node.dataset.done = String(live.done)
   const [think, body] = node.children
+  const [label, preview] = think.children
   // Reasoning is superseded by the answer, exactly as a reasoning row is.
   const showThink = live.reasoning.length > 0 && live.text.length === 0
-  think.textContent = showThink ? live.reasoning : ''
+  label.textContent = t('row.reasoning')
+  preview.textContent = live.reasoning
   think.hidden = !showThink
   body.textContent = live.text
+
+  // The row that only says "working" is for the gap before the first token.
+  // Once there is something to read, that text is the evidence — and a second
+  // line repeating it is what made a live turn look like a pile of noise.
+  renderWorking()
 
   if (stickToBottom) transcript.scrollTop = transcript.scrollHeight
 }
@@ -1410,7 +1430,15 @@ async function sendMessage() {
     const refused = Array.isArray(result.payload?.context?.refused) ? result.payload.context.refused : []
     if (refused.length > 0) say(t('error.attachmentRefused', { reason: refused.join('; ') }))
     // The turn is running now, and the transcript has no stream to show it.
+    //
+    // The previous attempt's live block is dropped here rather than waiting for
+    // its `end` frame: a turn can die without the panel hearing about it (a host
+    // restart, a reload mid-turn), and a stale block would both show the wrong
+    // text and suppress the waiting row, because the row is drawn only when the
+    // stream has nothing to say yet.
+    live = null
     currentSessionRunning = true
+    renderLive()
     renderWorking()
     for (const delay of [800, 2000, 4000, 8000, 15000]) {
       setTimeout(() => {

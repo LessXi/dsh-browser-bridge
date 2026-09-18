@@ -22,6 +22,7 @@
  * @module dsh-browser-bridge/test/panel-stream.test
  */
 
+import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -263,10 +264,15 @@ test('a start frame shows the waiting line and no empty live block', async () =>
 
   const node = liveNode()
   assert.ok(node !== null, 'the first token produced no live block')
-  assert.ok(
-    transcript.children.indexOf(node) < transcript.children.indexOf(working),
-    'the live block was appended under the waiting line',
+  // The waiting line is gone once there is text, because the text is now what
+  // says the model is working. Keeping both put 「思考中…」 under an answer that
+  // was already being written.
+  assert.equal(
+    transcript.querySelector('.working'),
+    null,
+    'the waiting line survived into the answer, saying the same thing twice',
   )
+  assert.ok(node !== null, 'the first token produced no live block')
 })
 
 test('a burst of deltas grows one text node instead of one node per token', async () => {
@@ -288,8 +294,16 @@ test('reasoning is shown while it is the only thing there, and gives way to the 
 
   const think = transcript.querySelector('.live-think')
   assert.ok(think !== null, 'the live block has no reasoning line')
-  assert.equal(think.textContent, 'weighing it up')
+  // The label and the preview are separate nodes on one line, the way the
+  // official panel draws `Thinking` followed by what it is thinking about.
+  assert.equal(think.querySelector('.live-think-label').textContent, zh['row.reasoning'])
+  assert.equal(think.querySelector('.live-think-text').textContent, 'weighing it up')
   assert.equal(think.hidden, false)
+  assert.equal(
+    transcript.querySelector('.working'),
+    null,
+    'the waiting line is still under a preview that already says the model is working',
+  )
 
   deliver({ sessionId: SESSION, kind: 'text', text: 'Here.' })
 
@@ -306,7 +320,8 @@ test('a delta for another session is ignored, not filed under this one', async (
   deliver({ sessionId: OTHER, kind: 'reasoning', text: 'theirs' })
 
   assert.equal(liveBody().textContent, 'mine')
-  assert.equal(transcript.querySelector('.live-think').textContent, '')
+  assert.equal(transcript.querySelector('.live-think').hidden, true)
+  assert.equal(transcript.querySelector('.live-think-text').textContent, '')
 })
 
 test('a panel opened mid-turn shows nothing live rather than a truncated tail', async () => {
@@ -351,12 +366,16 @@ test('the waiting line reflects the host, not the last frame received', async ()
   await idle()
   host.running = true
   startAttempt()
-  deliver({ sessionId: SESSION, kind: 'text', text: 'thinking out loud' })
+  // A running turn with nothing on screen yet is the case the waiting line
+  // exists for, so this is where its liveness is checked.
   assert.ok(transcript.querySelector('.working') !== null, 'a running turn showed no waiting line')
 
   // A step ended but the turn has not: the host still reports the session as
-  // running, so the panel must keep saying so.
+  // running, so the panel must keep saying so — the live block is dropped on
+  // `end`, which puts the waiting line back as the only word.
   host.running = true
+  host.messages = [{ kind: 'assistant', text: 'step one' }]
+  deliver({ sessionId: SESSION, kind: 'text', text: 'thinking out loud' })
   deliver({ sessionId: SESSION, kind: 'end' })
   await settle()
   assert.ok(
@@ -1054,6 +1073,55 @@ test('a panel built before the host changed still reads the older failure shape'
     )
     assert.equal(transcript.querySelector('.working'), null, 'the panel is still drawing a turn that is over')
   })
+})
+
+test('a live turn says it is working once, not twice', async () => {
+  // The waiting row and the live block are two renderers for one fact. They
+  // used to be on screen together from the first token onward, so a turn in
+  // flight read as 「思考中…」 stacked under an answer that was already being
+  // written. Each phase now has exactly one thing saying it is working.
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    await startTurn()
+
+    // Phase one: nothing yet. The waiting row is the only word.
+    deliver({ sessionId: SESSION, kind: 'start' })
+    await settle()
+    assert.equal(transcript.querySelectorAll('.working').length, 1, 'the gap before the first token went silent')
+    assert.equal(transcript.querySelector('.live'), null, 'a live block was drawn before there was anything to put in it')
+
+    // Phase two: reasoning only. The label carries it, the waiting row goes.
+    deliver({ sessionId: SESSION, kind: 'reasoning', text: '看看 markdown.js 认不认分隔行。' })
+    await settle()
+    assert.equal(transcript.querySelector('.working'), null, 'the waiting row is still there under a live preview')
+    const think = transcript.querySelector('.live-think')
+    assert.notEqual(think, null, 'the reasoning preview was not drawn')
+    assert.equal(think.querySelector('.live-think-label').textContent, zh['row.reasoning'])
+    assert.equal(think.querySelector('.live-think-text').textContent, '看看 markdown.js 认不认分隔行。')
+
+    // Phase three: the answer starts. Reasoning gives way to it, exactly as a
+    // committed reasoning row does, and the waiting row stays gone.
+    deliver({ sessionId: SESSION, kind: 'text', text: '看完了。' })
+    await settle()
+    assert.equal(transcript.querySelector('.working'), null, 'the waiting row came back when the answer started')
+    assert.equal(transcript.querySelector('.live-think').hidden, true, 'reasoning and the answer were on screen together')
+    assert.equal(transcript.querySelector('.live-body').textContent, '看完了。')
+  })
+})
+
+test('the reasoning preview is one line, so it cannot push the answer down', async () => {
+  // The official panel renders `Thinking` and its preview on the same line. A
+  // label above a paragraph pushes the answer off screen for text the reader is
+  // about to stop needing.
+  const html = readFileSync(join(here, '..', '..', '..', 'extension', 'sidepanel.html'), 'utf8')
+  const rule = html.match(/\.live-think \{([^}]*)\}/)
+  assert.notEqual(rule, null, 'the reasoning preview has no style of its own')
+  assert.match(rule[1], /white-space:\s*nowrap/, 'the reasoning preview can wrap onto several lines')
+  assert.match(rule[1], /text-overflow:\s*ellipsis/, 'a long preview would run off the edge instead of being cut')
+  assert.equal(/max-height\s*:\s*4\.5em/.test(rule[1]), false, 'the old multi-line clamp is still there')
+
+  // A caret on an empty line is a cursor with nothing to point at.
+  assert.match(html, /\.live-body:empty::after\s*\{\s*display:\s*none/, 'the caret shows during the reasoning phase')
 })
 
 test('an IME candidate committed with Enter does not send the message', async () => {
