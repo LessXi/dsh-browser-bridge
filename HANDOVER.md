@@ -1,14 +1,54 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v22 已交付（无代码改动，见 v22）。** 下一节就是最新的一轮改动；下面标 v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v22 那一段为止即可。
+> **当前状态：v23 已交付。** 下一节就是最新的一轮改动；下面标 v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v23 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（360 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（372 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 >
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
+
+> ### v23：`@` 提及 —— 不用切标签页也能引用别的页面（扩展侧，本次新增）
+>
+> **要解决的问题**：在此之前能挂进消息的只有**当前标签页**。开着二十个标签页、想引用第三个时，
+> 唯一办法是切过去——而切过去就丢掉了你正在读的那一页。
+>
+> **一手依据**：官方候选是
+> `{ faviconUrl, browserFamily, lastOpened, tabId, snapshot: { title, url }, source: 'extension' }`，
+> 菜单**分组**（`Tabs` / `Sites` / `Files` / `ChatGPT conversations`…），文案含 `{title} {url}`。
+> 排序走一个完整的 fuzzy scorer（`score-query-match`，9762 字节的 VS Code fuzzy matcher）。
+> **抄判据不抄算法** —— 侧栏负担不起 9.7KB 打分器，而子串匹配对真实输入行为相同。
+>
+> **新增 `extension/mention.js`**（纯函数，可脱离 DOM 测试）：
+> `mentionAt(before)`（`foo@bar` **不算**提及；空格**关闭**它）、
+> `mentionable(tab)`（**按协议白名单**：`chrome://`/`chrome-extension://`/`about:` 不提供 ——
+> **提供一个是「发出去才发现读不了」，比不提供更糟**）、
+> `rankTabs(tabs, query, limit)`（**按 `lastAccessed` 降序**；**标题命中优先于 URL**；
+> 没有 `lastAccessed` 的排**最后**而非当成时间起点冲上去）、
+> `shortUrl(url)`、`mentionMenu(tabs, query)`（**`'empty'` 与 `'none'` 分开** ——
+> 区别是「再打几个字也没用」）、
+> `mentionRows(tabs)`（**两个同名候选时才显示 URL**；八行一样的菜单比没有更糟）。
+>
+> **`sidepanel.js` 的接线要点**：`drawMention()` **读输入框而不是跟踪状态**
+> （菜单因此不可能和文字不一致）；菜单打开时方向键/Enter/Tab/Escape **归它管**
+> （否则 Enter 会发出「半截提及」的消息）；`acceptMention()` 把 `@word` **整段删掉**
+> （留 `@net` 会让模型收到看不懂的词，附件已说清是哪个页面）；
+> `mentioned` 与 `currentTab` **分开**（「你面前的页」vs「这条消息说的页」），两个都能挂；
+> **发送后清空**（否则同一页会静默挂到下一条上）。
+>
+> **实测（无头 Chrome 截图 + `--dump-dom`）**：`@` 空查询 6 条按 recency；
+> **`chrome://extensions` 不出现**；两个同名 `Pruning notes` **都带 URL**、其余**不带**；
+> `@prun` 收窄到 2 条；`@zzzz` 显示「没有匹配的标签页」且**菜单不关闭**。
+>
+> **证伪**：去掉协议白名单 → 2 红；去掉 recency → 2 红；`showUrl` 恒 false → 1 红。
+>
+> **测试 360 → 372**（新增 `test/mention.test.js` 12 条）。其中一条断言
+> `mention.js` **不引用 `document`/`window`/`chrome`/`fetch`** ——
+> 面板跑在 `chrome-extension://` 源、无法 import 扩展目录外的文件，纯净才能被测。
+>
+> **交付：只改 `extension/` ⇒ 重载 Chrome 扩展即可。**
 
 > ### v22：量了端到端延迟 —— **没有找到缺陷**（本轮无代码改动）
 >

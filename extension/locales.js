@@ -63,6 +63,13 @@ export const zh = Object.freeze({
   // harness, because in that state the chip would otherwise promise a context
   // the send cannot actually carry.
   'context.offline': '未连接',
+  // The `@` picker. `at.empty` and `at.none` are two different nothings: one
+  // means the browser has no page this panel could read, the other means the
+  // typing has not matched one yet. Saying the same thing for both would send
+  // someone hunting for a tab that was never offerable.
+  'at.list': '标签页',
+  'at.empty': '没有可读取的标签页',
+  'at.none': '没有匹配的标签页',
 
   // The model picker. It is a control, so it names itself once and then shows
   // its value — the trigger carries no "model" caption, which is also what the
@@ -161,6 +168,9 @@ export const en = Object.freeze({
   'context.tab': 'this tab',
   'context.selection': 'the selection',
   'context.offline': 'Offline',
+  'at.list': 'Tabs',
+  'at.empty': 'No readable tabs',
+  'at.none': 'No matching tabs',
 
   'model.select': 'Select model',
   'model.effort': 'Reasoning',

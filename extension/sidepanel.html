@@ -331,6 +331,56 @@
         overflow-wrap: anywhere;
       }
 
+      /* The `@` picker. It sits above the composer, where the eye already is
+         after typing, and it is the only list in the panel — the history view
+         is a whole view, and a second floating list would compete with it. */
+      #at-menu {
+        position: fixed;
+        z-index: 30;
+        min-width: 200px;
+        max-width: min(320px, calc(100vw - 24px));
+        max-height: min(280px, 50vh);
+        overflow-y: auto;
+        padding: 4px;
+        border: 1px solid var(--line-soft);
+        border-radius: var(--radius-xl);
+        background: Canvas;
+        box-shadow: var(--elevation);
+      }
+      #at-menu[hidden] { display: none; }
+      .at-label {
+        margin: 0;
+        padding: 4px 8px 2px;
+        font-size: var(--text-xs);
+        color: var(--faint);
+      }
+      .at-option {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        min-height: 34px;
+        padding: 5px 8px;
+        border-radius: var(--radius-md);
+        text-align: left;
+      }
+      .at-option:hover,
+      .at-option[aria-selected='true'] { background: var(--hover); }
+      .at-option .site {
+        flex: none;
+        width: 14px;
+        height: 14px;
+        border-radius: 3px;
+        object-fit: contain;
+      }
+      /* One line for the title and one for the URL, because a side panel cannot
+         fit the official panel's `{title} {url}` on a single row. The URL is
+         drawn only when two candidates would otherwise read the same. */
+      .at-option .text { min-width: 0; display: flex; flex-direction: column; }
+      .at-option .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-sm); }
+      .at-option .where { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-xs); color: var(--faint); }
+      .at-empty { margin: 0; padding: 8px; font-size: var(--text-xs); color: var(--faint); }
+
       /* The one place in the panel that asks a question instead of reporting
          one. A pending approval is the turn's actual state, so the card reads
          as part of the transcript rather than as a modal: it sits in the flow,
@@ -726,6 +776,7 @@
         </div>
       </div>
       <div id="model-menu" hidden></div>
+  <div id="at-menu" hidden></div>
     </footer>
 
     <script src="sidepanel.js" type="module"></script>

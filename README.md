@@ -249,7 +249,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 360 条
+npm test                          # 全部 372 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -275,7 +275,7 @@ npm run check:extension           # 扩展脚本语法检查（Chrome 加载前�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 360 条
+npm test                 # 372 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -288,7 +288,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 不会把 `@deepseek-ai/*` 拉下来。宿主库由 `lib/deps.js` 在运行时从
 `$DSH_HOME/profiles/node_modules` 解析。
 
-**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **360 passing, 0 failing, 0 skipped**，
+**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **372 passing, 0 failing, 0 skipped**，
 `npm run check:extension` exit 0。前提是这台机器上装过 DSH（宿主库要能解析到）。
 
 **验证环境**：Node **v24.15.0**。两个 `package.json` 里的 `engines.node: ">=20"` 是**保守下限**，
@@ -306,7 +306,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面四层测试，360 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
+**已自动化验证**：上面四层测试，372 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
 
 侧边栏那部分还有一组**静态**检查，防止语言和版式漂回去：两个字典的键必须完全一致、面板里每个
 `t('…')` 的键都必须存在、HTML 里不允许残留裸文案、旧版文案一个都不许出现、**字典里不允许出现整句
@@ -364,6 +364,73 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 「宿主聚合 → 走 `notify` → service worker 转给面板 → 面板逐字画出来」这一段由
 `test/stream.test.js`（真 socket 上的帧形状）+ `test/panel-stream.test.js`（真跑面板模块）分段覆盖，
 **中间那一跳（Chrome 的 `chrome.runtime.sendMessage`）只做了结构断言，没有在真 Chrome 里点过**。
+
+#### v23：`@` 提及 —— 不用切标签页也能引用别的页面（本次新增）
+
+**要解决的问题**：在此之前，能挂进消息的只有**当前标签页**。开着二十个标签页、想引用第三个时，
+唯一办法是切过去——而切过去就丢掉了你正在读的那一页。
+
+**一手依据（官方面板怎么做）**：它的候选长这样
+
+```js
+{ faviconUrl, browserFamily, lastOpened, tabId, snapshot: { title, url }, source: 'extension' }
+```
+
+菜单是**分组**的（`Tabs` / `Sites` / `Files` / `ChatGPT conversations` …），
+文案里有 `{title} {url}`；排序走一个完整的模糊匹配器（`score-query-match`，9762 字节的
+VS Code fuzzy scorer）。**我抄的是它的判据，不是它的算法**——一个侧栏负担不起 9.7KB 的
+打分器，而子串匹配对人真正会打的几个字行为相同。
+
+**实现**
+
+- **新增 `extension/mention.js`**（纯函数，可脱离 DOM 测试，沿用 `model-menu.js` 的先例）：
+  - `mentionAt(before)` — 从光标前的文本里认出 `@word`。`foo@bar` **不算**（那是邮箱），
+    空格**关闭**它（菜单不该悬在没人正在补全的文字上）。
+  - `mentionable(tab)` — **按协议白名单**：`chrome://`、`chrome-extension://`、`about:`
+    一律不提供。**提供一个是「发出去才发现读不了」，比不提供更糟。**
+  - `rankTabs(tabs, query, limit)` — **按 `lastAccessed` 降序**（`chrome.tabs.query`
+    不保证顺序，而你想要的那个通常是你刚看过的）；**标题命中优先于 URL 命中**；
+    没有 `lastAccessed` 的排**最后**而不是当成时间起点冲上去。
+  - `shortUrl(url)` — `https://dl.acm.org/doi/10.1145/3809166#sec-3` → `dl.acm.org/doi/…`。
+  - `mentionMenu(tabs, query)` — 返回 `state`：**`'empty'`（没有可读的标签页）和
+    `'none'`（没有匹配的）分开**。两者的区别是「再打几个字也没用」，说同一句话会让人
+    去找一个从来没被提供过的标签页。
+  - `mentionRows(tabs)` — **两个同名候选时才显示 URL**。同一页的两个锚点是常见的，
+    八行一模一样的菜单比没有菜单更糟。
+- `extension/sidepanel.js`：`drawMention()` 每次按键重画（**读输入框而不是跟踪状态**，
+  这样菜单不可能和文字不一致）；方向键 / Enter / Tab / Escape 在菜单打开时归它管
+  （否则 Enter 会发出一条「半截提及」的消息）；`acceptMention()` 把 `@word` **整段删掉**——
+  留下 `@net` 会让模型收到一个它看不懂的词，而附件已经说清了是哪个页面；
+  `mentioned` 与 `currentTab` **分开**（一个是「你面前的页」，一个是「这条消息说的页」），
+  两个都能挂，chip 行分开显示；**发送后清空**（不提的话它会把同一页静默挂到下一条上）。
+- `extension/sidepanel.html`：`#at-menu` 及 `.at-*`（分组标签、行、14px 图标、
+  标题一行 + URL 一行）。菜单**在 composer 之上**展开。
+- `extension/locales.js`：zh/en 各 3 键 —— `at.list`（标签页）、`at.empty`、`at.none`。
+
+**实测（无头 Chrome 截图 + `--dump-dom`，三条设计逐一验证）**
+
+| 场景 | 结果 |
+|---|---|
+| `@` 空查询 | 6 条按 recency 排列；`chrome://extensions` **不出现** |
+| 两个同名 `Pruning notes` | **都带 URL**（`example.com/pruning` / `other.example.com/pruning`） |
+| 其余候选 | **不带 URL**（省下的是标题的宽度） |
+| `@prun` | 从 6 条收窄到 2 条 |
+| `@zzzz` | 显示「没有匹配的标签页」，**菜单不关闭** |
+
+**证伪**（先 `node --check`，改完确认确实改到了）
+
+| 改坏什么 | 结果 |
+|---|---|
+| 去掉协议白名单 | 2 红（370/2） |
+| 去掉 recency 排序 | 2 红（370/2） |
+| `showUrl` 恒为 false | 1 红（371/1） |
+
+**测试**：360 → **372 passed / 0 failed / 0 skipped**（新增 `test/mention.test.js` 12 条）。
+其中一条断言 `mention.js` **不引用 `document`/`window`/`chrome`/`fetch`**——
+面板跑在 `chrome-extension://` 源、无法 import 扩展目录外的文件，
+所以这个模块必须保持纯净才能被测。
+
+**交付**：只改 `extension/` ⇒ **重载 Chrome 扩展**即可。
 
 #### v21：按下发送后，自己那句话消失了（本次修复）
 
@@ -1000,7 +1067,7 @@ v13 我已经在 health 里放了 `approvalPending`，**但面板从来没读它
 
 | 项 | 结果 |
 |---|---|
-| `npm test` | **360 passing, 0 failing, 0 skipped** |
+| `npm test` | **372 passing, 0 failing, 0 skipped** |
 | `npm run check:extension` | exit 0 |
 | **把 `content-selection.js` 换回 `git show HEAD:` 的那一版，再跑新测试** | **3 条变红**（接管、死副本被替换、失败后重试），换回新版全绿 → 测试确实能抓住这两个缺陷 |
 | 旧版跑「死副本被替换」用例 | 直接把进程打崩：`Error: Extension context invalidated.` —— 无人接管的 rejection，正是线上那个缺陷的真身 |
@@ -1251,6 +1318,7 @@ paragraph，表格的每一行都掉进 paragraph，几行被 `\n` 连成一个�
 | 元素高亮 / 「正在被控制」提示 | ❌ 未实现（官方是否有此 UI 亦未确证） |
 | 侧边栏**流式输出** | ✅ 已实现（v9）。宿主用 `agent/assistant-stream` 帧合并成 80ms 一批的通知，走 `notify` 键推给 service worker 再转给面板。面板画纯文本+光标，attempt settle 后用解析过的正式行替换。**限于：** 只有模型输出是流式的；附件/`@` 状态仍是轮询 |
 | 侧边栏自动带上**整页正文** | ❌ 有意不做。发送时自动附带的是当前标签页的**身份**（标题+URL），正文要显式加入：整页文本上千 token，自动带上会让每次提问都悄悄变贵 |
+| **`@` 提及标签页** | ✅ 已实现（v23）。打 `@` 打开候选，按最近访问排序、按标题/URL 过滤、同名时用 URL 区分、按协议白名单排除读不了的页。**限于：** 只提及**标签页**；官方还有 `Sites` / `Files` / `ChatGPT conversations` / `Mac apps` 等分组，本实现没有那些数据源 |
 
 ### 未确证的实现假设
 
@@ -1261,6 +1329,9 @@ paragraph，表格的每一行都掉进 paragraph，几行被 `\n` 连成一个�
   误差方向是**偏向重新询问**，不会偏向放宽授权。
 - chip 的确切视觉、发送后是否留存、`@` 提及标签页的交互细节——这三条官方文档没有明确记载，
   本实现按「显式加入 + 可见 + 可 X 掉」的语义做，以你的实际体验为准。
+  **（v23 更新）** 其中 `@` 提及现已实现；官方产物里能读到的是它的**候选字段与分组名**，
+  以及它用一个 9.7KB 的 fuzzy scorer 排序——本实现按标题/URL 子串匹配，因为那是侧栏负担得起、
+  而行为对真实输入相同的做法。
 - **会话服务是「调用时解析」而不是「激活时解析」**：`sessions` / `sessionQuery` / `sessionController`
   都用 `ctx.get` 读而不是 `inject`，为的是没有会话服务的 profile 里浏览器半边照样能用。代价是
   它们可能在插件激活时还没注册——实测 `sessionController` 就是如此，激活时抓到 `undefined` 会让
@@ -1335,7 +1406,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 360 条，含真实 Chrome 端到端
+└─ test/                  # 372 条，含真实 Chrome 端到端
 
 extension/
 ├─ manifest.json

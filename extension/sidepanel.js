@@ -38,6 +38,7 @@
 
 import { pickLocale, relativeTime, translator } from './locales.js'
 import { modelLabel, modelMenuModel } from './model-menu.js'
+import { mentionAt, mentionMenu, mentionRows } from './mention.js'
 import { renderMarkdown } from './markdown.js'
 import { failureDetail, failureSentence } from './failure.js'
 
@@ -72,6 +73,7 @@ const sendButton = document.getElementById('send')
 const modelButton = document.getElementById('model')
 const modelText = document.getElementById('model-text')
 const modelMenu = document.getElementById('model-menu')
+const atMenu = document.getElementById('at-menu')
 
 /** @type {{ text: string, url: string, title: string }} */
 let currentSelection = { text: '', url: '', title: '' }
@@ -79,6 +81,16 @@ let currentSelection = { text: '', url: '', title: '' }
 let currentTab = { url: '', title: '', icon: '' }
 /** Tabs the bridge has grouped, listed in the history view. */
 let controlledTabs = []
+/**
+ * Every tab the panel can see, which is what the `@` picker offers.
+ *
+ * Module level rather than local to `refreshTabs`: the picker is drawn from a
+ * keystroke, and it must not be the case that opening `@` before the first poll
+ * has landed shows an empty menu.
+ *
+ * @type {object[]}
+ */
+let tabs = []
 /** Whether the harness answered at all, and whether the extension is attached to it. */
 let hostReachable = false
 let bridgeConnected = false
@@ -157,6 +169,26 @@ let catalog = null
 let catalogReason = ''
 /** Whether the picker is open. */
 let menuOpen = false
+/**
+ * The open `@` picker, or null.
+ *
+ * `start` is where the `@` sits in the composer, so accepting a candidate can
+ * replace exactly the word that was typed and leave the rest of the line alone.
+ * `index` is the highlighted row, which the arrow keys move and Enter takes.
+ *
+ * @type {{ start: number, index: number, options: object[] } | null}
+ */
+let mention = null
+/**
+ * The tab picked with `@`, or null.
+ *
+ * Separate from `currentTab` because they answer different questions: that one
+ * is "the page in front of you", this one is "the page this message is about".
+ * Both can be attached, and the chip row shows them apart.
+ *
+ * @type {{ id?: number, title: string, url: string, icon: string } | null}
+ */
+let mentioned = null
 /**
  * The attempt currently streaming into this panel, or null.
  *
@@ -474,6 +506,170 @@ function setMenu(next) {
 }
 
 /**
+ * Draw the `@` picker for whatever is being typed at the caret.
+ *
+ * Called on every keystroke. It reads the composer rather than tracking state,
+ * so the menu cannot disagree with the text: what is offered is always what the
+ * caret is inside.
+ *
+ * @returns {void}
+ */
+function drawMention() {
+  const caret = typeof input.selectionStart === 'number' ? input.selectionStart : input.value.length
+  const found = mentionAt(input.value.slice(0, caret))
+  if (found === null) {
+    closeMention()
+    return
+  }
+
+  const menu = mentionMenu(tabs, found.query)
+  if (menu.state !== 'listed') {
+    // Kept open with a reason rather than vanishing: an `@` that makes the
+    // picker disappear reads as a broken key, and the two nothings mean
+    // different things.
+    mention = { start: found.start, index: 0, options: [] }
+    drawMentionRows([], menu.state)
+    positionMention()
+    return
+  }
+
+  const options = mentionRows(menu.options)
+  // The highlight is kept across keystrokes when the row still exists, so the
+  // arrow keys and then more typing do not fight each other.
+  const previous = mention?.options[mention.index]
+  const keep = previous === undefined
+    ? 0
+    : Math.max(0, options.findIndex((option) => option.id === previous.id))
+  mention = { start: found.start, index: keep, options }
+  drawMentionRows(options, 'listed')
+  positionMention()
+}
+
+/** Take the picker away, and forget what it was offering. */
+function closeMention() {
+  if (mention === null && atMenu.hidden) return
+  mention = null
+  atMenu.hidden = true
+  atMenu.replaceChildren()
+}
+
+/**
+ * Paint the picker's rows.
+ *
+ * @param {object[]} options - Rows from `mentionRows`.
+ * @param {'listed'|'empty'|'none'} state - What there is to say.
+ * @returns {void}
+ */
+function drawMentionRows(options, state) {
+  atMenu.replaceChildren()
+  if (state !== 'listed') {
+    const note = document.createElement('p')
+    note.className = 'at-empty'
+    note.textContent = state === 'empty' ? t('at.empty') : t('at.none')
+    atMenu.append(note)
+    atMenu.hidden = false
+    return
+  }
+
+  const label = document.createElement('p')
+  label.className = 'at-label'
+  label.textContent = t('at.list')
+  atMenu.append(label)
+
+  options.forEach((option, at) => {
+    const row = document.createElement('button')
+    row.type = 'button'
+    row.className = 'at-option'
+    row.setAttribute('role', 'option')
+    row.setAttribute('aria-selected', String(at === mention?.index))
+    if (option.icon.length > 0) {
+      const icon = document.createElement('img')
+      icon.className = 'site'
+      icon.src = option.icon
+      icon.alt = ''
+      icon.addEventListener('error', () => icon.remove())
+      row.append(icon)
+    }
+    const text = document.createElement('span')
+    text.className = 'text'
+    const name = document.createElement('span')
+    name.className = 'name'
+    name.textContent = option.title
+    text.append(name)
+    if (option.showUrl) {
+      const where = document.createElement('span')
+      where.className = 'where'
+      where.textContent = option.url
+      text.append(where)
+    }
+    row.append(text)
+    // `mousedown` rather than `click`: the click would blur the textarea first,
+    // and a menu that closes on blur cannot be clicked at all.
+    row.addEventListener('mousedown', (event) => {
+      event.preventDefault()
+      acceptMention(at)
+    })
+    row.addEventListener('mouseenter', () => {
+      if (mention === null) return
+      mention.index = at
+      for (const [index, node] of [...atMenu.querySelectorAll('button')].entries()) {
+        node.setAttribute('aria-selected', String(index === at))
+      }
+    })
+    atMenu.append(row)
+  })
+  atMenu.hidden = false
+}
+
+/** Put the picker above the composer, where the caret is. */
+function positionMention() {
+  const anchor = input.getBoundingClientRect()
+  const margin = 8
+  const height = atMenu.offsetHeight
+  atMenu.style.left = `${margin}px`
+  atMenu.style.width = `${Math.max(200, anchor.width)}px`
+  if (anchor.top - margin >= height + 6) {
+    atMenu.style.top = 'auto'
+    atMenu.style.bottom = `${window.innerHeight - anchor.top + 6}px`
+  } else {
+    atMenu.style.bottom = 'auto'
+    atMenu.style.top = `${anchor.bottom + 6}px`
+  }
+}
+
+/**
+ * Take one candidate, replacing the `@word` that opened the picker.
+ *
+ * A mention is a reference, so accepting one puts the tab where the current-tab
+ * chip already lives — the message carries it as an attachment. The `@word`
+ * itself is removed: leaving `@net` in the prompt would send the model a word
+ * that means nothing to it, and the attachment already names the page.
+ *
+ * @param {number} at - Which candidate.
+ * @returns {void}
+ */
+function acceptMention(at) {
+  const open = mention
+  const option = open?.options[at]
+  if (open === undefined || option === undefined) return
+  const caret = typeof input.selectionStart === 'number' ? input.selectionStart : input.value.length
+  const before = input.value.slice(0, open.start)
+  const after = input.value.slice(caret)
+  input.value = `${before}${after}`
+  const target = before.length
+  input.setSelectionRange?.(target, target)
+  // One mention is one page: a second replaces the first rather than stacking,
+  // because two tabs in one message is something the chip row cannot show.
+  mentioned = option
+  closeMention()
+  input.style.height = 'auto'
+  input.style.height = `${Math.min(140, input.scrollHeight)}px`
+  drafts.set(currentSessionId, input.value)
+  renderContexts()
+  input.focus()
+}
+
+/**
  * Install one selection for the session on screen.
  *
  * A patch is merged into what the session already has, so picking an effort
@@ -560,6 +756,38 @@ function faviconOf(tab) {
 function renderContexts() {
   contexts.replaceChildren()
   const chips = []
+
+  if (mentioned !== null) {
+    // Styled like a decision, because it is one: this page is attached because
+    // someone asked for it, not because it happened to be in front.
+    const chip = document.createElement('span')
+    chip.className = 'chip'
+    chip.dataset.attached = 'true'
+    if (mentioned.icon.length > 0) {
+      const icon = document.createElement('img')
+      icon.className = 'site'
+      icon.src = mentioned.icon
+      icon.alt = ''
+      icon.addEventListener('error', () => icon.remove())
+      chip.append(icon)
+    }
+    const label = document.createElement('span')
+    label.className = 'label'
+    label.textContent = mentioned.title
+    chip.title = `${t('at.list')} · ${mentioned.title}`
+    chip.setAttribute('aria-label', chip.title)
+    const drop = document.createElement('button')
+    drop.type = 'button'
+    drop.textContent = '×'
+    drop.title = t('action.drop')
+    drop.setAttribute('aria-label', t('action.drop'))
+    drop.addEventListener('click', () => {
+      mentioned = null
+      renderContexts()
+    })
+    chip.append(label, drop)
+    chips.push(chip)
+  }
 
   if (currentTab.url.length > 0) {
     const chip = document.createElement('span')
@@ -1382,6 +1610,17 @@ function restoreDraft() {
  */
 function pendingAttachments() {
   const attachments = []
+  if (mentioned !== null) {
+    // A mentioned tab travels as its own attachment rather than replacing the
+    // current-tab one: the message may well be about a page other than the one
+    // in front, which is the whole reason `@` exists.
+    attachments.push({
+      kind: 'tab',
+      url: mentioned.url,
+      title: mentioned.title,
+      ...(mentioned.id === undefined ? {} : { tabId: mentioned.id }),
+    })
+  }
   if (currentTab.url.length > 0) {
     attachments.push({
       kind: 'tab',
@@ -1490,6 +1729,12 @@ async function sendMessage() {
     input.value = ''
     input.style.height = 'auto'
     drafts.delete(currentSessionId)
+    // The mention was for that message. Keeping it would silently attach the
+    // same page to the next one, which is exactly the kind of standing promise
+    // this panel works to avoid.
+    mentioned = null
+    closeMention()
+    renderContexts()
     // The host reports what it actually took. A refused attachment used to be
     // silent: the chip promised it, the message left without it, and the only
     // way to find out was to wonder.
@@ -1599,7 +1844,6 @@ async function createSession() {
 
 /** Refresh the tab list and the current-tab summary. */
 async function refreshTabs() {
-  let tabs = []
   try {
     tabs = await chrome.tabs.query({})
     const [active] = await chrome.tabs.query({ active: true, currentWindow: true })
@@ -1652,6 +1896,33 @@ sendButton.addEventListener('click', () => {
 })
 
 input.addEventListener('keydown', (event) => {
+  // The picker owns the navigation keys while it is open, or the arrow keys
+  // would move the caret and Enter would send a message that is half a mention.
+  if (mention !== null) {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault()
+      const count = mention.options.length
+      if (count > 0) {
+        const step = event.key === 'ArrowDown' ? 1 : -1
+        mention.index = (mention.index + step + count) % count
+        for (const [index, node] of [...atMenu.querySelectorAll('button')].entries()) {
+          node.setAttribute('aria-selected', String(index === mention.index))
+        }
+      }
+      return
+    }
+    if (event.key === 'Enter' || event.key === 'Tab') {
+      if (event.isComposing === true || event.keyCode === 229) return
+      event.preventDefault()
+      acceptMention(mention.index)
+      return
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      closeMention()
+      return
+    }
+  }
   if (event.key !== 'Enter' || event.shiftKey) return
   // An IME commits its candidate with Enter. Sending on that keystroke would
   // turn "type 你好 and accept it" into "type 你好 and send a half-finished
@@ -1667,6 +1938,7 @@ input.addEventListener('input', () => {
   input.style.height = 'auto'
   input.style.height = `${Math.min(140, input.scrollHeight)}px`
   drafts.set(currentSessionId, input.value)
+  drawMention()
   drawSend()
 })
 
