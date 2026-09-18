@@ -249,7 +249,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 349 条
+npm test                          # 全部 352 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -275,7 +275,7 @@ npm run check:extension           # 扩展脚本语法检查（Chrome 加载前�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 349 条
+npm test                 # 352 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -288,7 +288,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 不会把 `@deepseek-ai/*` 拉下来。宿主库由 `lib/deps.js` 在运行时从
 `$DSH_HOME/profiles/node_modules` 解析。
 
-**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **349 passing, 0 failing, 0 skipped**，
+**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **352 passing, 0 failing, 0 skipped**，
 `npm run check:extension` exit 0。前提是这台机器上装过 DSH（宿主库要能解析到）。
 
 **验证环境**：Node **v24.15.0**。两个 `package.json` 里的 `engines.node: ">=20"` 是**保守下限**，
@@ -306,7 +306,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面四层测试，349 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
+**已自动化验证**：上面四层测试，352 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
 
 侧边栏那部分还有一组**静态**检查，防止语言和版式漂回去：两个字典的键必须完全一致、面板里每个
 `t('…')` 的键都必须存在、HTML 里不允许残留裸文案、旧版文案一个都不许出现、**字典里不允许出现整句
@@ -364,6 +364,50 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 「宿主聚合 → 走 `notify` → service worker 转给面板 → 面板逐字画出来」这一段由
 `test/stream.test.js`（真 socket 上的帧形状）+ `test/panel-stream.test.js`（真跑面板模块）分段覆盖，
 **中间那一跳（Chrome 的 `chrome.runtime.sendMessage`）只做了结构断言，没有在真 Chrome 里点过**。
+
+#### v18：连点两次「＋」会建出两个会话，其中一个变成孤儿（本次修复）
+
+**症状**：`＋` 按钮发起一个网络往返，但**期间按钮不禁用、也没有 in-flight 状态**。
+连点两次 ⇒ 宿主建出**两个会话**，面板只能认领其中一个，另一个留在列表里，
+**没有任何东西解释它是哪来的**。
+
+**实测（探针，隔离 `DSH_HOME`）**：连发两次 `POST {action:'create'}` ⇒
+两个不同的 sessionId，列表从 2 个会话变成 4 个。
+
+**为什么这个必须修，而模型切换的同类竞态不修**：区别在**副作用是否永久**。
+
+| 动作 | 重复的后果 | 是否自愈 |
+|---|---|---|
+| `＋` 新建会话 | **多出一个会话**（宿主每次 mint 新 id） | **否**——孤儿永久留在列表里 |
+| 切换模型 | 面板本地记下过期的那次响应 | **是**——`refreshGroups` 每 5 秒从宿主读回真实状态 |
+
+模型切换确实也有竞态（面板按「谁先回来谁写本地」，宿主按「谁后完成谁生效」，
+两者顺序相反时会短暂显示错的值），但它 5 秒内自愈，而加互斥会让「换个模型」
+这种本该即时的操作多一层等待。**没有证据表明它有害，就不加。**
+
+**修法**
+
+- 新增 `let creating = false`，`newSession()` 里 `if (creating) return`，
+  并用 `try/finally` 释放——`finally` 是必要的：宿主拒绝时（老宿主 400、无工作区 500）
+  若不释放，按钮就再也按不动了。
+- 新增 `drawNew()`，与既有的 `drawSend()` 对称：**谁决定状态，谁负责画**。
+  `newButton.disabled = creating` + `aria-busy`，让连点既无效也可读。
+- 拆出 `createSession()` 承载原来的会话创建逻辑，`newSession()` 只负责守卫与重绘。
+- 视觉沿用既有的 `.icon:disabled { opacity: .4 }`，不新增样式。
+
+**证伪**（先 `node --check`，改完确认确实改到了）
+
+| 改坏什么 | 结果 |
+|---|---|
+| 去掉 `if (creating) return` | 1 红（351/1）——**正是「连点不产生第二个会话」那条** |
+| `drawNew` 不设 `disabled` | 1 红（351/1）——同一条 |
+
+**测试**：349 → **352 passed / 0 failed / 0 skipped**。新增 3 条：
+连点不产生第二个会话、被拒绝后按钮恢复、老宿主拒绝时也有话说。
+为此给测试宿主加了 `holdCreate`/`releaseCreate`——**这是唯一能观察到 in-flight 窗口的办法**：
+其他路由都是立即返回，一个只存在一个 microtask 的状态无法断言。
+
+**交付**：只改 `extension/` ⇒ **重载 Chrome 扩展**即可。
 
 #### v17：一个回合进行中，面板把「它在干活」说了两遍（本次修复）
 
@@ -799,7 +843,7 @@ v13 我已经在 health 里放了 `approvalPending`，**但面板从来没读它
 
 | 项 | 结果 |
 |---|---|
-| `npm test` | **349 passing, 0 failing, 0 skipped** |
+| `npm test` | **352 passing, 0 failing, 0 skipped** |
 | `npm run check:extension` | exit 0 |
 | **把 `content-selection.js` 换回 `git show HEAD:` 的那一版，再跑新测试** | **3 条变红**（接管、死副本被替换、失败后重试），换回新版全绿 → 测试确实能抓住这两个缺陷 |
 | 旧版跑「死副本被替换」用例 | 直接把进程打崩：`Error: Extension context invalidated.` —— 无人接管的 rejection，正是线上那个缺陷的真身 |
@@ -1107,7 +1151,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 349 条，含真实 Chrome 端到端
+└─ test/                  # 352 条，含真实 Chrome 端到端
 
 extension/
 ├─ manifest.json
