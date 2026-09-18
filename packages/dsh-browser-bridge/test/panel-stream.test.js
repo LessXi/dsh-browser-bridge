@@ -56,6 +56,14 @@ const host = {
   approvals: [],
   /** The answer `approval` gets, mutated per test. */
   approval: { status: 200, payload: { answered: true } },
+  /** Every `POST {action:'create'}` body, in order. */
+  created: [],
+  /** The answer `create` gets, mutated per test. */
+  create: { status: 200, payload: { created: true, sessionId: 'session-new' } },
+  /** When set, a `create` hangs until `releaseCreate` is called. */
+  holdCreate: null,
+  /** Set while a held `create` is waiting; calling it answers. */
+  releaseCreate: null,
   /** Extra fields for the health body; `approvalPending` is set per test. */
   health: {},
 }
@@ -138,6 +146,18 @@ globalThis.fetch = async (url, options = {}) => {
       host.approvals.push(body)
       return respond(host.approval.payload, host.approval.status)
     }
+    if (body.action === 'create') {
+      host.created.push(body)
+      // A create can be held open, which is the only way to observe the window
+      // where the request is in flight. Every other route here answers at once,
+      // and a state that exists for one microtask cannot be asserted on.
+      if (host.holdCreate !== null) {
+        return new Promise((resolve) => {
+          host.releaseCreate = () => resolve(respond(host.create.payload, host.create.status))
+        })
+      }
+      return respond(host.create.payload, host.create.status)
+    }
     return respond({ accepted: true })
   }
   if (address.includes('/browser-bridge/health')) return respond({ connected: true, ...host.health })
@@ -202,6 +222,7 @@ let transcript
 let sendButton
 let input
 let toast
+let newButton
 let turn = 0
 
 /**
@@ -237,6 +258,7 @@ transcript = registry.get('transcript')
 sendButton = registry.get('send')
 input = registry.get('input')
 toast = registry.get('toast')
+newButton = registry.get('new')
 
 // The import must have reached the host: if it did not, every assertion below
 // would be testing a panel that never selected a session and would pass
@@ -1148,4 +1170,70 @@ test('an IME candidate committed with Enter does not send the message', async ()
     assert.equal(host.sent.length, 1, 'a plain Enter no longer sends')
     assert.equal(host.sent[0].text, '逐字节一致')
   })
+})
+
+test('a second press of new-session cannot orphan a session', async () => {
+  // Creating is the one action here that makes something rather than reads it.
+  // The host mints a fresh id on every call while the panel can only adopt one,
+  // so a double press leaves the extra session in the list with nothing to
+  // explain where it came from. Measured against a real host: two calls, two
+  // ids, two rows.
+  await settleToIdle()
+  host.created.length = 0
+  host.holdCreate = true
+  newButton.click()
+  await settle()
+  assert.equal(host.created.length, 1, 'the first press never reached the host')
+
+  // The window is the round trip, which is why the request is held open here.
+  assert.equal(newButton.disabled, true, 'the button stayed live while a create was in flight')
+  assert.equal(newButton.getAttribute('aria-busy'), 'true')
+
+  newButton.click()
+  await settle()
+  assert.equal(host.created.length, 1, 'a second press asked the host for another session')
+
+  host.releaseCreate()
+  await settle()
+  host.holdCreate = null
+  assert.equal(newButton.disabled, false, 'the button stayed inert after the host answered')
+  assert.equal(newButton.getAttribute('aria-busy'), 'false')
+})
+
+test('a create the host refuses gives the button back', async () => {
+  // The inert state has to be released on every path out, or a refused create
+  // leaves the panel with a button nobody can press again.
+  await settleToIdle()
+  host.created.length = 0
+  host.holdCreate = true
+  host.create = { status: 500, payload: { created: false, reason: 'no workspace' } }
+  toast.textContent = ''
+  newButton.click()
+  await settle()
+
+  host.releaseCreate()
+  await settle()
+  host.holdCreate = null
+  host.create = { status: 200, payload: { created: true, sessionId: 'session-new' } }
+
+  assert.equal(newButton.disabled, false, 'a refused create left the button inert')
+  assert.ok(
+    toast.textContent.includes('no workspace'),
+    `the refusal never reached the user: ${JSON.stringify(toast.textContent)}`,
+  )
+})
+
+test('a stale host says so instead of a bare failure', async () => {
+  // On a host from before this route existed, `create` answers 400 with no
+  // shape the panel understands. That reads as "the button is broken" rather
+  // than "the host is old", and the fix is a restart the panel can name.
+  await settleToIdle()
+  host.create = { status: 400, payload: { error: 'unknown action "create"' } }
+  toast.textContent = ''
+  newButton.click()
+  await settle()
+  host.create = { status: 200, payload: { created: true, sessionId: 'session-new' } }
+
+  assert.equal(newButton.disabled, false, 'the button was left inert after a stale-host refusal')
+  assert.notEqual(toast.textContent, '', 'a refused create said nothing')
 })

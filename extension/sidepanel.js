@@ -92,6 +92,16 @@ let harnessPort = '3080'
 let sending = false
 /** True while a stop request is in flight. */
 let stopping = false
+/**
+ * True while a create request is in flight.
+ *
+ * Creating is the one action here that makes something rather than reads it, so
+ * a second click is not a repeated read — it is a second session. The host mints
+ * a fresh id every time and this panel can only show one of them, so without
+ * this the extra one is orphaned in the list with nothing to explain it. The
+ * window is small but the button is right where a hurried reader's finger is.
+ */
+let creating = false
 /** `'chat'` or `'history'`. */
 let view = 'chat'
 /**
@@ -228,6 +238,7 @@ function paintStaticCopy() {
   toBottom.setAttribute('aria-label', t('action.toBottom'))
   input.placeholder = t('composer.placeholder')
   drawSend()
+  drawNew()
   modelButton.setAttribute('aria-label', t('model.select'))
   document.title = t('panel.title')
   offline.textContent = t('error.hostDown')
@@ -1464,6 +1475,37 @@ async function newSession() {
     say(t('error.restartHost'))
     return
   }
+  if (creating) return
+  creating = true
+  drawNew()
+  try {
+    await createSession()
+  } finally {
+    creating = false
+    drawNew()
+  }
+}
+
+/**
+ * Draw the new-session button for the work it is doing.
+ *
+ * The click starts a round trip, and the button is the only thing that can say
+ * so: the panel has nothing else to change until the host answers. It goes
+ * inert for the duration rather than staying open, because a second press is a
+ * second session and not a repeat of the same one.
+ *
+ * @returns {void}
+ */
+function drawNew() {
+  newButton.disabled = creating
+  newButton.setAttribute('aria-busy', String(creating))
+}
+
+/**
+ * Ask the host for a session and adopt it.
+ * @returns {Promise<void>} Resolves once the new session is on screen.
+ */
+async function createSession() {
   const workspaceId = currentGroup()?.id
   const result = await bridge('/browser-bridge/chat', {
     method: 'POST',
