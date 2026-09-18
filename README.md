@@ -249,7 +249,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 380 条
+npm test                          # 全部 381 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -275,7 +275,7 @@ npm run check:extension           # 扩展脚本语法检查（Chrome 加载前�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 380 条
+npm test                 # 381 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -288,7 +288,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 不会把 `@deepseek-ai/*` 拉下来。宿主库由 `lib/deps.js` 在运行时从
 `$DSH_HOME/profiles/node_modules` 解析。
 
-**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **380 passing, 0 failing, 0 skipped**，
+**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **381 passing, 0 failing, 0 skipped**，
 `npm run check:extension` exit 0。前提是这台机器上装过 DSH（宿主库要能解析到）。
 
 **验证环境**：Node **v24.15.0**。两个 `package.json` 里的 `engines.node: ">=20"` 是**保守下限**，
@@ -306,7 +306,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面四层测试，380 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
+**已自动化验证**：上面四层测试，381 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
 
 侧边栏那部分还有一组**静态**检查，防止语言和版式漂回去：两个字典的键必须完全一致、面板里每个
 `t('…')` 的键都必须存在、HTML 里不允许残留裸文案、旧版文案一个都不许出现、**字典里不允许出现整句
@@ -364,6 +364,57 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 「宿主聚合 → 走 `notify` → service worker 转给面板 → 面板逐字画出来」这一段由
 `test/stream.test.js`（真 socket 上的帧形状）+ `test/panel-stream.test.js`（真跑面板模块）分段覆盖，
 **中间那一跳（Chrome 的 `chrome.runtime.sendMessage`）只做了结构断言，没有在真 Chrome 里点过**。
+
+#### v25：看着「历史」视图时被问到审批，回合永远卡住（本次修复）
+
+**症状**：这正是你最早报的那个——「dsh 在等待审批，用户在浏览器插件中，不切回来看永远也不知道，
+然后就卡住了」。v13 把审批卡片做进了侧边栏，但**只要当时面板停在「历史」视图，卡片永远不会出现**。
+
+**根因**：卡片由健康轮询里的 `adoptOpenApproval()` 领养，而它第一行就是
+
+```js
+if (view !== 'chat') return
+```
+
+这个判断本身是**对的**——卡片属于对话，画在历史上是一张给没人看的转写稿的卡片。
+**错的是另一半**：切回对话时，`showView()` **什么都不做**。而健康轮询 5 秒一次，
+所以下一次领养要等最多 5 秒——**在那之前对话是冻结的**，看起来就像坏了。
+
+**修法**：把最后一次健康回答**留着**（`lastHealth`），`showView('chat')` 时立刻重新领养一次。
+
+```
+刷新健康 → lastHealth = payload → adoptOpenApproval(payload)
+切回对话 → adoptFromLastHealth() → adoptOpenApproval(lastHealth)
+```
+
+**为什么不留着等下一次轮询**：5 秒的冻结对话和「坏了」不可区分，而这正是用户报的那个症状。
+
+**测试写法**：先点 `#title` 打开历史 → 让宿主报告一个未决问题 → 断言**历史下没有卡片**（
+确认那个判断还在起作用）→ 再点一次切回 → 断言**卡片在**。**视图切换此前零覆盖。**
+
+**证伪**（先 `node --check`，改完确认确实改到了）
+
+| 改坏什么 | 结果 |
+|---|---|
+| `showView` 不再重新领养 | 1 红 |
+| `refreshHealth` 不保留回答 | 1 红 |
+
+**测试**：380 → **381 passed / 0 failed / 0 skipped**。
+
+**本轮另一件事：验证目标被环境挡住了，如实记录。** 我原本要验证两条「看起来能工作但没被端到端验证」
+的路径，探针上做不到：
+
+- **审批**：需要一个**真的调用了需审批工具**的回合，而探针**没有 provider 凭据**（回合在调用工具前
+  就因 `MISSING_CREDENTIAL` 失败），也**没有扩展连着**（`#notify` 必然失败走 `undeliverable` 分支）。
+  所以 `asked`/`delivered`/`byPanel` 三个计数在探针上永远是 0。
+  能验的只有防御分支，且已验：对不存在的 id 与非法 outcome 都返回 `409 {"answered":false,…}`，
+  `refused` 计数从 0 正确增长到 2。
+- **停止**：**实测到这个边界**——对一个**没有回合在跑**的会话按停止，宿主返回
+  `{"cancelled": true}`（`cancel(request)` 里 `agent.cancel(...)` 之后**无条件** `return {accepted:true}`）。
+  面板据此把按钮切回发送、清掉「思考中…」。**这不是缺陷**（用户按停止时确实期望它停下），
+  但它意味着**「宿主说停下了」不等于「刚才确实有回合在跑」**——这个区别写在这里，免得以后被当成 bug 修。
+
+**交付**：只改 `extension/` ⇒ **重载 Chrome 扩展**即可。
 
 #### v24：`@` 提及之后的三个缺陷（本次修复）
 
@@ -1138,7 +1189,7 @@ v13 我已经在 health 里放了 `approvalPending`，**但面板从来没读它
 
 | 项 | 结果 |
 |---|---|
-| `npm test` | **380 passing, 0 failing, 0 skipped** |
+| `npm test` | **381 passing, 0 failing, 0 skipped** |
 | `npm run check:extension` | exit 0 |
 | **把 `content-selection.js` 换回 `git show HEAD:` 的那一版，再跑新测试** | **3 条变红**（接管、死副本被替换、失败后重试），换回新版全绿 → 测试确实能抓住这两个缺陷 |
 | 旧版跑「死副本被替换」用例 | 直接把进程打崩：`Error: Extension context invalidated.` —— 无人接管的 rejection，正是线上那个缺陷的真身 |
@@ -1477,7 +1528,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 380 条，含真实 Chrome 端到端
+└─ test/                  # 381 条，含真实 Chrome 端到端
 
 extension/
 ├─ manifest.json

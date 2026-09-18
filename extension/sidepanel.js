@@ -180,6 +180,17 @@ let menuOpen = false
  */
 let mention = null
 /**
+ * The last health answer, kept so a question can be adopted on demand.
+ *
+ * The adoption is skipped while the history is the visible view, so the answer
+ * that arrived during that time is the only record of it. Without this the
+ * panel would have to wait up to five seconds — one poll — to notice, and the
+ * conversation would look frozen in the meantime.
+ *
+ * @type {object | null}
+ */
+let lastHealth = null
+/**
  * The tab picked with `@`, or null.
  *
  * Separate from `currentTab` because they answer different questions: that one
@@ -1463,7 +1474,25 @@ function showView(next) {
   renderTitle()
   titleButton.setAttribute('aria-expanded', String(next === 'history'))
   if (next === 'history') drawHistory()
+  else adoptFromLastHealth()
   updateToBottom()
+}
+
+/**
+ * Pick up an open question from the health answer the panel already has.
+ *
+ * `adoptOpenApproval` skips the adoption while the history is the visible view,
+ * because a card belongs to a transcript nobody is looking at then. The other
+ * half of that decision is here: coming back has to look again, or a turn waits
+ * forever behind a card that is never drawn. Health is polled every five
+ * seconds, so waiting for the next tick would be up to five seconds of a frozen
+ * conversation — visible, and long enough to look broken.
+ *
+ * @returns {void}
+ */
+function adoptFromLastHealth() {
+  if (lastHealth === null) return
+  adoptOpenApproval(lastHealth)
 }
 
 /**
@@ -1481,6 +1510,10 @@ async function refreshHealth() {
   const { payload, status } = await bridge('/browser-bridge/health')
   setHostReachable(status !== 0)
   bridgeConnected = hostReachable && payload?.connected === true
+  // Kept, not just used: a question reported while the history was open has to
+  // be adoptable the moment the conversation comes back, and the next poll can
+  // be five seconds away.
+  lastHealth = payload ?? null
   adoptOpenApproval(payload)
   renderContexts()
   drawSend()

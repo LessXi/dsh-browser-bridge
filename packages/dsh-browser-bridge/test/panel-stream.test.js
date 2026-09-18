@@ -1208,6 +1208,33 @@ test('a host too old to report open questions does not have its card taken away'
   })
 })
 
+test('a question asked while the history is open is there on the way back', async () => {
+  // The card is adopted from the health poll, and that poll skips the adoption
+  // unless the conversation is the visible view — a card drawn over the history
+  // would be a card for a transcript nobody is looking at. The other half of
+  // that decision is what this pins: coming back has to pick the question up,
+  // or a turn waits forever behind a card that is never drawn.
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    await clearApproval()
+
+    // Open the history, then let the host report a question.
+    registry.get('title').click()
+    await settle()
+    host.health = { approvalPending: [{ id: 'panel-30', sessionId: SESSION, toolName: 'browser_click' }] }
+    await pollHealth()
+    assert.equal(approvalCard(), null, 'a card was drawn over the history')
+
+    // Back to the conversation. The question is still open — the host says so —
+    // so it has to be waiting here.
+    registry.get('title').click()
+    await settle()
+    assert.notEqual(approvalCard(), null, 'the question was open and never came back on screen')
+    host.health = {}
+    await clearApproval()
+  })
+})
+
 test('the panel finishes starting up, with every poll armed', async () => {
   // `start` is a chain of awaits, and a missing global aborts it partway. The
   // panel still drew a transcript, so every test that only touched the
