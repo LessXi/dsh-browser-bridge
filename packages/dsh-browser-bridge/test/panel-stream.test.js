@@ -109,7 +109,14 @@ const groupsPayload = () => ({
     {
       id: 'workspace-1',
       title: 'A workspace',
-      sessions: [{ id: SESSION, title: 'A session', updatedAt: 0, running: host.running, blank: false }],
+      sessions: [
+        { id: SESSION, title: 'A session', updatedAt: 0, running: host.running, blank: false },
+        // Listed, so a test can switch to it by clicking the row. Without a
+        // second session in the list, "switching" is not reachable at all and
+        // every renderer's assumption that its state belongs to the session on
+        // screen goes untested.
+        { id: OTHER, title: 'Another session', updatedAt: 0, running: false, blank: false },
+      ],
     },
   ],
 })
@@ -345,6 +352,62 @@ function dropMentioned() {
   const chip = chips.find((each) => each.getAttribute('title')?.startsWith(`${zh['at.list']} · `) === true)
   if (chip === undefined) return
   chip.querySelector('button').click()
+}
+
+/**
+ * Put another session on screen, the way a person does: open the history and
+ * click its row.
+ *
+ * Driving it through the list rather than calling the internal function keeps
+ * the test honest about what a switch involves — the rows are the only way in.
+ *
+ * The view is forced rather than toggled. `#title` is a toggle, so a test that
+ * happens to leave the history open would have this click take it the wrong
+ * way; the suite shares one panel and every other test assumes the conversation
+ * is showing when it starts.
+ *
+ * @param {string} sessionId - The session to open.
+ * @returns {Promise<void>} Resolves once the panel has switched and is back in
+ *   the conversation.
+ */
+async function switchTo(sessionId) {
+  // The list is drawn from the panel's copy of the host's answer, so the copy
+  // has to be current before a row can be clicked: a test that changed the
+  // session list would otherwise be clicking a stale one.
+  await clockOf('groups')
+  if (currentViewInPanel() === 'chat') {
+    registry.get('title').click()
+    await settle()
+  }
+
+  const rows = registry.get('history').querySelectorAll('button')
+  const wanted = sessionId === OTHER ? 'Another session' : 'A session'
+  const row = rows.find((button) => button.textContent.includes(wanted))
+  assert.notEqual(
+    row,
+    undefined,
+    `no row to switch to ${sessionId}: ${JSON.stringify(rows.map((button) => button.textContent))}`,
+  )
+  row.click()
+  await settle()
+
+  // Back to the conversation, where every other test expects to be.
+  if (currentViewInPanel() === 'history') {
+    registry.get('title').click()
+    await settle()
+  }
+}
+
+/**
+ * Which view the panel is showing, read from the DOM it controls.
+ *
+ * `history` is the element to read: it starts `hidden` in the markup and the
+ * panel owns its visibility, so it is false only while the conversation shows.
+ *
+ * @returns {'chat'|'history'} The view.
+ */
+function currentViewInPanel() {
+  return registry.get('history').hidden ? 'chat' : 'history'
 }
 
 /**
@@ -1281,6 +1344,89 @@ test('the working row comes back with the conversation', async () => {
       'the turn was running and the waiting row never came back',
     )
     await settleToIdle()
+  })
+})
+
+test('a reply streaming in another session is not drawn on this one', async () => {
+  // `live` carries the session it belongs to, and `applyDelta` refuses frames
+  // for another session — but switching sessions does not go through
+  // `applyDelta`. So the block belonging to the session being left has to be
+  // dropped on the way out, or the text of one conversation appears inside
+  // another, under that conversation's title.
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    await switchTo(SESSION)
+    await startTurn()
+    deliver({ sessionId: SESSION, kind: 'start' })
+    await settle()
+    deliver({ sessionId: SESSION, kind: 'text', text: '这是第一个会话的回答' })
+    await settle()
+    assert.equal(liveBody()?.textContent, '这是第一个会话的回答', 'the live block was never drawn')
+
+    // Leave for another conversation.
+    await switchTo(OTHER)
+    assert.equal(liveNode(), null, 'the other session\'s reply is still on screen')
+
+    // And its own turn keeps writing, into a conversation nobody is looking at.
+    deliver({ sessionId: SESSION, kind: 'text', text: '，还在继续' })
+    await settle()
+    assert.equal(liveNode(), null, 'a frame for the session we left was drawn here')
+
+    await switchTo(SESSION)
+    await settleToIdle()
+  })
+})
+
+test('an approval question does not follow you into another session', async () => {
+  // A card offers two buttons that answer one specific question, in one specific
+  // session. Drawn over a different conversation it is an offer to answer
+  // something that conversation never asked.
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    await clearApproval()
+    await switchTo(SESSION)
+    host.health = { approvalPending: [{ id: 'panel-40', sessionId: SESSION, toolName: 'browser_click' }] }
+    await pollHealth()
+    assert.notEqual(approvalCard(), null, 'the question was never adopted, so this proves nothing')
+
+    await switchTo(OTHER)
+    assert.equal(approvalCard(), null, 'a card for another session came along')
+
+    host.health = {}
+    await switchTo(SESSION)
+    await clearApproval()
+  })
+})
+
+test('a tab mentioned in one session does not attach to the next', async () => {
+  // The mention is a decision about one message. Carried across a session
+  // switch it becomes a standing promise about a conversation it was never
+  // made for — and the chip row would say so.
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    await switchTo(SESSION)
+    const other = host.tabs.find((each) => each.id === 11)
+    await mentionTab('DSH')
+    assert.equal(
+      contexts.querySelectorAll('span').filter((node) => node.className.includes('chip')).length,
+      2,
+      'the mention was never installed',
+    )
+
+    await switchTo(OTHER)
+    const chips = contexts
+      .querySelectorAll('span')
+      .filter((node) => node.className.includes('chip'))
+      .map((chip) => chip.getAttribute('title'))
+    assert.equal(
+      chips.some((title) => title?.includes(other.title) === true),
+      false,
+      `the mention followed the switch: ${JSON.stringify(chips)}`,
+    )
+
+    // Hand the suite back the session it started on: the panel is shared, and
+    // every other test assumes the session it was written against.
+    await switchTo(SESSION)
   })
 })
 

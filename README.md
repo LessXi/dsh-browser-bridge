@@ -249,7 +249,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 383 条
+npm test                          # 全部 386 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -275,7 +275,7 @@ npm run check:extension           # 扩展脚本语法检查（Chrome 加载前�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 383 条
+npm test                 # 386 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -288,7 +288,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 不会把 `@deepseek-ai/*` 拉下来。宿主库由 `lib/deps.js` 在运行时从
 `$DSH_HOME/profiles/node_modules` 解析。
 
-**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **383 passing, 0 failing, 0 skipped**，
+**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **386 passing, 0 failing, 0 skipped**，
 `npm run check:extension` exit 0。前提是这台机器上装过 DSH（宿主库要能解析到）。
 
 **验证环境**：Node **v24.15.0**。两个 `package.json` 里的 `engines.node: ">=20"` 是**保守下限**，
@@ -306,7 +306,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面四层测试，383 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
+**已自动化验证**：上面四层测试，386 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
 
 侧边栏那部分还有一组**静态**检查，防止语言和版式漂回去：两个字典的键必须完全一致、面板里每个
 `t('…')` 的键都必须存在、HTML 里不允许残留裸文案、旧版文案一个都不许出现、**字典里不允许出现整句
@@ -364,6 +364,57 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 「宿主聚合 → 走 `notify` → service worker 转给面板 → 面板逐字画出来」这一段由
 `test/stream.test.js`（真 socket 上的帧形状）+ `test/panel-stream.test.js`（真跑面板模块）分段覆盖，
 **中间那一跳（Chrome 的 `chrome.runtime.sendMessage`）只做了结构断言，没有在真 Chrome 里点过**。
+
+#### v27：切换会话时，上一个会话的东西跟着过来了（本次修复）
+
+**v26 的结论是「状态切换时不重绘是系统性缺陷来源」，那一轮查的是 `view` 维度。
+这一轮查下一个维度：切换会话。** `selectSession()` 清了 `expandedReasoning`、
+`drawnSignature`、`transcript`、`stickToBottom`，但没清三样属于**被离开的那个会话**的东西：
+
+| 没清的状态 | 后果 |
+|---|---|
+| `live`（流式块） | **上一个会话正在输出的文字，画在新会话的转写稿上** |
+| `pendingApproval`（审批卡） | 卡片跟着过来，两个按钮要回答的是新会话**从没问过**的问题 |
+| `mentioned`（`@` 提及的标签页） | 那条提及会挂到**下一条消息**上，而它从没被选中过 |
+
+`applyDelta` 有会话守卫（`payload.sessionId !== currentSessionId` 就丢弃），
+**但切换会话本身不经过 `applyDelta`** —— `live` 原样留着，于是它自己的守卫形同虚设。
+
+**为什么会漏掉**：`live` 是**唯一带着 `sessionId` 字段的状态**，而**没有任何渲染器比对它**。
+字段存在、没人读 —— 这和 v23/v24 那个「短 URL 当成了 URL」是同一类：
+**看起来在传递身份的信息，其实没被任何判据使用。**
+
+**修法两层：**
+
+1. `selectSession()` 在会话确实变了时清掉 `live` / `pendingApproval` / `mentioned`。
+2. **`adoptOpenApproval` 改成只采纳当前会话的问题**。只做第 1 层不够——
+   宿主的 health 报告**所有**未决问题，切换后 `adoptFromLastHealth` 会**立刻把别会话的卡重新领养回来**。
+   第 2 层是证伪 `scope` 那次才逼出来的。
+
+**测试写法**：视图切换在 v25 之前零覆盖，**会话切换在此之前也是零覆盖** ——
+夹具的会话列表里只有一个会话，所以「切换」根本不可达。
+这一轮给夹具加了第二个会话，并用**点击历史列表里的行**来切换（那是唯一入口）。
+
+**证伪（五次，每次红的组合都不同）**
+
+| 改坏什么 | 结果 |
+|---|---|
+| 全部不清 | **5 红** |
+| 只不清 `live` | 1 红 |
+| 只不清 `pendingApproval` | 1 红 |
+| 只不清 `mentioned` | 3 红 |
+| 采纳不按会话过滤 | 1 红 |
+
+**测试**：383 → **386 passed / 0 failed / 0 skipped**（新增 3 条）。
+
+**顺带踩到一个测试基础设施的坑**：`#title` 是**切换**（toggle），不是「打开历史」。
+我第一版的 `switchTo` 助手按「当前是否在对话」决定点不点，结果测试若恰好停在历史视图，
+它会往**反方向**切 —— 三个新测试和两个既有测试同时变红，看起来像产品坏了，
+实际是助手把面板留在了错误视图。
+**教训：切换型控件不能用「条件点击」伪装成「设为某值」，要么先读状态再决定点几次，
+要么直接断言最终状态。**
+
+**交付**：只改 `extension/` ⇒ **重载 Chrome 扩展**即可。
 
 #### v26：看着「历史」视图时，正在流式输出的回答被丢掉（本次修复）
 
@@ -1239,7 +1290,7 @@ v13 我已经在 health 里放了 `approvalPending`，**但面板从来没读它
 
 | 项 | 结果 |
 |---|---|
-| `npm test` | **383 passing, 0 failing, 0 skipped** |
+| `npm test` | **386 passing, 0 failing, 0 skipped** |
 | `npm run check:extension` | exit 0 |
 | **把 `content-selection.js` 换回 `git show HEAD:` 的那一版，再跑新测试** | **3 条变红**（接管、死副本被替换、失败后重试），换回新版全绿 → 测试确实能抓住这两个缺陷 |
 | 旧版跑「死副本被替换」用例 | 直接把进程打崩：`Error: Extension context invalidated.` —— 无人接管的 rejection，正是线上那个缺陷的真身 |
@@ -1578,7 +1629,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 383 条，含真实 Chrome 端到端
+└─ test/                  # 386 条，含真实 Chrome 端到端
 
 extension/
 ├─ manifest.json

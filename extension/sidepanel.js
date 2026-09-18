@@ -1564,7 +1564,14 @@ function adoptOpenApproval(payload) {
     }
     return
   }
-  const next = open.find((entry) => typeof entry?.id === 'string' && typeof entry?.sessionId === 'string')
+  // Only the question belonging to the conversation on screen. The host reports
+  // every open one, and a card offers two buttons that answer one specific
+  // question: drawn over a conversation that never asked it, it is an offer to
+  // answer something else — and answering it would settle a decision the reader
+  // cannot see the context for.
+  const next = open.find(
+    (entry) => typeof entry?.id === 'string' && entry?.sessionId === currentSessionId,
+  )
   if (next === undefined) return
   pendingApproval = {
     id: next.id,
@@ -1629,6 +1636,15 @@ function selectSession(sessionId) {
     drawnSignature = ''
     transcript.replaceChildren()
     stickToBottom = true
+    // Everything below belongs to the session being left, and none of it is
+    // reachable through `applyDelta`'s session check, because a switch does not
+    // go through `applyDelta`. Carried across, the text of one conversation is
+    // drawn inside another, a card offers to answer a question that the visible
+    // conversation never asked, and a mentioned tab attaches to a message it was
+    // never chosen for.
+    live = null
+    pendingApproval = null
+    mentioned = null
     restoreDraft()
   }
   const session = currentSession()
