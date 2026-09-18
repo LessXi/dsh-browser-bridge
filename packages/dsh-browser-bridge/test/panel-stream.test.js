@@ -27,6 +27,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { test, assert } from './harness.js'
 import { makeDocument } from './dom-shim.js'
+import { zh } from '../../../extension/locales.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const extensionDir = join(here, '..', '..', '..', 'extension')
@@ -613,6 +614,32 @@ function copyButtonIn(scope) {
   return transcript.querySelector(scope).querySelector('.copy')
 }
 
+test('a failed turn is still visible after the panel is reloaded', async () => {
+  // The live toast is gone the moment the panel is rebuilt. The host puts the
+  // failure in the transcript so a reload, a cold replay, or a second window
+  // all still explain why the conversation stops after the user's message.
+  await show([
+    { kind: 'user', text: 'probe' },
+    { kind: 'failed', text: 'no API key for provider route "deepseek-official"' },
+  ])
+
+  const row = transcript.querySelector('.row[data-kind="failed"]')
+  assert.notEqual(row, null, 'the failed turn left no row behind')
+  assert.equal(
+    row.querySelector('.failure').textContent,
+    'no API key for provider route "deepseek-official"',
+    'the row does not carry the reason the host sent',
+  )
+})
+
+test('a failure row with no reason of its own still says something', async () => {
+  // An empty row would be the same silence, just harder to notice.
+  await show([{ kind: 'failed', text: '' }])
+
+  const row = transcript.querySelector('.row[data-kind="failed"]')
+  assert.equal(row.querySelector('.failure').textContent, zh['error.turnFailed'])
+})
+
 test('a code block can be copied without selecting it by hand', async () => {
   await show([{ kind: 'assistant', text: 'Run this:\n\n```sh\nls -la\n```\n' }])
 
@@ -911,6 +938,93 @@ test('the panel finishes starting up, with every poll armed', async () => {
   assert.equal(startupToast, '', 'startup reported a failure')
   assert.equal(startupClocks, 4, `start armed ${startupClocks} poll(s), expected 4`)
   assert.equal(focusListeners.length, 1, 'the focus listener that refreshes the chip was not registered')
+})
+
+test('a turn that died says so, rather than going quiet', async () => {
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    await startTurn()
+    toast.textContent = ''
+
+    // What a refused provider request looks like by the time it reaches the
+    // panel: a `failed` frame carrying the provider's own words. Nothing was
+    // committed, so the re-read that normally swaps the live block for parsed
+    // markdown finds the same transcript as before — left alone, the shimmer
+    // just stops and the person watching is told nothing.
+    deliver({ sessionId: SESSION, kind: 'failed', text: 'no API key for provider route "deepseek-official"' })
+    await settle()
+
+    assert.equal(
+      toast.textContent,
+      'no API key for provider route "deepseek-official"',
+      `the panel did not repeat the host's reason (toast was "${toast.textContent}")`,
+    )
+    assert.equal(
+      transcript.querySelector('.working'),
+      null,
+      'the panel is still drawing a turn that is over',
+    )
+    assert.equal(sendButton.dataset.mode, undefined, 'the composer still offers a stop for a dead turn')
+  })
+})
+
+test('a failure with no reason of its own still gets words', async () => {
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    await startTurn()
+    toast.textContent = ''
+
+    // The host omits `text` when the provider said nothing useful. An empty
+    // toast would be the same silence this whole path exists to remove.
+    deliver({ sessionId: SESSION, kind: 'failed' })
+    await settle()
+
+    assert.equal(
+      toast.textContent,
+      zh['error.turnFailed'],
+      `a reasonless failure said nothing (toast was "${toast.textContent}")`,
+    )
+  })
+})
+
+test('a panel that missed the start is still told the turn died', async () => {
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    // No `start` frame: this is a panel opened, reloaded, or reconnected while
+    // the turn was already running. The `live` guard used to swallow the end
+    // that followed, so the failure had to be reported before it, not after.
+    toast.textContent = ''
+    deliver({ sessionId: SESSION, kind: 'failed' })
+    await settle()
+
+    assert.equal(
+      toast.textContent,
+      zh['error.turnFailed'],
+      `a panel that missed the start was told nothing (toast was "${toast.textContent}")`,
+    )
+  })
+})
+
+test('a panel built before the host changed still reads the older failure shape', async () => {
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    await startTurn()
+    toast.textContent = ''
+
+    // An earlier host reported a dead attempt as an ordinary `end` carrying
+    // `failed: true`. A panel is reloaded independently of the host, so both
+    // shapes have to be understood or the two halves desynchronise into
+    // silence — exactly the class of bug this reporting exists to fix.
+    deliver({ sessionId: SESSION, kind: 'end', failed: true })
+    await settle()
+
+    assert.equal(
+      toast.textContent,
+      zh['error.turnFailed'],
+      `the older failure shape went unheard (toast was "${toast.textContent}")`,
+    )
+    assert.equal(transcript.querySelector('.working'), null, 'the panel is still drawing a turn that is over')
+  })
 })
 
 test('an IME candidate committed with Enter does not send the message', async () => {

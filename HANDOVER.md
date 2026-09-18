@@ -1,14 +1,69 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v14 已交付。** 下一节就是最新的一轮改动；下面标 v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v14 那一段为止即可。
+> **当前状态：v15 已交付。** 下一节就是最新的一轮改动；下面标 v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v15 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（320 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（336 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 >
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
+
+> ### v15：回合失败长得像「模型没话说」，因为我第一次找错了信号（宿主 + 扩展，本次修复）
+>
+> **症状**：请求被拒（无 API key／路线不可达／额度用尽）时，侧边栏的「思考中…」只是停下，
+> 什么也不说——已提交的输入孤零零留着，看起来像模型选择沉默。
+>
+> **第一次修错了，错法必须记住。** 第一版推理：end 帧带 `outcome`，成功 `{kind:'committed'}`、
+> 抛出 `{kind:'abandoned'}`，所以把 `abandoned` 当失败判据，测试夹具也照这个假设造，**全绿**。
+> 之后在真探针上发了一条必然失败的请求，health 报 **`ends:1, failed:0`** —— 判据从未触发。
+>
+> **真实形状**（解码 `session.v3.jsonl.zstd` 拿到；日志是多 zstd frame 拼接，
+> **必须按 magic `28 B5 2F FD` 切分逐帧解压**，`zstdDecompressSync` 只解第一帧）：
+> 19 条事件里**没有任何 `assistant/message`**；`assistant/attempt` 的 `stream` 是**一个 `finish` chunk**
+> `{"type":"finish","reason":{"kind":"error","failure":{...,"code":"MISSING_CREDENTIAL"}}}`；
+> `turn/end` 带 `reason={kind:'error',error:{message,code}}`。
+>
+> **为什么 `outcome` 承载不了失败**：`dsh-agent-loop/lib/index.js:1080-1095` 在 `finish.kind==='error'`
+> 时**先** `live.settle('assistant/attempt', …)`，而 `settle()`（`:420-440`）置 `terminal=true`；
+> 只有 `:1119` 的 `if (!live.ended) live.abandon()` 才发 `abandoned`，它被上面那步挡住。
+> 于是失败回合发的是 `{kind:'committed'}`，**与成功逐字节相同**。
+> 真正的实时信号是被我丢进 `ignored` 的那个 `finish` chunk（`dsh-llm/lib/index.js:2337`
+> `adapterFailureChunk` 的注释写明：适配器抛出会转成终态 `error`/`aborted` finish chunk）。
+>
+> **修法两层，都建在实测形状上**：
+> 1. **实时** — `lib/stream.js` 的 `deltaOfFrame` 新增 `kind:'failed'`（`chunk.type==='finish'` 且
+>    `reason.kind==='error'` ⇒ `{kind:'failed', text: message}`）；relay 新增 `failed` 计数并在同一跳
+>    把 `text` 一起送达（**从 `kind` 重建 payload 会第二次丢掉原因**）；面板分支**必须放在
+>    `if (live === null) return` 之前**，说宿主原话、无原因时回落 `error.turnFailed`。
+>    `reason.kind==='aborted'`（用户按的停止）**不算失败**。
+> 2. **持久** — 失败回合不提交 assistant 消息，所以 `lib/chat.js` 的 `describeEvents` 新增 `turn/end`
+>    分支：`reason.kind==='error'` 才产出 `{kind:'failed', text}` 行（`FAILURE_TEXT_MAX=160`），
+>    `aborted` 与正常结束都不产出；面板画成一行 `.failure`。
+>    **没有这层，重载面板后失败又消失**——同一类缺陷藏在持久层。
+>
+> **实测（隔离 `DSH_HOME` 的探针，用户 3080 全程未碰）**：修复后 health 由
+> `{frames:3,ignored:1,…ends:1,failed:0}` 变为 `{frames:3,ignored:0,…ends:1,failed:1}`；
+> 热读 2 行（`[user]` + `[failed]` 带 provider 原话）；**冷重放同样 2 行**（重启探针后）；
+> 已装副本（非 junction）同样带 `failed` 字段与 2 行。
+>
+> **证伪三次**（先 `node --check`，并比字节数确认真的改到了）：`finish` 分支短路 → 4 红；
+> `turn/end` 分支短路 → 3 红；面板 `row.kind==='failed'` 短路 → 2 红。
+>
+> **顺带修掉测试基础设施的盲区**：`test/dom-shim.js` 的 `matches()` 原本只认 tag/`.class`/`#id`，
+> 遇到 `[data-kind="failed"]` **静默返回「不匹配」而不是报错**，断言变成对空气断言。
+> 已补 `[attr]`/`[attr="value"]` 与复合选择器。**教训：选择器看不懂就静默不匹配，
+> 让测试红得莫名其妙，也让本该抓 bug 的断言永远为真。**
+>
+> **顺带修掉一个与本插件无关、但会炸用户环境的 P0**：用户 profile 的 `cordis.patch.yml`
+> 重复 insert 了 `ui-agent-team`，而官方 bundle `dsh-experimental-agent-team-web-profile`
+> 自己已经 insert 了同一个 id ⇒ `duplicate loader entry id: ui-agent-team`，**下次 `dsh web`
+> 重启必崩**（3080 当时跑的是旧树，侥幸）。已按用户选择删掉 profile 里重复的那段（保留
+> `mcp-everything`），用隔离 `DSH_HOME` + 真实配置验证能正常启动。备份在
+> `%TEMP%\cordis.patch.yml.bak-20260918-160636`。
+>
+> **交付：`lib/` + `extension/` 都改了 ⇒ 重启 `dsh web` + 重载 Chrome 扩展。**
 
 > ### v14：输入法 Enter、后开面板、以及测试一直在跑半启动的面板（扩展侧，本次修复）
 >

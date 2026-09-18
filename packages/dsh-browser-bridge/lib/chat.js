@@ -57,6 +57,16 @@ const TITLE_MAX = 60
 const CONTEXT_LABEL_MAX = 60
 
 /**
+ * Longest a failure reason may be before it is clipped.
+ *
+ * Provider failures are written for a developer reading a log, and some are
+ * several lines of remediation advice. The panel shows one line; the full text
+ * stays in the session log and in the live toast, which is where someone who
+ * wants to act on it will look.
+ */
+const FAILURE_TEXT_MAX = 160
+
+/**
  * Argument keys worth showing in a tool row, most specific first.
  *
  * A tool row is a single line, so the useful thing is the noun the call acted
@@ -314,6 +324,19 @@ export function describeEvents(events, api) {
             if (text.length > 0) rows.push({ kind: 'reasoning', text })
           }
         }
+        break
+      }
+
+      case 'turn/end': {
+        // A turn that died commits no assistant message, so without this the
+        // transcript of a failed turn is just the user's message and then
+        // nothing — the same silence the live `failed` frame exists to break,
+        // except this one survives a reload and a cold replay. Only `error` is
+        // reported: `aborted` means the turn was stopped on purpose, which the
+        // person did themselves, and a normal turn ends with no reason at all.
+        if (data?.reason?.kind !== 'error') break
+        const text = oneLine(asText(data.reason.error?.message), FAILURE_TEXT_MAX)
+        rows.push({ kind: 'failed', text })
         break
       }
 

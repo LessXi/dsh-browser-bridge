@@ -249,7 +249,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 320 条
+npm test                          # 全部 336 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -275,7 +275,7 @@ npm run check:extension           # 扩展脚本语法检查（Chrome 加载前�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 320 条
+npm test                 # 336 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -288,7 +288,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 不会把 `@deepseek-ai/*` 拉下来。宿主库由 `lib/deps.js` 在运行时从
 `$DSH_HOME/profiles/node_modules` 解析。
 
-**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **320 passing, 0 failing, 0 skipped**，
+**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **336 passing, 0 failing, 0 skipped**，
 `npm run check:extension` exit 0。前提是这台机器上装过 DSH（宿主库要能解析到）。
 
 **验证环境**：Node **v24.15.0**。两个 `package.json` 里的 `engines.node: ">=20"` 是**保守下限**，
@@ -306,7 +306,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面四层测试，320 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
+**已自动化验证**：上面四层测试，336 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
 
 侧边栏那部分还有一组**静态**检查，防止语言和版式漂回去：两个字典的键必须完全一致、面板里每个
 `t('…')` 的键都必须存在、HTML 里不允许残留裸文案、旧版文案一个都不许出现、**字典里不允许出现整句
@@ -364,6 +364,81 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 「宿主聚合 → 走 `notify` → service worker 转给面板 → 面板逐字画出来」这一段由
 `test/stream.test.js`（真 socket 上的帧形状）+ `test/panel-stream.test.js`（真跑面板模块）分段覆盖，
 **中间那一跳（Chrome 的 `chrome.runtime.sendMessage`）只做了结构断言，没有在真 Chrome 里点过**。
+
+#### v15：回合失败长得像「模型没话说」，因为我第一次找错了信号（本次修复）
+
+**症状**：模型请求被拒（没有 API key、路线不可达、额度用尽）时，侧边栏的「思考中…」只是停下来，
+什么也不说。已提交的输入孤零零地留在那儿，看起来就像模型选择沉默。
+
+**第一次修错了**，这一段必须留着，因为错法本身很有教育意义。
+
+v15 的第一版是这样推理的：宿主 `AssistantStreamAttempt` 的 end 帧带 `outcome`，成功是
+`{kind:'committed'}`，抛出时是 `{kind:'abandoned'}`，所以「`abandoned` 就是失败」。于是我把
+`deltaOfFrame` 改成读 `frame.outcome`，测试夹具也照着这个假设造。**全部通过。**
+
+然后我在真探针上发了一条必然失败的请求（隔离 `DSH_HOME`，没有 provider 凭据），health 报：
+
+```
+stream = {"frames":3,"ignored":1,"flushes":0,"notifications":0,"dropped":2,"ends":1,"failed":0}
+```
+
+`ends: 1` 但 `failed: 0` —— **到达中继的那个 end 帧不是 `abandoned`**，我的判据从来没被触发过。
+
+**真实形状**（解开会话日志 `session.v3.jsonl.zstd` 拿到的一手证据，日志是多个 zstd frame 拼接的，
+必须按 magic `28 B5 2F FD` 切分逐帧解压）：
+
+- 19 条事件里**没有任何 `assistant/message`**；
+- `assistant/attempt`（seq 15）的 `stream` 是**一个 `finish` chunk**：
+  `{"type":"finish","reason":{"kind":"error","failure":{"message":"llm-deepseek: no API key…","code":"MISSING_CREDENTIAL"}}}`；
+- `turn/end`（seq 17）带 `reason = {kind:'error', error:{message, code}}`。
+
+**为什么 `outcome` 读不出失败**：`dsh-agent-loop/lib/index.js:1080-1095` 在 `finish.kind === 'error'`
+时**先** `live.settle('assistant/attempt', …)`，而 `settle()`（`:420-440`）会把 `terminal` 置为 true；
+只有 `:1119` 的 `if (!live.ended) live.abandon()` 才会发 `abandoned`，而它被上面那步挡住了。
+所以失败回合发的是 `{kind:'committed'}` —— **与成功逐字节相同**。`outcome` 这个字段根本无法承载
+「失败」这个信息。
+
+**真正的实时信号**是那个被我丢进 `ignored` 的 `finish` chunk。`dsh-llm/lib/index.js:2337`
+`adapterFailureChunk` 的注释写得很直白：适配器抛出的错误会被转成终态的 `error` / `aborted`
+finish chunk。这也解释了为什么 `ignored` 是 1 —— 丢的正是唯一有用的那一帧。
+
+**修法（两层，都建立在实测形状上）**
+
+1. **实时**：`deltaOfFrame` 新增 `kind: 'failed'`，对 `chunk.type === 'finish'` 且
+   `reason.kind === 'error'` 返回 `{kind:'failed', text: message}`；relay 新增 `failed` 计数并在同一
+   跳里把 `text` 一起送达；面板先于 `live === null` 判断处理它，**说宿主给的原话**、说不出来时回落到
+   `error.turnFailed`。`reason.kind === 'aborted'`（用户自己按的停止）**不算失败**。
+2. **持久**：失败回合不提交任何 assistant 消息，所以 `describeEvents` 加了 `turn/end` 分支——
+   `reason.kind === 'error'` 才产出 `{kind:'failed', text}` 行，`aborted` 与正常结束都不产出。
+   面板把它画成一行 `.failure`。
+
+第 2 层是必要的：只有实时 toast 的话，**重载面板后失败又消失了**——同一类「失败长得像空结果」，
+只是这次藏在持久层。
+
+**实测（隔离 `DSH_HOME` 的探针，用户 3080 全程未碰）**
+
+| 判据 | 实测 |
+|---|---|
+| 修复后 health | `{"frames":3,"ignored":0,…,"ends":1,"failed":1}` —— `ignored` 归零，那一帧不再被丢 |
+| 修复前同一请求 | `ends:1, failed:0`（错判据从未触发） |
+| 热读 transcript | 2 行：`[user] probe durable` + `[failed] llm-deepseek: no API key for provider route "deepseek-official"…` |
+| **冷重放**（重启探针后） | 同样 2 行、同样带原因 ⇒ **重载面板也看得到** |
+| 已装副本（非 junction） | `stream` 带 `failed` 字段、冷重放仍是 2 行 |
+
+**证伪**（全部先过 `node --check`，改完比字节数确认确实改到了）
+
+| 改坏什么 | 结果 |
+|---|---|
+| `deltaOfFrame` 的 `finish` 分支改回不识别 | 4 红（325/4） |
+| `describeEvents` 的 `turn/end` 分支短路 | 3 红（333/3） |
+| 面板 `row.kind === 'failed'` 分支短路 | 2 红（334/2） |
+
+**顺带修掉一个测试基础设施的盲区**：`test/dom-shim.js` 的 `matches()` 只认 `tag` / `.class` / `#id`，
+遇到 `[data-kind="failed"]` 这种属性选择器**返回「不匹配」而不是报错**——于是断言变成对空气断言。
+已补上 `[attr]` 与 `[attr="value"]` 与复合选择器（tag+class+id+attr）。这类「选择器看不懂就静默不匹配」
+的坑值得记住：它让测试红得莫名其妙，也让本该抓到 bug 的断言变成永远为真。
+
+**交付**：`lib/` + `extension/` 都改了 ⇒ 重启 `dsh web` + 重载 Chrome 扩展。
 
 #### v14：两个「输入法」与「后开面板」缺陷，外加测试一直在跑半启动的面板（本次修复）
 
@@ -555,7 +630,7 @@ v13 我已经在 health 里放了 `approvalPending`，**但面板从来没读它
 
 | 项 | 结果 |
 |---|---|
-| `npm test` | **320 passing, 0 failing, 0 skipped** |
+| `npm test` | **336 passing, 0 failing, 0 skipped** |
 | `npm run check:extension` | exit 0 |
 | **把 `content-selection.js` 换回 `git show HEAD:` 的那一版，再跑新测试** | **3 条变红**（接管、死副本被替换、失败后重试），换回新版全绿 → 测试确实能抓住这两个缺陷 |
 | 旧版跑「死副本被替换」用例 | 直接把进程打崩：`Error: Extension context invalidated.` —— 无人接管的 rejection，正是线上那个缺陷的真身 |
@@ -863,7 +938,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 320 条，含真实 Chrome 端到端
+└─ test/                  # 336 条，含真实 Chrome 端到端
 
 extension/
 ├─ manifest.json

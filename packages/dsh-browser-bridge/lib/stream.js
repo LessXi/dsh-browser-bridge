@@ -49,18 +49,28 @@ export function sessionOfAttempt(attemptId) {
 /**
  * Reduce one stream frame to what the panel can use.
  *
- * Only three chunk kinds render: assistant text, reasoning, and the name of a
- * tool the model just started calling. Everything else in the chunk union
- * (`block-end`, `finish`, provider-specific frames) is already represented by
- * the committed transcript the panel polls.
+ * Only three chunk kinds render as text: assistant text, reasoning, and the name
+ * of a tool the model just started calling. Everything else in the chunk union
+ * (`block-end`, provider-specific frames) is already represented by the
+ * committed transcript the panel polls — **except `finish`**, which carries the
+ * only live word on whether the attempt failed.
  *
  * @param {unknown} frame - An `AssistantStreamFrame`.
- * @returns {{ kind: 'text' | 'reasoning' | 'tool', text: string } | { kind: 'start' | 'end' } | undefined} The delta, or undefined when nothing should be sent.
+ * @returns {{ kind: 'text' | 'reasoning' | 'tool', text: string } | { kind: 'start' | 'end', failed?: boolean } | undefined} The delta, or undefined when nothing should be sent.
  */
 export function deltaOfFrame(frame) {
   if (typeof frame !== 'object' || frame === null) return undefined
   if (frame.type === 'start') return { kind: 'start' }
-  if (frame.type === 'end') return { kind: 'end' }
+  if (frame.type === 'end') {
+    // `outcome` is NOT the word on failure, and treating it as one was wrong.
+    // `AssistantStreamAttempt.settle()` marks the attempt terminal *before* the
+    // agent loop's catch can call `abandon()`, and the failing path settles an
+    // `assistant/attempt` event first (`dsh-agent-loop/lib/index.js:1081`), so a
+    // turn that died still reports `{kind:'committed'}` here — identical to a
+    // turn that succeeded. Measured: a `MISSING_CREDENTIAL` turn produced
+    // `ends:1, failed:0`. The failure signal lives in the `finish` chunk below.
+    return { kind: 'end' }
+  }
   if (frame.type !== 'chunk') return undefined
 
   const chunk = frame.chunk
@@ -74,6 +84,22 @@ export function deltaOfFrame(frame) {
   if (chunk.type === 'reasoning-delta' && typeof chunk.text === 'string') return { kind: 'reasoning', text: chunk.text }
   if (chunk.type === 'tool-call-delta' && typeof chunk.name === 'string' && chunk.name !== '') {
     return { kind: 'tool', text: chunk.name }
+  }
+  if (chunk.type === 'finish') {
+    // `adapterFailureChunk` (`dsh-llm/lib/index.js:2337`) converts an adapter
+    // throw into a terminal `finish` whose reason is `error` or `aborted`; a
+    // missing API key, a rejected route or an unreachable provider all arrive
+    // here. This is the ONLY live frame that says a turn died — the durable
+    // `turn/end` event says it too, but only after the turn is over, so the
+    // panel would sit on a dead shimmer in between.
+    //
+    // `aborted` means the turn was stopped on purpose, which the panel already
+    // shows as its own action, so it must not be reported as a failure.
+    const reason = chunk.reason
+    if (typeof reason === 'object' && reason !== null && reason.kind === 'error') {
+      const message = reason.failure?.message
+      return { kind: 'failed', text: typeof message === 'string' ? message : '' }
+    }
   }
   return undefined
 }
@@ -95,7 +121,7 @@ export class AssistantStreamRelay {
   #buffers = new Map()
   /** @type {ReturnType<typeof setTimeout> | undefined} */
   #timer
-  #stats = { frames: 0, ignored: 0, flushes: 0, notifications: 0, dropped: 0, ends: 0 }
+  #stats = { frames: 0, ignored: 0, flushes: 0, notifications: 0, dropped: 0, ends: 0, failed: 0 }
 
   /**
    * @param {{ bridge?: { connection?: { notify: (name: string, payload: unknown) => boolean } }, log?: (message: string) => void, flushMs?: number, timers?: { set?: typeof setTimeout, clear?: typeof clearTimeout } }} [options] - Relay ports.
@@ -163,6 +189,18 @@ export class AssistantStreamRelay {
 
     if (delta.kind === 'start') {
       this.#send({ sessionId, kind: 'start' })
+      return
+    }
+
+    if (delta.kind === 'failed') {
+      // The turn is over and it died. Counted apart from `ends` so a failed turn
+      // shows up in the health payload — a failure reported only to the person
+      // watching is still invisible to whoever is diagnosing the install.
+      this.#stats.failed += 1
+      // Flush first: the buffered tail belongs to this attempt, and the panel
+      // stops animating on `failed` just as it does on `end`.
+      this.flush()
+      this.#send({ sessionId, kind: 'failed', ...(delta.text === '' ? {} : { text: delta.text }) })
       return
     }
 

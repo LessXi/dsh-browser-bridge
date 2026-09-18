@@ -275,11 +275,54 @@ class TextNode extends Element {
  * @param {string} selector - `.cls`, `#id`, or a tag name.
  * @returns {boolean} Whether it matches.
  */
+/**
+ * Whether one node matches a selector.
+ *
+ * Deliberately small, but it has to cover the shapes the panel actually queries,
+ * because a selector the shim cannot understand returns *no match* rather than
+ * an error — so a missing branch here turns an assertion about behaviour into an
+ * assertion about nothing. Supported: `tag`, `.class`, `#id`, `[attr]`,
+ * `[attr="value"]`, and any combination of them on one compound selector.
+ *
+ * @param {object} node - The node to test.
+ * @param {string} selector - A single compound selector.
+ * @returns {boolean} True when the node matches.
+ */
 function matches(node, selector) {
   const trimmed = selector.trim()
-  if (trimmed.startsWith('.')) return node.className.split(' ').includes(trimmed.slice(1))
-  if (trimmed.startsWith('#')) return node.id === trimmed.slice(1)
-  return node.tagName === trimmed.toUpperCase()
+  // Split a compound selector into its tag / class / id / attribute parts. The
+  // attribute values in this project never contain `]` or quotes, so a simple
+  // scan is enough and a full CSS parser would be more code than it is worth.
+  const parts = trimmed.match(/^[a-zA-Z][\w-]*|\.[\w-]+|#[\w-]+|\[[^\]]+\]/g)
+  if (parts === null || parts.join('') !== trimmed) return false
+  for (const part of parts) {
+    if (part.startsWith('.')) {
+      if (!node.className.split(' ').includes(part.slice(1))) return false
+    } else if (part.startsWith('#')) {
+      if (node.id !== part.slice(1)) return false
+    } else if (part.startsWith('[')) {
+      const body = part.slice(1, -1)
+      const equals = body.indexOf('=')
+      const name = (equals === -1 ? body : body.slice(0, equals)).trim()
+      // `dataset` is the live source: the panel writes `dataset.kind`, and
+      // `setAttribute` mirrors into it, so one read covers both paths.
+      const actual = node.dataset?.[camel(name)] ?? node.getAttribute?.(name) ?? node[name]
+      if (equals === -1) {
+        if (actual === undefined || actual === null) return false
+      } else {
+        const wanted = body.slice(equals + 1).trim().replace(/^["']|["']$/g, '')
+        if (String(actual) !== wanted) return false
+      }
+    } else if (node.tagName !== part.toUpperCase()) {
+      return false
+    }
+  }
+  return true
+}
+
+/** `data-kind` → `kind`, so a selector can be looked up on `dataset`. */
+function camel(name) {
+  return name.replace(/^data-/, '').replace(/-([a-z])/g, (_, letter) => letter.toUpperCase())
 }
 
 /**

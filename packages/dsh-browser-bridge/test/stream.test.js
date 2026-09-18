@@ -106,6 +106,65 @@ function endFrame(sessionId, attempt = 1) {
   }
 }
 
+/**
+ * An end frame for an attempt that threw.
+ *
+ * Measured against a real failing turn, this is **not** what a refused provider
+ * request arrives as — see {@link failureFrame}. It is kept because the shape
+ * exists in `AssistantStreamAttempt.abandon()` and a reduction that threw on an
+ * unfamiliar outcome would be worse than one that ignores it.
+ */
+function abandonedFrame(sessionId, attempt = 1) {
+  return {
+    type: 'end',
+    attemptId: `${sessionId}:${attempt}`,
+    revision: 1,
+    index: 0,
+    outcome: { kind: 'abandoned' },
+  }
+}
+
+/**
+ * The frame a refused provider request actually produces.
+ *
+ * Copied from a real failing turn: a probe instance with no provider key sent
+ * one message and the session log held `assistant/attempt` whose `stream` was a
+ * single `finish` chunk with `reason.kind === 'error'` and
+ * `code === 'MISSING_CREDENTIAL'`. No `assistant/message` was appended.
+ *
+ * `dsh-agent-loop` settles an `assistant/attempt` event *before* the throw
+ * reaches its `abandon()` call, and settling marks the attempt terminal, so the
+ * `end` frame for this same turn reports `outcome: {kind:'committed'}` —
+ * byte-identical to a turn that succeeded. The failure signal therefore lives
+ * here, in the chunk, and not in `outcome`.
+ */
+function failureFrame(sessionId, attempt = 1, code = 'MISSING_CREDENTIAL') {
+  return chunkFrame(sessionId, {
+    type: 'finish',
+    reason: {
+      kind: 'error',
+      failure: {
+        message: `llm-deepseek: no API key for provider route "deepseek-official"`,
+        code,
+      },
+    },
+  }, attempt)
+}
+
+/** The frame a deliberately stopped turn produces: `aborted`, not `error`. */
+function abortedFrame(sessionId, attempt = 1) {
+  return chunkFrame(
+    sessionId,
+    { type: 'finish', reason: { kind: 'aborted', failure: { message: 'aborted', code: 'ABORTED' } } },
+    attempt,
+  )
+}
+
+/** A finish chunk for an attempt that simply ended its turn. */
+function completedFrame(sessionId, attempt = 1) {
+  return chunkFrame(sessionId, { type: 'finish', reason: { kind: 'completed' } }, attempt)
+}
+
 const SESSION = 'session-16ac81ea-14e0-4086-922a-57c74a66818c'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -122,7 +181,7 @@ test('an attempt id carries its session in front of the colon', () => {
   assert.equal(sessionOfAttempt(42), undefined)
 })
 
-test('only the three renderable chunk kinds become deltas', () => {
+test('the renderable chunk kinds become deltas, and chatty ones do not', () => {
   assert.deepEqual(deltaOfFrame(startFrame(SESSION)), { kind: 'start' })
   assert.deepEqual(deltaOfFrame(endFrame(SESSION)), { kind: 'end' })
   assert.deepEqual(deltaOfFrame(chunkFrame(SESSION, { type: 'text-delta', index: 0, text: '你' })), {
@@ -137,6 +196,42 @@ test('only the three renderable chunk kinds become deltas', () => {
     deltaOfFrame(chunkFrame(SESSION, { type: 'tool-call-delta', index: 1, id: 'c1', name: 'pwsh' })),
     { kind: 'tool', text: 'pwsh' },
   )
+})
+
+test('an attempt that threw says so, instead of looking like an empty answer', () => {
+  // The failure reason lives in the `finish` chunk. Both it and the end frame
+  // used to be dropped: the panel stopped its shimmer and re-read a transcript
+  // that had not changed, so a refused provider request looked exactly like a
+  // model with nothing to say.
+  assert.deepEqual(deltaOfFrame(failureFrame(SESSION)), {
+    kind: 'failed',
+    text: 'llm-deepseek: no API key for provider route "deepseek-official"',
+  })
+
+  // A finish chunk with no message still reports a failure; the panel falls back
+  // to its own wording rather than showing an empty reason.
+  assert.deepEqual(
+    deltaOfFrame(chunkFrame(SESSION, { type: 'finish', reason: { kind: 'error', failure: {} } })),
+    { kind: 'failed', text: '' },
+  )
+
+  // Stopping a turn on purpose is not a failure — the panel already shows that
+  // as its own action, and reporting it as a crash would be a lie.
+  assert.equal(deltaOfFrame(abortedFrame(SESSION)), undefined)
+  // Nor is an ordinary completion.
+  assert.equal(deltaOfFrame(completedFrame(SESSION)), undefined)
+
+  // An end frame is never a failure, whatever its outcome says. A real failing
+  // turn reports `committed` here, so reading `outcome` for the failure would be
+  // reading a field that cannot carry the answer.
+  assert.deepEqual(deltaOfFrame(abandonedFrame(SESSION)), { kind: 'end' })
+  assert.deepEqual(deltaOfFrame(endFrame(SESSION)), { kind: 'end' })
+
+  // A frame with no outcome at all is not a failure — older harnesses simply do
+  // not say, and inventing a failure would be worse than saying nothing.
+  assert.deepEqual(deltaOfFrame({ type: 'end', attemptId: `${SESSION}:1`, revision: 1, index: 0 }), {
+    kind: 'end',
+  })
 })
 
 test('a frame that carries nothing renderable is ignored rather than guessed at', () => {
@@ -365,6 +460,87 @@ class FakeSocket extends EventEmitter {
     this.emit('close')
   }
 }
+
+test('the failure survives the relay, not just the frame reduction', () => {
+  // Reducing the frame and then rebuilding the payload from `kind` alone
+  // dropped the reason a second time, one hop later — where no test of
+  // `deltaOfFrame` could see it. This asserts on what actually reaches the
+  // socket, including the provider's own words.
+  const socket = new FakeSocket()
+  const connection = new BrowserConnection(socket)
+  const clock = manualClock()
+  const relay = createStreamRelay({ bridge: { connection }, timers: clock.timers })
+
+  relay.acceptFrame(failureFrame(SESSION))
+  clock.run()
+
+  assert.deepEqual(
+    socket.sent.map((entry) => entry.payload),
+    [
+      {
+        sessionId: SESSION,
+        kind: 'failed',
+        text: 'llm-deepseek: no API key for provider route "deepseek-official"',
+      },
+    ],
+  )
+  assert.equal(relay.stats().failed, 1, 'the failed turn was not counted apart from ordinary ends')
+  assert.equal(relay.stats().ends, 0, 'a failure was counted as an ordinary end')
+})
+
+test('a failure with no message still reaches the panel as one', () => {
+  const socket = new FakeSocket()
+  const connection = new BrowserConnection(socket)
+  const clock = manualClock()
+  const relay = createStreamRelay({ bridge: { connection }, timers: clock.timers })
+
+  relay.acceptFrame(chunkFrame(SESSION, { type: 'finish', reason: { kind: 'error', failure: {} } }))
+  clock.run()
+
+  assert.deepEqual(
+    socket.sent.map((entry) => entry.payload),
+    [{ sessionId: SESSION, kind: 'failed' }],
+  )
+  assert.equal(relay.stats().failed, 1)
+})
+
+test('an ordinary end is not counted as a failure', () => {
+  const socket = new FakeSocket()
+  const connection = new BrowserConnection(socket)
+  const clock = manualClock()
+  const relay = createStreamRelay({ bridge: { connection }, timers: clock.timers })
+
+  relay.acceptFrame(endFrame(SESSION))
+  clock.run()
+
+  assert.deepEqual(
+    socket.sent.map((entry) => entry.payload),
+    [{ sessionId: SESSION, kind: 'end' }],
+  )
+  assert.equal(relay.stats().failed, 0, 'an ordinary end was counted as a failure')
+  assert.equal(relay.stats().ends, 1)
+})
+
+test('a failed turn still ends, so the panel stops animating either way', () => {
+  // The failure is not a replacement for `end`: the attempt really is over, and
+  // a panel that only heard `failed` would leave its shimmer running.
+  const socket = new FakeSocket()
+  const connection = new BrowserConnection(socket)
+  const clock = manualClock()
+  const relay = createStreamRelay({ bridge: { connection }, timers: clock.timers })
+
+  relay.acceptFrame(startFrame(SESSION))
+  relay.acceptFrame(failureFrame(SESSION))
+  relay.acceptFrame(endFrame(SESSION, 2))
+  clock.run()
+
+  assert.deepEqual(
+    socket.sent.map((entry) => entry.payload),
+    [{ sessionId: SESSION, kind: 'start' }, { sessionId: SESSION, kind: 'failed', text: 'llm-deepseek: no API key for provider route "deepseek-official"' }, { sessionId: SESSION, kind: 'end' }],
+  )
+  assert.equal(relay.stats().failed, 1)
+  assert.equal(relay.stats().ends, 1)
+})
 
 test('a notification reaches the socket under its own key, with no id', () => {
   const socket = new FakeSocket()

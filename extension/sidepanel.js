@@ -661,6 +661,20 @@ function renderRow(row, index) {
     return wrapper
   }
 
+  if (row.kind === 'failed') {
+    // A durable record that a turn died. It is what the live toast leaves
+    // behind: without it, reloading the panel turned a failed turn back into a
+    // conversation that simply stopped after the user's message.
+    const wrapper = document.createElement('div')
+    wrapper.className = 'row'
+    wrapper.dataset.kind = 'failed'
+    const line = document.createElement('div')
+    line.className = 'failure'
+    line.textContent = typeof row.text === 'string' && row.text !== '' ? row.text : t('error.turnFailed')
+    wrapper.append(line)
+    return wrapper
+  }
+
   const wrapper = document.createElement('div')
   wrapper.className = 'row'
   wrapper.dataset.kind = 'context'
@@ -912,6 +926,37 @@ function applyDelta(payload) {
     // without this the first tokens would land under a line that is not there.
     renderWorking()
     renderLive()
+    return
+  }
+  // Checked before the `live` guard below, because a failure has to be reported
+  // whether or not this panel happened to see the attempt start. A panel opened
+  // mid-turn misses `start` entirely and would otherwise drop the only word that
+  // the turn died — the same silence, one layer deeper.
+  if (payload.kind === 'failed') {
+    currentSessionRunning = false
+    live = null
+    renderWorking()
+    // The attempt committed no assistant message, so re-reading finds the same
+    // transcript as before and the shimmer would simply stop — an empty answer
+    // with no explanation, which reads as the model having nothing to say. The
+    // host carries the provider's own words, so they are shown when present and
+    // the bare statement is used when they are not.
+    const reason = typeof payload.text === 'string' && payload.text !== '' ? payload.text : t('error.turnFailed')
+    say(reason)
+    refreshTranscript().catch(() => {})
+    refreshGroups().catch(() => {})
+    return
+  }
+  if (payload.kind === 'end' && payload.failed === true) {
+    // Older hosts reported a failed attempt as an ordinary `end` carrying
+    // `failed: true`. Kept so a panel that has been reloaded before the host is
+    // restarted still speaks.
+    currentSessionRunning = false
+    live = null
+    renderWorking()
+    say(t('error.turnFailed'))
+    refreshTranscript().catch(() => {})
+    refreshGroups().catch(() => {})
     return
   }
   if (live === null) return

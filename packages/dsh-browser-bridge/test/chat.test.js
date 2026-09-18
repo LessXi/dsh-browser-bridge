@@ -58,6 +58,26 @@ function resultEvent(callId, options = {}) {
 /** The surface API as `loadPeer` resolves it, or null for the local rule. */
 const SURFACE = { isAppendSurfaceEvent: (event) => event.surfaceOp === undefined || event.surfaceOp === 'append' }
 
+/** A turn ending. `reason` is absent on a turn that simply ran out of work. */
+function turnEndEvent(reason) {
+  return { seq: 9, time: 9, type: 'turn/end', data: { turn: 1, ...(reason === undefined ? {} : { reason }) } }
+}
+
+/**
+ * The exact `turn/end` a refused provider request produced.
+ *
+ * Taken from a real failing turn on a probe instance with no provider key: the
+ * step ended in a `MISSING_CREDENTIAL` LlmError, so the turn carried this
+ * reason and **no** `assistant/message` was ever appended.
+ */
+const FAILED_TURN = turnEndEvent({
+  kind: 'error',
+  error: {
+    message: 'llm-deepseek: no API key for provider route "deepseek-official"',
+    code: 'MISSING_CREDENTIAL',
+  },
+})
+
 // ---------------------------------------------------------------------------
 // Rendering one event stream
 // ---------------------------------------------------------------------------
@@ -133,6 +153,43 @@ test('a failed tool result marks its own row rather than adding one', () => {
 
 test('a result with no matching call is dropped', () => {
   assert.deepEqual(describeEvents([resultEvent('nowhere')], SURFACE), [])
+})
+
+test('a turn that died leaves a lasting row, not just a live toast', () => {
+  // A failed turn commits no assistant message. Without this row the stored
+  // transcript is the user's message and then nothing, so reloading the panel
+  // made a crash look like a conversation that simply stopped.
+  assert.deepEqual(describeEvents([userEvent('probe'), FAILED_TURN], SURFACE), [
+    { kind: 'user', text: 'probe' },
+    { kind: 'failed', text: 'llm-deepseek: no API key for provider route "deepseek-official"' },
+  ])
+})
+
+test('a turn stopped on purpose is not recorded as a failure', () => {
+  // The person pressed stop; the panel already showed that as their own action.
+  // Writing it into the transcript as a crash would be a lie that persists.
+  assert.deepEqual(describeEvents([turnEndEvent({ kind: 'aborted', reason: 'user' })], SURFACE), [])
+})
+
+test('an ordinary turn end adds nothing', () => {
+  // Most turns end with no reason at all, and none of them are failures.
+  assert.deepEqual(describeEvents([turnEndEvent(undefined)], SURFACE), [])
+  assert.deepEqual(describeEvents([turnEndEvent({ kind: 'completed' })], SURFACE), [])
+})
+
+test('a failure reason is clipped to something a row can hold', () => {
+  const long = turnEndEvent({ kind: 'error', error: { message: 'x'.repeat(400) } })
+  const [row] = describeEvents([long], SURFACE)
+  assert.equal(row.kind, 'failed')
+  assert.equal(row.text.length, 160)
+})
+
+test('a failure with no message still becomes a row', () => {
+  // The panel needs a row either way; it supplies its own wording when the
+  // reason is empty, but the row has to exist for that to be reachable.
+  assert.deepEqual(describeEvents([turnEndEvent({ kind: 'error', error: {} })], SURFACE), [
+    { kind: 'failed', text: '' },
+  ])
 })
 
 test('a replaced message is not replayed as new conversation', () => {

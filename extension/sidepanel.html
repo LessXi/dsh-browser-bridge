@@ -306,6 +306,17 @@
 
       .notice { color: var(--tertiary); font-size: var(--text-xs); }
 
+      /* A turn that died leaves this behind. It is deliberately not a bubble and
+         not an alert: it is one line of the transcript, coloured like an error
+         so it is found when scanning, and quiet enough that a conversation
+         which recovered does not look broken. */
+      .failure {
+        color: var(--bad);
+        font-size: var(--text-xs);
+        line-height: 1.5;
+        overflow-wrap: anywhere;
+      }
+
       /* The one place in the panel that asks a question instead of reporting
          one. A pending approval is the turn's actual state, so the card reads
          as part of the transcript rather than as a modal: it sits in the flow,

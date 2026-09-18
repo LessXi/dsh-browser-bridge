@@ -107,6 +107,7 @@ export const zh = Object.freeze({
   'error.notCopied': '复制失败',
   'error.hostDown': '连不上 dsh web',
   'error.notAnswered': '没能作答：{reason}',
+  'error.turnFailed': '这一轮没能跑起来',
   // The one place the panel asks instead of reporting. The harness's other
   // answerer is the graphical client, so this card is often the only thing
   // standing between a running turn and one that waits forever.
@@ -176,6 +177,7 @@ export const en = Object.freeze({
   'error.notCopied': 'Could not copy',
   'error.hostDown': 'dsh web is not running',
   'error.notAnswered': 'Could not answer: {reason}',
+  'error.turnFailed': 'The turn did not run',
   'approval.asking': 'Needs your call',
   'approval.wants': 'Wants to use {tool}',
   'approval.aTool': 'a tool',
