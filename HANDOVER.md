@@ -1,15 +1,48 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v49 已交付。** 下一节就是最新的一轮改动；下面标 v48/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v49 那一段为止即可。
+> **当前状态：v50 已交付。** 下一节就是最新的一轮改动；下面标 v49/v48/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v50 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（452 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（453 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 >
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
 
+> ### v50：Windows 高对比度下，面板靠背景色说的状态全部消失（扩展侧，本次修复）
+>
+> **量法**：CDP `Emulation.setEmulatedMedia` + `{name:'forced-colors',value:'active'}`（精确、可逆）。
+> 量具：`%TEMP%\panel-preview\cdp-forced.mjs <scene> <width>`（前后对比 + 写截图）、
+> `cdp-probe.mjs`（逐元素子树）、`cdp-inject.mjs`（注入预览场景没产生的状态）、`cdp-zoom.mjs`（放大截取）。
+>
+> **实测到的缺陷（作者样式 → 强制配色后）**：`chip[data-attached="true"]` accent 蓝 15% → 白 15%
+> （普通 chip 白 11%，白底上不可分）；`.bubble` accent → 白，与助手消息无区别；
+> `.approval-allow` `rgb(74,99,231)` → 白底黑字黑框，**与 `.approval-reject` 三项全同**（点错即授权）；
+> `.session[aria-current="true"]` accent → 白，与普通行相同；`#composer`/`#model-menu` 靠 `box-shadow`
+> 立起来、阴影被移除 ⇒ 输入框无边界；`#send` 三态全同；`.working` 的 `background-clip:text` 失去可读来源。
+>
+> **修法**：`extension/sidepanel.html` 末尾新增 `@media (forced-colors: active)` 块，只认**系统颜色关键字**
+> （`Highlight`/`HighlightText`/`CanvasText`/`ButtonFace`/`ButtonBorder`/`GrayText`）与边框/轮廓。
+> 依据是一手的：官方原版产物里有 **21 处 `forced-colors` 块**，语法完全一致（阴影换轮廓、淡色换系统色）。
+> 普通渲染零变化。
+>
+> **必须记住的假象**：无头 Chrome 在模拟强制配色时**不绘制任何前景为白色的文字**。
+> 决定性对照（同屏注入已知样式）：`background:Highlight;color:HighlightText`（fg 白）→ 文字消失；
+> `background:Highlight;color:#000000`（fg 黑）→ 可见；`background:CanvasText;color:Canvas`（fg 白）→ 消失；
+> `background:ButtonFace;color:ButtonText`（fg 黑）→ 可见。
+> ⇒ **`forced-colors` 下一律以计算样式判定；截图只在「前景非白」时可信。** 我差点因此把正确的
+> `HighlightText` 当成 bug 改坏。
+>
+> **验证**：`npm test` **453 passed / 0 failed**；`check:extension` exit 0。
+> 测试 `panel-i18n.test.js` 的 `every state the panel says with colour survives forced colors`
+> 把每个状态**钉到承载它的系统关键字**上（不认字面色值），并单独断言两个审批按钮不得解析成同一对颜色、
+> `.working` 必须清 `background-clip`。**证伪五次各 1 红**：删 `.bubble` 边框 / 删 `background-clip: initial` /
+> 媒体查询改永不激活 / `allow` 退回淡色 / `#send` 边框换 `outline:none`。
+> （首次「整块去掉」的补丁其实没破坏文件，那一轮不算证伪，已重做。）
+>
+> **交付**：只改 `extension/` ⇒ **重载 Chrome 扩展**即可。
+>
 > ### v49：唯一一行说明「附了什么」的文字是英文（宿主 + 扩展侧，本次修复）
 >
 > 症状：中文面板里渲染出 `已附带 · selected text from dl.acm.org, 5 chars`。

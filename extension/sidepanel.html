@@ -961,6 +961,69 @@
       .menu-option .check { flex: none; width: 16px; color: var(--muted); }
       .menu-option .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .menu-note { padding: 8px; font-size: var(--text-xs); color: var(--faint); }
+
+      /* ---- forced colors (Windows High Contrast Mode, `forced-colors: active`) ----
+         Every background this panel paints is replaced by the system canvas, so
+         any state that was said with a tint stops being said at all. That is not
+         a hypothetical: with forced colors emulated through CDP, the attached
+         selection chip measured rgba(255,255,255,.15) against the plain chip's
+         .11 — indistinguishable on a white canvas — and the approval card's
+         allow and deny buttons came out identical in background, foreground and
+         border, in a card where the wrong click grants site access.
+         The repair is the original's own grammar: it ships 21 `forced-colors`
+         blocks that trade shadows for outlines and tints for system colors.
+         Each rule below covers a state this panel currently speaks with colour
+         alone; nothing here changes the ordinary rendering. */
+      @media (forced-colors: active) {
+        /* "this highlight will be sent" — the one chip that is a decision, not a
+           standing fact. Highlight/HighlightText is the system's own pairing for
+           "this is the selected thing", so it stays legible in every theme. */
+        .chip[data-attached="true"] {
+          background: Highlight;
+          color: HighlightText;
+          border: 1px solid Highlight;
+        }
+        .chip[data-attached="true"] button { color: HighlightText; }
+        /* the tab chip while nothing is attached: red is gone, so the edge says it */
+        .chip[data-warn="true"] { border: 1px solid CanvasText; }
+
+        /* whose words these are: the accent bubble was the only cue */
+        .bubble { border: 1px solid CanvasText; }
+
+        /* allow and deny must never read as the same button */
+        .approval-allow {
+          background: Highlight !important;
+          color: HighlightText !important;
+          border: 1px solid Highlight !important;
+        }
+        .approval-reject { border: 1px solid CanvasText; }
+
+        /* "you are here" in the session list */
+        .session[aria-current="true"] { background: Highlight; color: HighlightText; }
+        .session[aria-current="true"] .session-time { color: HighlightText; }
+        .session[aria-current="true"] .session-dot { background: HighlightText; }
+        .session-dot { background: Highlight; }
+
+        /* The composer and the picker are cards drawn with a shadow, and forced
+           colors takes shadows away — measured, the input had no edge left. */
+        #composer, #model-menu { border: 1px solid CanvasText; }
+
+        /* The send key has three states and had colour alone for all of them. */
+        #send { border: 1px solid ButtonBorder; }
+        #send:not(:disabled) { background: Highlight; color: HighlightText; }
+        #send[data-mode='stop']:not(:disabled) { background: CanvasText; color: Canvas; }
+        #send:disabled,
+        #send[data-mode='stop']:disabled { background: ButtonFace; color: GrayText; border-color: GrayText; }
+
+        /* selected effort, and where the keyboard is */
+        .menu-effort[aria-checked="true"] { border: 1px solid Highlight; }
+        .menu-effort[data-focused="true"],
+        .menu-option[data-focused="true"] { border: 1px solid Highlight; }
+
+        /* Gradient-clipped text is painted by its background; with the
+           background gone there is nothing to read it from. */
+        .working { background: none; -webkit-background-clip: initial; color: CanvasText; animation: none; }
+      }
     </style>
   </head>
   <body>

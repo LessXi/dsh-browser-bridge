@@ -249,7 +249,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 452 条
+npm test                          # 全部 453 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -275,7 +275,7 @@ npm run check:extension           # 扩展脚本语法检查（Chrome 加载前�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 452 条
+npm test                 # 453 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -288,7 +288,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 不会把 `@deepseek-ai/*` 拉下来。宿主库由 `lib/deps.js` 在运行时从
 `$DSH_HOME/profiles/node_modules` 解析。
 
-**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **452 passing, 0 failing, 0 skipped**，
+**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **453 passing, 0 failing, 0 skipped**，
 `npm run check:extension` exit 0。前提是这台机器上装过 DSH（宿主库要能解析到）。
 
 **验证环境**：Node **v24.15.0**。两个 `package.json` 里的 `engines.node: ">=20"` 是**保守下限**，
@@ -306,7 +306,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面四层测试，452 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
+**已自动化验证**：上面四层测试，453 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
 
 侧边栏那部分还有一组**静态**检查，防止语言和版式漂回去：两个字典的键必须完全一致、面板里每个
 `t('…')` 的键都必须存在、HTML 里不允许残留裸文案、旧版文案一个都不许出现、**字典里不允许出现整句
@@ -364,6 +364,63 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 「宿主聚合 → 走 `notify` → service worker 转给面板 → 面板逐字画出来」这一段由
 `test/stream.test.js`（真 socket 上的帧形状）+ `test/panel-stream.test.js`（真跑面板模块）分段覆盖，
 **中间那一跳（Chrome 的 `chrome.runtime.sendMessage`）只做了结构断言，没有在真 Chrome 里点过**。
+
+#### v50：Windows 高对比度下，面板靠背景色说的状态全部消失（本次修复）
+
+前 49 轮没碰过可访问性媒体特性。这一轮量 `forced-colors`（Windows 高对比度模式），
+手段是 CDP 的 `Emulation.setEmulatedMedia` + `{name:'forced-colors',value:'active'}`——
+**精确、可逆**，同一次运行读前/后两份快照。
+
+**为什么这会痛**：强制配色把作者设的每个背景色换成系统 canvas，并要求页面改用
+**边框和系统颜色关键字**来表达结构。而这个面板有一批状态是**只靠背景色说的**：
+
+| 状态 | 作者样式 | 强制配色后 | 后果 |
+|---|---|---|---|
+| `chip[data-attached="true"]`（这段选中会随消息发出） | accent 蓝 15% | `rgba(255,255,255,.15)` | 普通 chip 是白 11% —— **白底上肉眼不可分** |
+| 用户气泡 `.bubble` | accent 蓝 15% | 白 15% | 与助手消息无区别，**分不清谁说的** |
+| `.approval-allow`（允许） | `rgb(74,99,231)` 底白字 | 白底黑字黑框 | |
+| `.approval-reject`（拒绝） | 次级底 + 边框 | 白底黑字黑框 | **两个按钮三项全同——点错就是授权** |
+| `.session[aria-current="true"]`（当前会话） | accent 蓝 15% | 白 15% | 与普通行相同，**看不出在哪个会话里** |
+| `#composer` / `#model-menu` | 靠 `box-shadow` 立起来 | 阴影被移除 | 输入框**没有边界** |
+| `#send`、`.working` | 背景色 / `background-clip:text` | 背景被抹平 | 发送键三态全同；渐变文字**没有任何东西可读** |
+
+**修法用的是官方原版自己的语法**：它产物里有 **21 处 `forced-colors` 块**，一律把阴影换成
+轮廓、把淡色换成系统色。新增一个 `@media (forced-colors: active)` 块，覆盖上表每一项，
+用 `Highlight`/`HighlightText`（"这是被选中的东西"）、`CanvasText`、`ButtonFace`/`Border`、`GrayText`。
+普通渲染**一个像素都没变**。
+
+**修复后实测**（CDP 计算值，同一次运行前/后）：
+
+| 元素 | 强制配色下的结果 |
+|---|---|
+| `chip[data-attached]` | `bg=Highlight` + `border` ← 普通 chip 无边框 |
+| `.approval-allow` | `bg=rgb(55,0,110)` `fg=white` `border=Highlight` |
+| `.approval-reject` | `bg=white` `fg=black` `border=black` ← 两者不再相同 |
+| `.session[aria-current]` | `bg=rgb(55,0,110)` `fg=white` ← 普通行为透明 |
+| `.bubble` / `#composer` / `#send` | 均获得边框（此前无任何边界） |
+
+**一个差点把正确代码改坏的假象（必须记住）**：截图里「本会话允许」显示为**空的紫色胶囊**，
+文字不见了。做了决定性对照实验——同一屏注入已知样式的样本：
+
+| 样本 | 计算值 | 渲染 |
+|---|---|---|
+| `background:Highlight; color:HighlightText` | bg 紫 / fg 白 | 文字**消失** |
+| `background:Highlight; color:#000000` | bg 紫 / fg 黑 | 文字可见 |
+| `background:CanvasText; color:Canvas` | bg 黑 / fg 白 | 文字**消失** |
+| `background:ButtonFace; color:ButtonText` | bg 白 / fg 黑 | 文字可见 |
+
+**规律：凡前景为白色的文字，无头 Chrome 在模拟强制配色时不绘制。**
+这是测量工具的假象，不是面板缺陷——真实 Chrome 里深紫上的白字当然看得见。
+**判定准则：`forced-colors` 下以计算样式为准，截图只在「前景非白」时可信。**
+
+**测试 453 条**（452→453）：`panel-i18n.test.js` 新增一条，把每个修好的状态**钉到承载它的系统
+关键字**上（只认系统色，不认字面色值——只有系统色保证与用户自己的 canvas 对比），
+并单独断言两个审批按钮不会解析成同一对颜色、`.working` 必须清掉 `background-clip`。
+**证伪五次**（每次 `node --check` 通过后重跑）：删 `.bubble` 边框 → 1 红；删 `background-clip: initial` → 1 红；
+媒体查询改成永不激活 → 1 红；`allow` 退回淡色 → 1 红；`#send` 边框换 `outline:none` → 1 红。
+（第一次做「整块去掉」的证伪时补丁其实没破坏文件，那一轮**不算数**，重做了。）
+
+**交付**：只改 `extension/` ⇒ **重载 Chrome 扩展**即可，不需要重启 `dsh web`。
 
 #### v49：唯一一行说明「附了什么」的文字是英文（本次修复）
 
@@ -2690,7 +2747,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 452 条，含真实 Chrome 端到端
+└─ test/                  # 453 条，含真实 Chrome 端到端
 
 extension/
 ├─ manifest.json

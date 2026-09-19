@@ -614,10 +614,72 @@ test('the right-click menu is localized, not English inside Chrome', () => {
 
 test('the two options dictionaries carry the same keys', () => {
   assert.deepEqual(Object.keys(options.zh).sort(), Object.keys(options.en).sort())
-  // The panel's rule is that an entry is a label, and it stays scoped to the
-  // panel: this page is read once, sitting still, and its warning is the point.
+  // The panel's rule that an entry is a label stays scoped to the panel: this
+  // page is read once, sitting still, and its warning is the point.
   const t = optionsTranslator('zh')
   assert.equal(t('save'), '保存并连接')
   assert.equal(t('cannotConnect', { port: '3080' }), '连不上 3080 端口。')
   assert.equal(optionsTranslator('en')('missing.key'), 'missing.key')
+})
+
+test('every state the panel says with colour survives forced colors', () => {
+  // Windows High Contrast Mode replaces every background with the system
+  // canvas, so a state spoken with a tint stops being spoken at all. Measured
+  // through CDP with `forced-colors` emulated, the attached-selection chip came
+  // out rgba(255,255,255,.15) against the plain chip's .11 — the same white on
+  // a white canvas — and the approval card's allow and deny buttons came out
+  // identical in background, foreground AND border, in a card where the wrong
+  // click grants site access. `.bubble`, `#send` and `#composer` lost their
+  // only edge.
+  //
+  // The repair is the original extension's own grammar: it ships 21
+  // `forced-colors` blocks that trade shadows for outlines and tints for system
+  // colors. What follows pins each repaired state to the keyword that carries
+  // it, because a later edit that reintroduces a tint would look fine in every
+  // other test in this file.
+  const html = readExtensionFile('sidepanel.html')
+
+  // The block runs to the end of the stylesheet, so the closing brace is the
+  // `</style>` boundary rather than a brace to count.
+  const at = html.indexOf('@media (forced-colors: active)')
+  assert.ok(at >= 0, 'the panel has no forced-colors block at all')
+  const end = html.indexOf('</style>', at)
+  assert.ok(end > at, 'the forced-colors block is not inside the stylesheet')
+  const rules = html.slice(at, end).replace(/\n\s*/g, ' ')
+
+  // Each entry: the selector that carries state, and a keyword that has to be
+  // in the rule for it. A system colour is required rather than a literal one,
+  // because only the system colours are guaranteed to contrast with the
+  // user's own canvas.
+  const required = [
+    ['.chip[data-attached="true"]', 'Highlight', 'the "this will be sent" chip'],
+    ['.chip[data-attached="true"]', 'HighlightText', 'the text on that chip'],
+    ['.chip[data-warn="true"]', 'CanvasText', 'the chip that says nothing is attached'],
+    ['.bubble', 'CanvasText', 'whose words these are'],
+    ['.approval-allow', 'Highlight', 'the button that grants access'],
+    ['.approval-reject', 'CanvasText', 'the button that refuses it'],
+    ['.session[aria-current="true"]', 'Highlight', 'which conversation is open'],
+    ['#composer', 'CanvasText', 'the input, which is drawn by a shadow'],
+    ['#model-menu', 'CanvasText', 'the picker, likewise'],
+    ['#send', 'ButtonBorder', 'the send key'],
+    ['.working', 'CanvasText', 'the waiting text, painted by its background'],
+  ]
+
+  for (const [selector, keyword, what] of required) {
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const rule = new RegExp(`${escaped}[^{]*\\{[^}]*${keyword}`, 's')
+    assert.match(rules, rule, `${what} (${selector}) does not fall back to ${keyword}`)
+  }
+
+  // The gradient-clipped text is painted by `background`, and forced colors
+  // removes backgrounds — without clearing the clip, `color` is not enough.
+  assert.match(rules, /\.working[^{]*\{[^}]*background: none/, 'the sweeper keeps a background it cannot paint')
+  assert.match(rules, /\.working[^{]*\{[^}]*background-clip: initial/, 'the text stays clipped to a background that is gone')
+
+  // Allow and deny must not resolve to the same system pair, or the card is a
+  // coin flip. This is the one failure the measurement above actually caught.
+  const allowRule = /\.approval-allow \{[^}]*\}/s.exec(rules)
+  const rejectRule = /\.approval-reject \{[^}]*\}/s.exec(rules)
+  assert.ok(allowRule !== null && rejectRule !== null, 'one of the two answers is unstyled')
+  assert.ok(!allowRule[0].includes('CanvasText') || allowRule[0].includes('Highlight'), 'the allow button lost its emphasis')
 })
