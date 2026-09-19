@@ -1,14 +1,39 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v35 已交付。** 下一节就是最新的一轮改动；下面标 v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v35 那一段为止即可。
+> **当前状态：v36 已交付。** 下一节就是最新的一轮改动；下面标 v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v36 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（421 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（422 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 >
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
+
+> ### v36：一个「拒绝」带着授权时长回来了（宿主侧，本次修复）
+>
+> **怎么发现的**：v34/v35 把「按钮说的话 = 实际发生的事」当不变量之后，
+> 把这条不变量拿到**协议边界**上再试：`relay.answer(id, 'rejected', 'conversation')`
+> → `{"answered":true,"outcome":"rejected","scope":"conversation"}`，
+> **`scopeOf('c1')` 读出了 `"conversation"`** —— 从一个「不」里读出了一个时长。
+>
+> **为什么还没造成损害**：记授权那行同时检查 `sensitive`/`alwaysAsk`，
+> 而拒绝走 `outcome:'denied'` 分支、根本不记授权 —— 所以它**到不了授予表**。
+> 但它**已经躺在中继里**，同一个 `callId` 的下一个问题会读走它。
+> **靠下游恰好也拦住来掩盖上游的错误记录，不是想要的形状。**
+>
+> **修法**：只有「是」才可能带时长 ——
+> `const granted = outcome === 'allowed-once' && APPROVAL_SCOPES.includes(scope)`；
+> 拒绝带 scope 是调用方 bug，返回里也不再回显。
+>
+> **顺带修掉一条我自己写的坏测试**：`answer(id,'cancelled','once')` + `await promise`
+> —— `PANEL_OPTIONS` 只允许 `allowed-once`/`rejected`，所以 `cancelled` 被拒、
+> 那个 promise **按设计永不 settle**，测试挂死在顶层 await
+> （runner 报 `Detected unsettled top-level await`）。
+> **这本身是好信号**：协议边界确实拒绝了这个值。改成断言「被拒绝」而不是等它。
+>
+> **测试 422 条**；证伪：`granted` 退回只看 `APPROVAL_SCOPES.includes(scope)` → 1 红。
+> **交付要求**：只改 `lib/` → **重启 `dsh web`**（扩展侧无改动）。
 
 > ### v35：删掉两个「说了不算数」的按钮（宿主 + 扩展，本次修复）
 >

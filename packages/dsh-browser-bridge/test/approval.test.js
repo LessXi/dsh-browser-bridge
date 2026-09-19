@@ -184,10 +184,28 @@ test('an unknown scope is not recorded, and the answer still lands', async () =>
 test('a refusal carries no scope at all', async () => {
   const { ask, lastAsked, relay } = fixture()
   const promise = ask(request({ callId: 'call-no' }), unavailable)
-  relay.answer(lastAsked().id, 'rejected')
-
-  assert.equal(relay.scopeOf('call-no'), undefined, 'a duration was read out of a no')
+  const asked = lastAsked()
+  // A refusal that arrives carrying one is a caller bug. Recording it would
+  // leave a duration on the relay for a grant that was never made, and the next
+  // question about the same call would read a scope out of a no.
+  const result = relay.answer(asked.id, 'rejected', 'conversation')
+  assert.equal(result.answered, true)
+  assert.equal(result.scope, undefined, 'a duration came back on a refusal')
+  assert.equal(relay.scopeOf('call-no'), undefined, 'a duration was stored for a refusal')
   assert.equal(await promise, 'rejected')
+})
+
+test('an outcome outside the panel\'s two is refused, and records no scope', async () => {
+  // `cancelled` is a harness word, not something this panel may choose, so the
+  // question stays open — which is why this asserts the refusal rather than
+  // awaiting the question, whose promise deliberately never settles on this path.
+  const { ask, lastAsked, relay } = fixture()
+  ask(request({ callId: 'call-cancel' }), unavailable)
+  const result = relay.answer(lastAsked().id, 'cancelled', 'once')
+
+  assert.equal(result.answered, false)
+  assert.match(result.reason, /allowed-once or rejected/)
+  assert.equal(relay.scopeOf('call-cancel'), undefined, 'a refused outcome still stored a scope')
 })
 
 test('two questions on one session keep their own scopes', async () => {

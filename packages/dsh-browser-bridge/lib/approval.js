@@ -138,15 +138,20 @@ export class ApprovalRelay {
       return { answered: false, reason: `the panel may only answer ${PANEL_OPTIONS.join(' or ')}` }
     }
     this.#pending.delete(id)
+    // Only a yes can carry a duration. A refusal that arrives with one is a
+    // caller bug, and recording it would leave a scope on the relay for a grant
+    // that was never made — the next question about the same call would then
+    // read a duration out of a no.
+    const granted = outcome === 'allowed-once' && APPROVAL_SCOPES.includes(scope)
     // Remembered before the promise resolves, because resolving it wakes the
     // asking tool, which reads the scope back immediately.
-    if (entry.callId !== undefined && APPROVAL_SCOPES.includes(scope)) {
+    if (granted && entry.callId !== undefined) {
       this.#scopes.set(entry.callId, scope)
     }
     entry.resolve(outcome)
     this.#stats.byPanel += 1
     this.#withdraw(id, outcome)
-    return { answered: true, id, outcome, ...(APPROVAL_SCOPES.includes(scope) ? { scope } : {}) }
+    return { answered: true, id, outcome, ...(granted ? { scope } : {}) }
   }
 
   /**

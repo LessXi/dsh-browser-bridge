@@ -249,7 +249,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 421 条
+npm test                          # 全部 422 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -275,7 +275,7 @@ npm run check:extension           # 扩展脚本语法检查（Chrome 加载前�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 421 条
+npm test                 # 422 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -288,7 +288,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 不会把 `@deepseek-ai/*` 拉下来。宿主库由 `lib/deps.js` 在运行时从
 `$DSH_HOME/profiles/node_modules` 解析。
 
-**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **421 passing, 0 failing, 0 skipped**，
+**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **422 passing, 0 failing, 0 skipped**，
 `npm run check:extension` exit 0。前提是这台机器上装过 DSH（宿主库要能解析到）。
 
 **验证环境**：Node **v24.15.0**。两个 `package.json` 里的 `engines.node: ">=20"` 是**保守下限**，
@@ -306,7 +306,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面四层测试，421 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
+**已自动化验证**：上面四层测试，422 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
 
 侧边栏那部分还有一组**静态**检查，防止语言和版式漂回去：两个字典的键必须完全一致、面板里每个
 `t('…')` 的键都必须存在、HTML 里不允许残留裸文案、旧版文案一个都不许出现、**字典里不允许出现整句
@@ -364,6 +364,37 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 「宿主聚合 → 走 `notify` → service worker 转给面板 → 面板逐字画出来」这一段由
 `test/stream.test.js`（真 socket 上的帧形状）+ `test/panel-stream.test.js`（真跑面板模块）分段覆盖，
 **中间那一跳（Chrome 的 `chrome.runtime.sendMessage`）只做了结构断言，没有在真 Chrome 里点过**。
+
+#### v36：一个「拒绝」带着授权时长回来了（本次修复）
+
+**怎么发现的**：v34/v35 把「按钮说的话 = 实际发生的事」当作不变量之后，
+我把这条不变量拿到**协议边界**上再试了一次 —— 直接给中继发一个带 `scope` 的拒绝：
+
+```
+relay.answer(id, 'rejected', 'conversation')
+-> {"answered":true,"outcome":"rejected","scope":"conversation"}
+scopeOf('c1') -> "conversation"          // 「不」里读出了一个时长
+```
+
+**为什么现在还没造成损害**：记录授权的那一行同时也检查了 `sensitive` / `alwaysAsk`，
+而拒绝走的是 `outcome: 'denied'` 分支、根本不会记授权 —— 所以这个 scope **目前到不了授予表**。
+但它已经**躺在中继里**了：同一个 `callId` 的下一个问题会把它读走。
+**靠下游恰好也拦住了来掩盖上游的错误记录**，不是我想要的形状。
+
+**修法**：只有「是」才可能带时长 ——
+`const granted = outcome === 'allowed-once' && APPROVAL_SCOPES.includes(scope)`。
+拒绝带 scope 是调用方 bug，现在返回里也不再回显它。
+
+**顺带修掉一条我自己写的坏测试**：我先写的用例是
+`answer(id, 'cancelled', 'once')` 然后 `await promise` —— **`PANEL_OPTIONS` 只允许
+`allowed-once` / `rejected`，所以 `cancelled` 被拒绝、那个 promise 按设计永不 settle**，
+测试于是挂死在顶层 await（runner 报 `Detected unsettled top-level await`）。
+**这本身是个好信号：协议边界确实拒绝了这个值**，所以改成断言「被拒绝」而不是等它。
+
+**测试**：`npm test` **422 passed / 0 failed**；`check:extension` exit 0。
+证伪：把 `granted` 退回只看 `APPROVAL_SCOPES.includes(scope)` → 1 红。
+
+**交付要求**：只改 `lib/`，扩展侧无改动 → **重启 `dsh web`** 即可。
 
 #### v35：把两个「说了不算数」的按钮删掉了（本次修复）
 
@@ -1655,7 +1686,7 @@ v13 我已经在 health 里放了 `approvalPending`，**但面板从来没读它
 
 | 项 | 结果 |
 |---|---|
-| `npm test` | **421 passing, 0 failing, 0 skipped** |
+| `npm test` | **422 passing, 0 failing, 0 skipped** |
 | `npm run check:extension` | exit 0 |
 | **把 `content-selection.js` 换回 `git show HEAD:` 的那一版，再跑新测试** | **3 条变红**（接管、死副本被替换、失败后重试），换回新版全绿 → 测试确实能抓住这两个缺陷 |
 | 旧版跑「死副本被替换」用例 | 直接把进程打崩：`Error: Extension context invalidated.` —— 无人接管的 rejection，正是线上那个缺陷的真身 |
@@ -2003,7 +2034,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 421 条，含真实 Chrome 端到端
+└─ test/                  # 422 条，含真实 Chrome 端到端
 
 extension/
 ├─ manifest.json
