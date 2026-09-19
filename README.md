@@ -249,7 +249,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 412 条
+npm test                          # 全部 421 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -275,7 +275,7 @@ npm run check:extension           # 扩展脚本语法检查（Chrome 加载前�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 412 条
+npm test                 # 421 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -288,7 +288,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 不会把 `@deepseek-ai/*` 拉下来。宿主库由 `lib/deps.js` 在运行时从
 `$DSH_HOME/profiles/node_modules` 解析。
 
-**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **412 passing, 0 failing, 0 skipped**，
+**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **421 passing, 0 failing, 0 skipped**，
 `npm run check:extension` exit 0。前提是这台机器上装过 DSH（宿主库要能解析到）。
 
 **验证环境**：Node **v24.15.0**。两个 `package.json` 里的 `engines.node: ">=20"` 是**保守下限**，
@@ -306,7 +306,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面四层测试，412 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
+**已自动化验证**：上面四层测试，421 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
 
 侧边栏那部分还有一组**静态**检查，防止语言和版式漂回去：两个字典的键必须完全一致、面板里每个
 `t('…')` 的键都必须存在、HTML 里不允许残留裸文案、旧版文案一个都不许出现、**字典里不允许出现整句
@@ -364,6 +364,64 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 「宿主聚合 → 走 `notify` → service worker 转给面板 → 面板逐字画出来」这一段由
 `test/stream.test.js`（真 socket 上的帧形状）+ `test/panel-stream.test.js`（真跑面板模块）分段覆盖，
 **中间那一跳（Chrome 的 `chrome.runtime.sendMessage`）只做了结构断言，没有在真 Chrome 里点过**。
+
+#### v35：把两个「说了不算数」的按钮删掉了（本次修复）
+
+**背景**：v34 把审批卡改成两个肯定的答案（`只允许一次` / `本会话允许`），
+让按钮说的话等于实际发生的事。但还有**两条路径**上，「本会话允许」这个按钮
+**根本不可能兑现**：
+
+| 路径 | 为什么记不住 |
+|---|---|
+| `browser_eval` / `browser_cdp` / `browser_upload` | 这三个工具**每次都重新问**（`alwaysAsk: true`）——eval 和 CDP 能跑任意代码，upload 能把你的文件送出去，预授权它们等于把 sandbox 拆了 |
+| 敏感操作（提交/购买/删除/上传…） | 站点被允许**读**，不等于被允许**花钱**。所以已授权的站点里这一类**再问一次** |
+
+**量出来的**：
+
+```
+ordinary click        -> asked again = false   // 「本会话允许」兑现了
+sensitive (submit)    -> asked again = true    // 「本会话允许」说了不算
+```
+
+**修法：按钮在不能兑现的时候不出现**
+- 宿主在审批请求里带一个 `rememberable` 字段（= `!alwaysAsk && !sensitive`），
+  **它就是那条记录规则本身**，所以面板和宿主不可能各说各话。
+- 面板拿到 `rememberable: false` 时**只画一个 `只允许一次`**，并补一句
+  `这一步每次都要重新确认` —— 少一个按钮如果不解释，看起来像渲染故障，而不像一条规则。
+- **没有加第二道「clamp」**：我先写了「即使旧面板硬发 `scope: conversation` 也不记录」的防护，
+  然后用证伪证明它**不可达**（`rememberable === false` 恰好等价于 `alwaysAsk || sensitive`，
+  而这两个条件本来就各自阻断记录）。**看起来像安全网却永远不执行的代码，比没有更糟**，已删。
+
+**顺带修掉一个「一句话描述三种危险」**：敏感提示原本是一句通用的
+`这一步会改动页面或花钱，不只是读`，但 `classifySensitivity`（`lib/grants.js`）
+分三类，`browser_eval` 是「在页面里执行代码」——**既不花钱也不改页面**。
+现在宿主把**是哪一类**一起送过来，面板分别说：
+
+| 宿主 reason | 面板 |
+|---|---|
+| `runs code in the page` | 这一步会在页面里执行代码 |
+| `uploads a file` | 这一步会从你的电脑上传文件 |
+| `submits or spends` / `types into a control` | 这一步可能会提交、购买或删除 |
+| **认不出来的** | 回退到通用句 —— **不猜**，说少一点好过说错 |
+
+`browser_eval` 两个提示会同时出现（「会执行代码」+「每次都要确认」），
+因为它们回答的是**两个不同的问题**：有多危险 / 为什么不能一次放过。
+
+**测试**：`npm test` **421 passed / 0 failed**；`check:extension` exit 0。
+
+**这一轮真正的教训是「假通过」**：
+我第一版把 always-ask 用例写成驱动 `browser_eval`，断言它不记录 `access` 授权——
+**它确实通过了，但通过的理由是错的**（eval 同时是 sensitive，所以因为敏感而不记录，
+和 always-ask 规则无关）。**证伪时把那道 guard 删掉，测试全绿**，这才暴露出来。
+改法：换成普通 always-ask 的 `browser_upload`，并**补一条对照用例**
+（同一个夹具下普通工具**必须**记录授权）——没有对照，用例会在一个「什么都不记录」的坏夹具上照样变绿。
+另外面板用例直接喂问题、不经过宿主，所以**抓不到「宿主忘了转发 reason」**——
+补了一条宿主侧断言（证伪确认会红）。
+
+**证伪**：宿主不再标记 `rememberable` → 2 红；面板不再扣下会话按钮 → 1 红；
+面板退回通用句 → 1 红；宿主不转发危险类别 → 1 红。
+
+**交付要求**：`lib/` + `extension/` 都改了 → **重启 `dsh web` + 重载 Chrome 扩展**。
 
 #### v34：按钮写着「允许一次」，实际给了整个会话（本次修复）
 
@@ -1597,7 +1655,7 @@ v13 我已经在 health 里放了 `approvalPending`，**但面板从来没读它
 
 | 项 | 结果 |
 |---|---|
-| `npm test` | **412 passing, 0 failing, 0 skipped** |
+| `npm test` | **421 passing, 0 failing, 0 skipped** |
 | `npm run check:extension` | exit 0 |
 | **把 `content-selection.js` 换回 `git show HEAD:` 的那一版，再跑新测试** | **3 条变红**（接管、死副本被替换、失败后重试），换回新版全绿 → 测试确实能抓住这两个缺陷 |
 | 旧版跑「死副本被替换」用例 | 直接把进程打崩：`Error: Extension context invalidated.` —— 无人接管的 rejection，正是线上那个缺陷的真身 |
@@ -1945,7 +2003,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 412 条，含真实 Chrome 端到端
+└─ test/                  # 421 条，含真实 Chrome 端到端
 
 extension/
 ├─ manifest.json

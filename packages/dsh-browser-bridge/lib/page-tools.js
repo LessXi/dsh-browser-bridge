@@ -135,6 +135,15 @@ export function buildPageTools(ports) {
         origin: input.origin,
         capability: input.capability,
         ...(input.sensitive === true ? { sensitive: true } : {}),
+        // Which kind of "more than reading" this is — spending, uploading, or
+        // running code. The panel writes the consequence in the reader's
+        // language, and one sentence for all three would misdescribe two of them.
+        ...(typeof input.sensitiveReason === 'string' && input.sensitiveReason.length > 0
+          ? { sensitiveReason: input.sensitiveReason }
+          : {}),
+        // Whether "for this session" exists on this path at all, so the panel
+        // offers a button only when the host can keep its word.
+        ...(input.rememberable === false ? { rememberable: false } : {}),
         signal: input.exec.signal,
       })
     } catch (error) {
@@ -157,7 +166,12 @@ export function buildPageTools(ports) {
       const asked = typeof input.approvalScope === 'function' ? input.approvalScope() : undefined
       const wanted = APPROVAL_SCOPES.includes(asked) ? asked : undefined
       const persistent = effective.persistentApproval !== false
-      if (wanted === 'once') {
+      // A surface that offers "for this session" on a path that cannot remember
+      // one is answered by not recording it. The panel is told not to offer it
+      // (`rememberable`), so this is the belt to that braces: an older panel, or
+      // a stray caller, still cannot widen a grant past what the tool allows.
+      const mayRemember = input.rememberable !== false
+      if (wanted === 'once' || !mayRemember) {
         // "Once" means once, so nothing is recorded and the next call asks
         // again. It used to fall through to the configured default, so the
         // button labelled 「允许一次」 recorded a site grant lasting the session.
@@ -246,6 +260,16 @@ export function buildPageTools(ports) {
     const reason = sensitivity.sensitive
       ? `${origin}: this action ${sensitivity.reason}, which is more than reading the page`
       : `the browser bridge wants to use ${origin}`
+    // Whether "for this session" is even available.
+    //
+    // Two paths refuse to remember a grant, so offering a button that promises
+    // one would be the same defect as a 「允许一次」 that lasts a session: three
+    // tools re-ask by design (`alwaysAsk`, so eval/CDP/upload cannot be
+    // pre-authorised), and a sensitive action is a second question inside an
+    // approved site by design (`confirmSensitiveActions`) — a site allowed to be
+    // *read* is not a site allowed to *spend money*. On those paths the panel is
+    // told so, and shows only the one-off button.
+    const rememberable = input.alwaysAsk !== true && sensitivity.sensitive !== true
     const decision = await askApproval({
       toolName: input.toolName,
       origin,
@@ -254,6 +278,8 @@ export function buildPageTools(ports) {
       // The structural twin of the sentence above, so a surface can state the
       // consequence without parsing prose.
       sensitive: sensitivity.sensitive === true,
+      sensitiveReason: sensitivity.reason,
+      rememberable,
       // Which of the two affirmative buttons was pressed, read back from the
       // relay. Resolved as a function so the answer is read after the question
       // settles, not before it is asked.

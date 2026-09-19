@@ -311,7 +311,7 @@ export function createApprovalRelay(options = {}) {
  * sentence, which is still better than echoing prose.
  *
  * @param {unknown} request - The approval request.
- * @returns {{ origin?: string, sensitive?: boolean }} Whatever could be read.
+ * @returns {{ origin?: string, sensitive?: boolean, sensitiveReason?: string, rememberable?: boolean }} Whatever could be read.
  */
 function factsFor(request) {
   const facts = {}
@@ -322,5 +322,14 @@ function factsFor(request) {
   // structural field is the one that cannot drift.
   if (typeof request.sensitive === 'boolean') facts.sensitive = request.sensitive
   else if (typeof request.reason === 'string' && request.reason.includes('more than reading the page')) facts.sensitive = true
+  // Which kind of "more than reading": spending, uploading, or running code. One
+  // generic sentence would misdescribe two of the three.
+  if (typeof request.sensitiveReason === 'string' && request.sensitiveReason.length > 0) {
+    facts.sensitiveReason = request.sensitiveReason
+  }
+  // Explicitly false only: a caller that says nothing is not claiming a button
+  // is unavailable, and defaulting it to false would silently remove a working
+  // button from every tool that does not set the field.
+  if (request.rememberable === false) facts.rememberable = false
   return facts
 }

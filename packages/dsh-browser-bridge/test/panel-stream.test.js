@@ -1224,6 +1224,59 @@ async function askApproval(overrides = {}) {
   await settle()
 }
 
+test('a question the host cannot remember offers only the one-off answer', async () => {
+  // Three tools re-ask by design, and a sensitive action always asks again. On
+  // those paths a 「本会话允许」 button would promise what the host will not do —
+  // the same defect as a 「允许一次」 that recorded a session grant.
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    await askApproval({ id: 'panel-30', rememberable: false })
+
+    assert.equal(allowButton()?.textContent, '只允许一次', 'a session grant was offered anyway')
+    assert.equal(onceButton(), undefined, 'the card drew the same answer twice')
+    assert.equal(rejectButton()?.textContent, '拒绝')
+    const note = approvalCard().children.find((child) => child.className === 'approval-note')
+    assert.equal(note?.textContent, '这一步每次都要重新确认', 'the missing button was unexplained')
+
+    post('dsh-approval-settled', { id: 'panel-30' })
+    await settle()
+  })
+})
+
+test('the one-off answer on a cannot-remember question still says just once', async () => {
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    host.approvals.length = 0
+    host.approval = { status: 200, payload: { answered: true } }
+    await askApproval({ id: 'panel-31', rememberable: false })
+
+    rejectButton().emit('click')
+    await settle()
+    assert.deepEqual(
+      host.approvals,
+      [{ action: 'approval', id: 'panel-31', outcome: 'rejected' }],
+      'a refusal on a cannot-remember question sent something else',
+    )
+  })
+})
+
+test('a question that can be remembered keeps both answers', async () => {
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    host.approvals.length = 0
+    host.approval = { status: 200, payload: { answered: true } }
+    await askApproval({ id: 'panel-32' })
+
+    assert.equal(onceButton()?.textContent, '只允许一次')
+    assert.equal(allowButton()?.textContent, '本会话允许')
+    allowButton().emit('click')
+    await settle()
+    assert.deepEqual(host.approvals, [
+      { action: 'approval', id: 'panel-32', outcome: 'allowed-once', scope: 'conversation' },
+    ])
+  })
+})
+
 test('a pending approval is shown as a question with exactly two answers', async () => {
   await onStoppedClock(async () => {
     await settleToIdle()
@@ -1292,6 +1345,36 @@ test('a question that changes the page says so, not just which tool', async () =
       undefined,
       'an ordinary read was warned about as if it spent money',
     )
+  })
+})
+
+test('the warning names the kind of danger, not one generic sentence', async () => {
+  // `classifySensitivity` sorts these three ways, and "runs code in the page" is
+  // not "spends money". One sentence for all of them misdescribes two — the same
+  // class of defect as the provider log printed as UI copy.
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    const noteOf = () => approvalCard().children.find((child) => child.className === 'approval-note')?.textContent
+
+    await askApproval({ id: 'panel-40', origin: 'https://example.com', sensitive: true, sensitiveReason: 'runs code in the page through the debugger' })
+    assert.equal(noteOf(), '这一步会在页面里执行代码')
+    post('dsh-approval-settled', { id: 'panel-40' })
+    await settle()
+
+    await askApproval({ id: 'panel-41', origin: 'https://example.com', sensitive: true, sensitiveReason: 'uploads a file from your computer' })
+    assert.equal(noteOf(), '这一步会从你的电脑上传文件')
+    post('dsh-approval-settled', { id: 'panel-41' })
+    await settle()
+
+    await askApproval({ id: 'panel-42', origin: 'https://example.com', sensitive: true, sensitiveReason: 'looks like it submits or spends ("buy")' })
+    assert.equal(noteOf(), '这一步可能会提交、购买或删除')
+    post('dsh-approval-settled', { id: 'panel-42' })
+    await settle()
+
+    // An unrecognised reason falls back rather than guessing: claiming a new kind
+    // spends money would be worse than saying less.
+    await askApproval({ id: 'panel-43', origin: 'https://example.com', sensitive: true, sensitiveReason: 'does something else entirely' })
+    assert.equal(noteOf(), '这一步会改动页面或花钱，不只是读')
   })
 })
 

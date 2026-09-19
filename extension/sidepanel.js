@@ -1196,6 +1196,35 @@ function renderWorking() {
 }
 
 /**
+ * Which sentence describes a sensitive action.
+ *
+ * `classifySensitivity` (`lib/grants.js`) sorts these into three kinds and the
+ * host now forwards which one fired, because one generic line would misdescribe
+ * two of them: "runs code in the page" is not "spends money", and the person
+ * deciding needs the one that is true.
+ *
+ * Matched on the host's own wording, with the generic sentence as the fallback
+ * rather than a guess: an unrecognised reason is a new kind, and claiming it
+ * spends money would be worse than saying less.
+ *
+ * @param {unknown} reason - The host's `sensitivity.reason`.
+ * @returns {string} The sentence, already translated.
+ */
+function sensitiveKey(reason) {
+  // Read through the translator at each site rather than returning a key for the
+  // caller to translate: the dead-key check in `panel-i18n.test.js` looks for
+  // translator call sites, so a key reached only through a returned string looks
+  // unused and the dictionary entry would be deleted as dead weight while still
+  // in use.
+  if (typeof reason === 'string') {
+    if (reason.includes('uploads a file')) return t('approval.uploads')
+    if (reason.includes('runs code in the page')) return t('approval.runsCode')
+    if (reason.includes('submits or spends') || reason.includes('types into a control')) return t('approval.spends')
+  }
+  return t('approval.sensitive')
+}
+
+/**
  * Draw the pending approval question, or take it away.
  *
  * The waiting row says a turn is running; this says *why nothing is happening*,
@@ -1220,7 +1249,7 @@ function renderApproval() {
   // question whose facts arrived later — the health poll catching up with a
   // notification, or the same id redelivered with more fields — kept the card
   // drawn from the earlier, poorer payload, and the redraw was skipped.
-  const key = `${pendingApproval.id}:${answering}:${pendingApproval.site ?? ''}:${pendingApproval.sensitive === true}:${pendingApproval.reason ?? ''}`
+  const key = `${pendingApproval.id}:${answering}:${pendingApproval.site ?? ''}:${pendingApproval.sensitive === true}:${pendingApproval.sensitiveReason ?? ''}:${pendingApproval.rememberable === false}:${pendingApproval.reason ?? ''}`
   if (existing !== null && drawnApproval === key) return
   existing?.remove()
   drawnApproval = key
@@ -1255,8 +1284,19 @@ function renderApproval() {
   if (pendingApproval.sensitive === true) {
     const warn = document.createElement('div')
     warn.className = 'approval-note'
-    warn.textContent = t('approval.sensitive')
+    warn.textContent = sensitiveKey(pendingApproval.sensitiveReason)
     card.append(warn)
+  }
+  // Said once, where the missing button would have been: otherwise a card with
+  // one fewer answer reads as a rendering fault rather than as a rule. Shown
+  // alongside the sensitive note rather than instead of it — for `browser_eval`
+  // both are true, and they answer different questions ("why is this serious"
+  // versus "why can I not just allow it for the session").
+  if (pendingApproval.rememberable === false) {
+    const note = document.createElement('div')
+    note.className = 'approval-note'
+    note.textContent = t('approval.eachTime')
+    card.append(note)
   }
 
   // The host's own wording stays reachable, but only when it still carries
@@ -1290,19 +1330,26 @@ function renderApproval() {
   once.textContent = t('approval.once')
   once.disabled = answering
   once.addEventListener('click', () => answerApproval('allowed-once', 'once'))
-  const always = document.createElement('button')
-  always.type = 'button'
-  always.className = 'approval-allow'
-  always.textContent = t('approval.allow')
-  always.disabled = answering
-  always.addEventListener('click', () => answerApproval('allowed-once', 'conversation'))
+  // The session button is withheld where the host cannot remember a grant: three
+  // tools re-ask by design (eval, CDP, upload) and a sensitive action is a second
+  // question inside an approved site by design. Offering it there was the same
+  // defect as a 「允许一次」 that lasted a session — the button promising more
+  // than the host will do. The fact comes from the asking tool.
+  const rememberable = pendingApproval.rememberable !== false
+  const allow = document.createElement('button')
+  allow.type = 'button'
+  allow.className = 'approval-allow'
+  allow.textContent = rememberable ? t('approval.allow') : t('approval.once')
+  allow.disabled = answering
+  allow.addEventListener('click', () => answerApproval('allowed-once', rememberable ? 'conversation' : 'once'))
   const reject = document.createElement('button')
   reject.type = 'button'
   reject.className = 'approval-reject'
   reject.textContent = t('approval.reject')
   reject.disabled = answering
   reject.addEventListener('click', () => answerApproval('rejected'))
-  actions.append(once, always, reject)
+  if (rememberable) actions.append(once, allow, reject)
+  else actions.append(allow, reject)
   card.append(actions)
 
   transcript.append(card)
@@ -1788,6 +1835,10 @@ function approvalQuestion(question) {
     // is being asked about.
     ...(typeof entry.origin === 'string' ? { site: entry.origin } : {}),
     ...(typeof entry.sensitive === 'boolean' ? { sensitive: entry.sensitive } : {}),
+    ...(typeof entry.sensitiveReason === 'string' ? { sensitiveReason: entry.sensitiveReason } : {}),
+    // Explicitly false only: a question that does not say is not claiming the
+    // button is unavailable.
+    ...(entry.rememberable === false ? { rememberable: false } : {}),
   }
 }
 
