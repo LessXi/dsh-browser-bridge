@@ -249,7 +249,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 393 条
+npm test                          # 全部 394 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -275,7 +275,7 @@ npm run check:extension           # 扩展脚本语法检查（Chrome 加载前�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 393 条
+npm test                 # 394 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -288,7 +288,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 不会把 `@deepseek-ai/*` 拉下来。宿主库由 `lib/deps.js` 在运行时从
 `$DSH_HOME/profiles/node_modules` 解析。
 
-**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **393 passing, 0 failing, 0 skipped**，
+**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **394 passing, 0 failing, 0 skipped**，
 `npm run check:extension` exit 0。前提是这台机器上装过 DSH（宿主库要能解析到）。
 
 **验证环境**：Node **v24.15.0**。两个 `package.json` 里的 `engines.node: ">=20"` 是**保守下限**，
@@ -306,7 +306,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面四层测试，393 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
+**已自动化验证**：上面四层测试，394 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
 
 侧边栏那部分还有一组**静态**检查，防止语言和版式漂回去：两个字典的键必须完全一致、面板里每个
 `t('…')` 的键都必须存在、HTML 里不允许残留裸文案、旧版文案一个都不许出现、**字典里不允许出现整句
@@ -364,6 +364,35 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 「宿主聚合 → 走 `notify` → service worker 转给面板 → 面板逐字画出来」这一段由
 `test/stream.test.js`（真 socket 上的帧形状）+ `test/panel-stream.test.js`（真跑面板模块）分段覆盖，
 **中间那一跳（Chrome 的 `chrome.runtime.sendMessage`）只做了结构断言，没有在真 Chrome 里点过**。
+
+#### v31：右键菜单在中文浏览器里是英文（本次修复）
+
+**症状**：Chrome 自己的右键菜单里有四行英文，出现在**每一个页面、每一次右键**：
+
+```
+Add selection to DSH context
+Add this page to DSH context
+Add this tab to DSH context
+Sync selections automatically
+```
+
+**为什么它是最后一个被发现的**：其余三处界面（面板、设置页、动态提示）都能靠截图看到 ——
+**而右键菜单由 Chrome 画在浏览器自己的 UI 里，任何面板截图都照不到它**。
+它只存在于 `background.js` 的 `chrome.contextMenus.create({ title })` 调用里。
+
+**修法**：service worker 里没有面板可以借翻译器，所以直接 import
+`optionsTranslator` + `pickLocale`（v30 为设置页建的那本字典），
+四行标题改用 `menuSay('menu.*')`。
+
+**用 `globalThis.chrome` 而不是裸 `chrome`**：可选链**救不了未声明的标识符** ——
+裸 `chrome?.i18n` 在没有 `chrome` 的环境里是直接抛错，而不是回退到英文。
+（测试不 import 这个模块，所以不会当场炸；但这是**明天就会踩到的坑**。）
+
+**新增一条测试**：`background.js` 里不许再有 `title: '英文'` 这种固定文案，
+且必须有 ≥4 行走 `menuSay`。
+
+**实测**：`npm test` **394 passed / 0 failed**；`check:extension` exit 0。
+**证伪**：把一行标题改回英文 → 2 红（该行 + 对应的键变成死键）。
 
 #### v30：设置页是纯英文，而面板是中文（本次修复）
 
@@ -1409,7 +1438,7 @@ v13 我已经在 health 里放了 `approvalPending`，**但面板从来没读它
 
 | 项 | 结果 |
 |---|---|
-| `npm test` | **393 passing, 0 failing, 0 skipped** |
+| `npm test` | **394 passing, 0 failing, 0 skipped** |
 | `npm run check:extension` | exit 0 |
 | **把 `content-selection.js` 换回 `git show HEAD:` 的那一版，再跑新测试** | **3 条变红**（接管、死副本被替换、失败后重试），换回新版全绿 → 测试确实能抓住这两个缺陷 |
 | 旧版跑「死副本被替换」用例 | 直接把进程打崩：`Error: Extension context invalidated.` —— 无人接管的 rejection，正是线上那个缺陷的真身 |
@@ -1748,7 +1777,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 393 条，含真实 Chrome 端到端
+└─ test/                  # 394 条，含真实 Chrome 端到端
 
 extension/
 ├─ manifest.json

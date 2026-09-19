@@ -1,11 +1,35 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v30 已交付。** 下一节就是最新的一轮改动；下面标 v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v30 那一段为止即可。
+> **当前状态：v31 已交付。** 下一节就是最新的一轮改动；下面标 v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v31 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（393 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（394 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
+>
+> **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
+> 换成你自己克隆它的目录即可（例：`cd <repo>`）。
+
+> ### v31：右键菜单在中文浏览器里是英文（扩展侧，本次修复）
+>
+> Chrome 右键菜单里四行英文，出现在**每个页面、每次右键**：
+> `Add selection to DSH context` / `Add this page…` / `Add this tab…` / `Sync selections automatically`。
+>
+> **为什么最后才发现**：面板、设置页、动态提示都能靠截图看到，
+> **而右键菜单由 Chrome 画在浏览器自己的 UI 里，任何面板截图都照不到** ——
+> 它只存在于 `background.js` 的 `chrome.contextMenus.create({ title })` 里。
+> **教训：能被截图的界面才会被截图发现。**
+>
+> **修法**：service worker 里没有面板可借翻译器，直接 import `optionsTranslator` + `pickLocale`
+> （v30 为设置页建的那本字典），四行改用 `menuSay('menu.*')`。
+> **用 `globalThis.chrome` 而不是裸 `chrome`** —— 可选链**救不了未声明的标识符**，
+> 裸 `chrome?.i18n` 在没有 `chrome` 的环境里直接抛错而不是回退英文。
+>
+> **实测**：`npm test` **394 passed / 0 failed**；`check:extension` exit 0。
+> **证伪**：一行标题改回英文 → 2 红（该行 + 该键变成死键）。
+>
+> **交付：只改 `extension/` → 重载 Chrome 扩展即可。**
+
 >
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。

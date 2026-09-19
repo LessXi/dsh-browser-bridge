@@ -21,6 +21,17 @@
  */
 
 import { distillSnapshot, renderElements } from './page-distill.js'
+import { optionsTranslator, pickLocale } from './locales.js'
+
+// The right-click menu is drawn by Chrome, on every page, in front of whatever
+// the person was reading. English labels there were the last surface still in one
+// language only, and the service worker has no panel to borrow a translator from.
+// `globalThis.chrome` rather than a bare `chrome`: optional chaining does not
+// rescue an undeclared identifier, so the bare form would throw outright in any
+// context that has no `chrome` — including a test that ever imports this module.
+const menuSay = optionsTranslator(
+  pickLocale(globalThis.chrome?.i18n?.getUILanguage?.() ?? 'en'),
+)
 
 /** Method names, kept in sync with the host's `lib/protocol.js` by hand. */
 const METHODS = {
@@ -1422,24 +1433,24 @@ async function refreshContextMenus() {
   await chrome.contextMenus.removeAll()
   chrome.contextMenus.create({
     id: 'dsh-add-selection',
-    title: 'Add selection to DSH context',
+    title: menuSay('menu.addSelection'),
     contexts: ['selection'],
   })
   chrome.contextMenus.create({
     id: 'dsh-add-page',
-    title: 'Add this page to DSH context',
+    title: menuSay('menu.addPage'),
     contexts: ['page'],
   })
   chrome.contextMenus.create({
     id: 'dsh-add-tab',
-    title: 'Add this tab to DSH context',
+    title: menuSay('menu.addTab'),
     contexts: ['tab'],
   })
   chrome.contextMenus.create({ id: 'dsh-sep', type: 'separator', contexts: ['selection', 'page', 'tab'] })
   chrome.contextMenus.create({
     id: 'dsh-toggle-autopush',
     type: 'checkbox',
-    title: 'Sync selections automatically',
+    title: menuSay('menu.autoPush'),
     checked: (await readSettings()).autoPushSelection,
     contexts: ['selection', 'page', 'tab'],
   })

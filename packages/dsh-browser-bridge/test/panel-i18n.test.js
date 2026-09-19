@@ -339,11 +339,25 @@ test('the options page carries no copy of its own, and every key it names exists
 
   // And the other direction: a key nothing draws is either a leftover or a
   // string someone meant to wire and never did. Keys used at run time (the probe
-  // results, in `options.js`) are not in the markup, so the script counts too.
-  const script = readExtensionFile('options.js')
-  const drawn = new Set([...named, ...[...script.matchAll(/say\(\s*'([^']+)'/g)].map((m) => m[1])])
+  // results, in `options.js`, and the context menu, in `background.js`) are not
+  // in the markup, so the scripts count too.
+  const drawn = new Set([
+    ...named,
+    ...[...readExtensionFile('options.js').matchAll(/say\(\s*'([^']+)'/g)].map((m) => m[1]),
+    ...[...readExtensionFile('background.js').matchAll(/menuSay\(\s*'([^']+)'/g)].map((m) => m[1]),
+  ])
   const dead = Object.keys(options.zh).filter((key) => !drawn.has(key))
   assert.deepEqual(dead, [], 'these options keys are defined and never drawn')
+})
+
+test('the right-click menu is localized, not English inside Chrome', () => {
+  // These rows are drawn by Chrome on every page, in front of whatever the person
+  // was reading, so English here was the last surface in one language only.
+  const source = readExtensionFile('background.js')
+  const titles = [...source.matchAll(/title:\s*(?:menuSay\('([^']+)'\)|'([^']{4,})')/g)]
+  const english = titles.filter((match) => match[2] !== undefined).map((match) => match[2])
+  assert.deepEqual(english, [], 'a context-menu row still carries fixed English')
+  assert.ok(titles.length >= 4, `expected four localized menu rows, found ${titles.length}`)
 })
 
 test('the two options dictionaries carry the same keys', () => {

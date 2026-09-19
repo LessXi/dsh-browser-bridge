@@ -282,6 +282,12 @@ export const options = Object.freeze({
     testing: '正在测试…',
     socketFailed: '打不开连接：{reason}',
     loadFailed: '读不到已保存的设置：{reason}',
+    // Chrome draws these in its own right-click menu, in front of whatever page
+    // the person is reading. They are short because a context menu row is.
+    'menu.addSelection': '把选中内容加入 DSH 上下文',
+    'menu.addPage': '把本页加入 DSH 上下文',
+    'menu.addTab': '把本标签页加入 DSH 上下文',
+    'menu.autoPush': '自动同步划词',
   }),
   en: Object.freeze({
     heading: 'DSH Browser Bridge',
@@ -318,6 +324,10 @@ export const options = Object.freeze({
     testing: 'Testing…',
     socketFailed: 'Could not open the socket: {reason}',
     loadFailed: 'Could not read saved settings: {reason}',
+    'menu.addSelection': 'Add selection to DSH context',
+    'menu.addPage': 'Add this page to DSH context',
+    'menu.addTab': 'Add this tab to DSH context',
+    'menu.autoPush': 'Sync selections automatically',
   }),
 })
 
