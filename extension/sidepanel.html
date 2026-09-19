@@ -40,11 +40,19 @@
         --line: color-mix(in oklab, CanvasText 14%, transparent);
         --line-soft: color-mix(in oklab, CanvasText 8%, transparent);
         --muted: color-mix(in oklab, CanvasText 62%, transparent);
-        --faint: color-mix(in oklab, CanvasText 45%, transparent);
+        /* Measured against the two Canvas values, not guessed.
+           At 45% this was 3.36:1 on light and 4.46:1 on dark — below WCAG AA's
+           4.5 for small text on both, and it carries real content: session times,
+           workspace names, code languages, the copy buttons. At 55% it measures
+           4.76 and 6.00. The sweep that found this is real: with `--faint` at 45%,
+           14 of the 43 text runs on the chat screen were below AA. */
+        --faint: color-mix(in oklab, CanvasText 55%, transparent);
         /* Codex calls this `--color-codex-description`: half-strength text, used
            for labels and times. It is a colour, not a component, which is the
-           whole reason their panel has no "hint" style class to copy. */
-        --tertiary: color-mix(in oklab, CanvasText 50%, transparent);
+           whole reason their panel has no "hint" style class to copy.
+           Raised from 50% for the same reason as `--faint`: it measured 3.98:1 on
+           light, and it paints tool names, arguments and section labels. */
+        --tertiary: color-mix(in oklab, CanvasText 60%, transparent);
         --hover: color-mix(in oklab, CanvasText 7%, transparent);
         --lift: color-mix(in oklab, CanvasText 11%, transparent);
         /* The three colours that do not come from the system palette.

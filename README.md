@@ -249,7 +249,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 443 条
+npm test                          # 全部 444 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -275,7 +275,7 @@ npm run check:extension           # 扩展脚本语法检查（Chrome 加载前�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 443 条
+npm test                 # 444 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -288,7 +288,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 不会把 `@deepseek-ai/*` 拉下来。宿主库由 `lib/deps.js` 在运行时从
 `$DSH_HOME/profiles/node_modules` 解析。
 
-**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **443 passing, 0 failing, 0 skipped**，
+**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **444 passing, 0 failing, 0 skipped**，
 `npm run check:extension` exit 0。前提是这台机器上装过 DSH（宿主库要能解析到）。
 
 **验证环境**：Node **v24.15.0**。两个 `package.json` 里的 `engines.node: ">=20"` 是**保守下限**，
@@ -306,7 +306,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面四层测试，443 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
+**已自动化验证**：上面四层测试，444 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
 
 侧边栏那部分还有一组**静态**检查，防止语言和版式漂回去：两个字典的键必须完全一致、面板里每个
 `t('…')` 的键都必须存在、HTML 里不允许残留裸文案、旧版文案一个都不许出现、**字典里不允许出现整句
@@ -364,6 +364,52 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 「宿主聚合 → 走 `notify` → service worker 转给面板 → 面板逐字画出来」这一段由
 `test/stream.test.js`（真 socket 上的帧形状）+ `test/panel-stream.test.js`（真跑面板模块）分段覆盖，
 **中间那一跳（Chrome 的 `chrome.runtime.sendMessage`）只做了结构断言，没有在真 Chrome 里点过**。
+
+#### v48：三种淡色文字里有 27 处读不清（本次修复）
+
+v47 用了 AX 树，这轮换一条轴：**对比度的量化**。不看截图，直接问浏览器
+**实际渲染出来的**对比度 —— 用 canvas 把 CSS 颜色解析成 sRGB，再算 WCAG 比值。
+
+**关键陷阱（我踩了）**：这个面板的淡色全都是
+`color-mix(in oklab, CanvasText N%, transparent)`，而 `getComputedStyle` 返回的是
+**`oklab(0 0 0 / 0.45)`，不是 `rgb()`** —— 只认 `rgb()` 的解析器会**静默跳过每一个**，
+然后报出一份「全部通过」的体检报告，**而它什么都没测**。
+
+**实测结果（修复前）**
+
+| 场景 | 测得文字 | 低于 AA |
+|---|---|---|
+| chat 浅色 | 43 处 | **14 处** |
+| history 浅色 | 32 处 | **13 处** |
+
+失败的全部是 `--faint`(45%) 与 `--tertiary`(50%)，实测 **3.36 / 4.0**（需 4.5）。
+而它们**不是装饰**：
+
+- `.session-time` 会话时间戳（「刚刚 / 1 小时前 / 1 天前」）
+- `.group-label` 工作区名（「打造dsh插件」「daily」「未分组」）
+- `.code-lang` 代码语言标签
+- **`.copy` 复制按钮的文字本身**
+- `.tool .args` 工具参数、`.notice` 上下文提示、`.section-label`
+
+**修法：按实测值抬高两个 token**
+
+| token | 原 | 新 | 浅色 | 深色 |
+|---|---|---|---|---|
+| `--faint` | 45% | **55%** | 3.36 → **4.76** | 4.46 → **6.00** |
+| `--tertiary` | 50% | **60%** | 3.98 → **5.74** | 5.19 → **6.89** |
+
+**实测（修复后）**：chat 43 处 / history 32 处 / approval 19 处 / long 24 处，
+**浅色与深色全部 0 处低于 AA**。唯一被跳过的是 `.working` 的渐变文字
+（`background-clip: text` + `color: transparent`，是正常写法且已有
+`prefers-reduced-motion` 回退），**不是缺陷**。
+
+**测试**：`npm test` **444 passed / 0 failed**（443 → 444）；`check:extension` exit 0。
+新增一条守卫：从 `sidepanel.html` 里读出 `--faint`/`--tertiary` 的百分比，
+按 Chrome 的两个 Canvas 值算比值，**两个主题都必须 ≥4.5**。
+算的是近似（浏览器在 45% 实测 3.36，这个算式给 3.35），偏差方向安全。
+**证伪**：把 `--faint` 调回 45% → 1 红。
+
+**交付要求**：只改 `extension/` → **重载 Chrome 扩展**即可。
 
 #### v47：屏幕阅读器念出「思考 ⌄」，而且有两个一模一样的「复制」（本次修复）
 
@@ -2229,7 +2275,7 @@ v13 我已经在 health 里放了 `approvalPending`，**但面板从来没读它
 
 | 项 | 结果 |
 |---|---|
-| `npm test` | **443 passing, 0 failing, 0 skipped** |
+| `npm test` | **444 passing, 0 failing, 0 skipped** |
 | `npm run check:extension` | exit 0 |
 | **把 `content-selection.js` 换回 `git show HEAD:` 的那一版，再跑新测试** | **3 条变红**（接管、死副本被替换、失败后重试），换回新版全绿 → 测试确实能抓住这两个缺陷 |
 | 旧版跑「死副本被替换」用例 | 直接把进程打崩：`Error: Extension context invalidated.` —— 无人接管的 rejection，正是线上那个缺陷的真身 |
@@ -2577,7 +2623,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 443 条，含真实 Chrome 端到端
+└─ test/                  # 444 条，含真实 Chrome 端到端
 
 extension/
 ├─ manifest.json

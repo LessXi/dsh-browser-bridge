@@ -505,6 +505,54 @@ test('the name a screen reader speaks is not a decoration', (t) => {
   assert.notEqual(zh['action.copyCode'], zh['action.copyAnswer'], 'both copy buttons read the same')
 })
 
+test('the dim text tokens stay readable', (t) => {
+  // Measured in a real browser, not by eyeballing a screenshot. The panel's dim
+  // text is `color-mix(in oklab, CanvasText N%, transparent)`, which
+  // `getComputedStyle` reports as `oklab(0 0 0 / N)` — so a contrast sweep written
+  // for `rgb()` skips every one of them and reports a clean bill of health for a
+  // panel it never measured. Resolving the mix through a canvas is what makes the
+  // number real.
+  //
+  // At 45% and 50% the chat screen had 14 of its 43 text runs below WCAG AA, and
+  // the history 13 of 32. These are not decorations: session times, workspace
+  // names, code languages and the copy buttons.
+  const html = readExtensionFile('sidepanel.html')
+  const alphaOf = (name) => {
+    const found = html.match(new RegExp(`--${name}: color-mix\\(in oklab, CanvasText (\\d+)%`))
+    assert.ok(found, `--${name} is no longer a CanvasText color-mix, so this guard cannot check it`)
+    return Number(found[1]) / 100
+  }
+  // Chrome's two Canvas values.
+  const CANVAS = { light: { r: 255, g: 255, b: 255 }, dark: { r: 27, g: 27, b: 29 } }
+  const over = (fg, alpha, bg) => ({
+    r: fg.r * alpha + bg.r * (1 - alpha),
+    g: fg.g * alpha + bg.g * (1 - alpha),
+    b: fg.b * alpha + bg.b * (1 - alpha),
+  })
+  const luminance = ({ r, g, b }) => {
+    const f = (v) => { const s = v / 255; return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4) }
+    return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
+  }
+  const ratio = (a, b) => {
+    const la = luminance(a)
+    const lb = luminance(b)
+    return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05)
+  }
+  // The arithmetic below is an approximation of an oklab mix; the browser measured
+  // 3.36 at 45% where this says 3.35, so it tracks closely and errs the right way.
+  for (const name of ['faint', 'tertiary']) {
+    const alpha = alphaOf(name)
+    for (const [scheme, bg] of Object.entries(CANVAS)) {
+      const ink = scheme === 'light' ? { r: 0, g: 0, b: 0 } : { r: 255, g: 255, b: 255 }
+      const measured = ratio(over(ink, alpha, bg), bg)
+      assert.ok(
+        measured >= 4.5,
+        `--${name} at ${alpha * 100}% is ${measured.toFixed(2)}:1 on ${scheme}, below AA's 4.5`,
+      )
+    }
+  }
+})
+
 test('no dictionary entry is dead weight', () => {
   // A key nothing reads is either a leftover from a control that was removed
   // (the header's reload button) or a label that was meant to be wired and
