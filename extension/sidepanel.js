@@ -1804,6 +1804,7 @@ function renderChrome() {
  * @returns {void}
  */
 function showView(next) {
+  const was = document.activeElement
   view = next
   transcript.hidden = next !== 'chat'
   history.hidden = next !== 'history'
@@ -1813,6 +1814,19 @@ function showView(next) {
     drawHistory()
   } else {
     adoptFromLastHealth()
+  }
+  // The control that was pressed has just hidden itself — the header swaps
+  // between the title button and the back button — so the browser drops focus to
+  // <body> and the next Tab restarts from the top of the panel. Measured in a
+  // real browser: `before: active=title`, then `after: active=BODY`.
+  //
+  // Read back from the browser rather than guessing which case applies: an
+  // element hides itself directly, but a history row is taken away by its
+  // container, and both lose focus the same way. Asking `document.activeElement`
+  // covers each without enumerating them.
+  if (was !== null && was !== document.body && document.activeElement === document.body) {
+    const fallback = next === 'history' ? backButton : titleButton
+    if (fallback !== undefined && fallback.hidden !== true) fallback.focus()
   }
   // Three renderers skip drawing unless the conversation is the visible view,
   // and the live block removes what is already on screen rather than leaving it

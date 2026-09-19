@@ -2412,6 +2412,57 @@ function focusedOption() {
   return options.findIndex((node) => node.dataset.focused === 'true')
 }
 
+test('switching views keeps the keyboard where the person put it', async () => {
+  // Measured in a real browser before this: `before: active=title`, then
+  // `after switching to history: active=BODY`. The header swaps between the title
+  // button and the back button, so pressing one hides it, the browser drops focus
+  // to the body, and the next Tab restarts from the top of the panel. For someone
+  // driving the panel by keyboard that is a lost place, every time.
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    const title = registry.get('title')
+    const back = registry.get('back')
+
+    // Into the history.
+    title.focus()
+    assert.equal(document.activeElement, title, 'the fixture cannot even focus the title')
+    title.click()
+    await settle()
+    assert.equal(currentViewInPanel(), 'history')
+    assert.equal(document.activeElement, back, 'focus was lost on the way into the history')
+
+    // And back out, which is the same problem in the other direction.
+    back.focus()
+    back.click()
+    await settle()
+    assert.equal(currentViewInPanel(), 'chat')
+    assert.equal(document.activeElement, title, 'focus was lost on the way back to the conversation')
+  })
+})
+
+test('a keyboard user is not dragged out of the session list', async () => {
+  // The other half of the rule: only move focus when it was actually dropped. A
+  // click on a history row focuses the row, and the row's own handler switches
+  // back to the conversation — so a fix that always re-focuses the header would
+  // take the keyboard away from the list the person is standing in.
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    registry.get('title').click()
+    await settle()
+
+    const row = registry.get('history').querySelectorAll('button')[0]
+    assert.ok(row, 'the history has no session rows to click')
+    row.focus()
+    row.click()
+    await settle()
+
+    assert.equal(currentViewInPanel(), 'chat')
+    // The row is still in the DOM — only the view changed — so focus was never
+    // dropped and the panel must leave it alone.
+    assert.equal(document.activeElement, row, 'the panel took focus away from the row that was pressed')
+  })
+})
+
 /**
  * Press a key on the trigger.
  *

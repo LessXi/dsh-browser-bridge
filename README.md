@@ -249,7 +249,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 436 条
+npm test                          # 全部 438 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -275,7 +275,7 @@ npm run check:extension           # 扩展脚本语法检查（Chrome 加载前�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 436 条
+npm test                 # 438 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -288,7 +288,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 不会把 `@deepseek-ai/*` 拉下来。宿主库由 `lib/deps.js` 在运行时从
 `$DSH_HOME/profiles/node_modules` 解析。
 
-**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **436 passing, 0 failing, 0 skipped**，
+**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **438 passing, 0 failing, 0 skipped**，
 `npm run check:extension` exit 0。前提是这台机器上装过 DSH（宿主库要能解析到）。
 
 **验证环境**：Node **v24.15.0**。两个 `package.json` 里的 `engines.node: ">=20"` 是**保守下限**，
@@ -306,7 +306,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面四层测试，436 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
+**已自动化验证**：上面四层测试，438 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
 
 侧边栏那部分还有一组**静态**检查，防止语言和版式漂回去：两个字典的键必须完全一致、面板里每个
 `t('…')` 的键都必须存在、HTML 里不允许残留裸文案、旧版文案一个都不许出现、**字典里不允许出现整句
@@ -364,6 +364,49 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 「宿主聚合 → 走 `notify` → service worker 转给面板 → 面板逐字画出来」这一段由
 `test/stream.test.js`（真 socket 上的帧形状）+ `test/panel-stream.test.js`（真跑面板模块）分段覆盖，
 **中间那一跳（Chrome 的 `chrome.runtime.sendMessage`）只做了结构断言，没有在真 Chrome 里点过**。
+
+#### v45：用键盘切一次视图，焦点就掉到 body（本次修复）
+
+v44 接上了方向键，下一步自然是**按 Tab 能不能走到那个控件**。
+
+**真实浏览器实测**（页内探针，不是推断）：
+
+```
+before:                        active=title
+after switching to history:    active=BODY      ← 焦点没了
+```
+
+**根因**：页头在**「标题按钮」与「返回按钮」之间互换**，而**按下的那个按钮把自己隐藏了**。
+浏览器在获得焦点的元素被隐藏时，会把焦点丢回 `<body>` —— 于是键盘用户**每次切换视图都丢一次位置**，
+下一次 `Tab` 从面板最顶上重新开始。
+
+**修法（两条规则，缺一不可）**
+- **焦点交给「撤销这次切换」的那个控件**：进历史 → 聚焦返回键；回对话 → 聚焦标题键。
+- **只在焦点真的被丢掉时才动**：不是「凡切换就重新聚焦」。
+  点列表行时焦点在**行**上，而行的处理器会切回对话 —— 此时行**还在 DOM 里**（只是视图变了），
+  焦点从未丢失。**无条件重新聚焦会把键盘从用户正站着的列表里拽走。**
+
+判定方式不是猜「哪个元素隐藏了」，而是**回读浏览器**：`document.activeElement === document.body`。
+元素可能自己隐藏，也可能被容器整个移除 —— 两种情况焦点都会掉，**问一次就覆盖全部**。
+
+**实测（两个方向）**：
+`before: active=title` → `after switching to history: active=back`；
+`before back: active=back` → `after back: active=title`。截图上返回键/标题键各自出现焦点环。
+
+**测试基础设施必须一起修（这是关键）**：`dom-shim.js` 的 `focus()` **原本是空函数**，
+`hidden` 是普通属性，`activeElement` **根本不存在** —— 也就是说
+**「焦点在哪」这件事在测试里完全不可观测**，这正是它能上线的原因。现在：
+- `focus()` / `blur()` 真实记录到 `document.activeElement`
+- `hidden` 变成**访问器**，隐藏持有焦点的元素时**把焦点丢回 `<body>`**（复刻浏览器行为）
+- 节点携带 `ownerDocument`；`registry` 里按 id 铸造的桩也带上（否则 `focus()` 找不到文档）
+- 文档初始 `activeElement = body`
+
+**测试**：`npm test` **438 passed / 0 failed**（436 → 438）；`check:extension` exit 0。
+新增 2 条：切换两个方向各自保住焦点；**按下的行不被夺走焦点**。
+**证伪两次**：去掉恢复逻辑 → 1 红；改成「无条件重新聚焦」→ **1 红（正是第二条）**。
+**两次证伪各命中一边，说明这对规则的两半都被钉住了。**
+
+**交付要求**：只改 `extension/` → **重载 Chrome 扩展**即可。
 
 #### v44：模型选择器声明了「可以用方向键」，但方向键没接（本次修复）
 
@@ -2085,7 +2128,7 @@ v13 我已经在 health 里放了 `approvalPending`，**但面板从来没读它
 
 | 项 | 结果 |
 |---|---|
-| `npm test` | **436 passing, 0 failing, 0 skipped** |
+| `npm test` | **438 passing, 0 failing, 0 skipped** |
 | `npm run check:extension` | exit 0 |
 | **把 `content-selection.js` 换回 `git show HEAD:` 的那一版，再跑新测试** | **3 条变红**（接管、死副本被替换、失败后重试），换回新版全绿 → 测试确实能抓住这两个缺陷 |
 | 旧版跑「死副本被替换」用例 | 直接把进程打崩：`Error: Extension context invalidated.` —— 无人接管的 rejection，正是线上那个缺陷的真身 |
@@ -2433,7 +2476,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 436 条，含真实 Chrome 端到端
+└─ test/                  # 438 条，含真实 Chrome 端到端
 
 extension/
 ├─ manifest.json

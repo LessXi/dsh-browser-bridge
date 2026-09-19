@@ -25,7 +25,8 @@ class Element {
     this.id = ''
     this.dataset = {}
     this.style = {}
-    this.hidden = false
+    this.#hidden = false
+    this.ownerDocument = null
     this.#value = ''
     this.selectionStart = 0
     this.selectionEnd = 0
@@ -47,6 +48,7 @@ class Element {
   #text
   #children
   #value
+  #hidden
 
   get children() {
     return this.#children
@@ -250,8 +252,39 @@ class Element {
     return null
   }
 
-  focus() {}
-  blur() {}
+  /**
+   * Whether this element is hidden, with the browser's focus side effect.
+   *
+   * A real browser moves focus to `<body>` when the focused element is hidden,
+   * and that is the behaviour the panel has to compensate for: pressing the
+   * header's title button hides that same button, so focus would be lost and the
+   * next Tab would start over. A plain property could not express it, and the
+   * untestable version is how the panel shipped with that bug.
+   */
+  get hidden() {
+    return this.#hidden
+  }
+  set hidden(next) {
+    this.#hidden = next === true
+    if (this.#hidden && this.ownerDocument?.activeElement === this) {
+      this.ownerDocument.activeElement = this.ownerDocument.body
+    }
+  }
+
+  /**
+   * Move focus here.
+   *
+   * Real behaviour, not a no-op: `document.activeElement` tracks it, and the
+   * suite can therefore ask where the keyboard actually is.
+   */
+  focus() {
+    const doc = this.ownerDocument ?? null
+    if (doc !== null) doc.activeElement = this
+  }
+  blur() {
+    const doc = this.ownerDocument ?? null
+    if (doc !== null && doc.activeElement === this) doc.activeElement = doc.body
+  }
   click() {
     this.emit('click', {})
   }
@@ -269,6 +302,7 @@ class Element {
     this.#text = ''
     this.#detach(adopted)
     adopted.parentNode = this
+    adopted.ownerDocument = this.ownerDocument
     this.#children.push(adopted)
   }
 
@@ -372,20 +406,32 @@ function makeDocument() {
     if (!registry.has(id)) {
       const element = new Element('div')
       element.id = id
+      // Without this the stub cannot record where focus is, because `focus()`
+      // finds the document through the node.
+      element.ownerDocument = document
       registry.set(id, element)
     }
     return registry.get(id)
   }
 
   const documentElement = new Element('html')
+  const body = new Element('body')
   const document = {
     documentElement,
-    body: new Element('body'),
+    body,
     // `head` is not decoration: the plugin's browser half injects a style tag
     // through it, and a document without one turns a skipped step into a
     // TypeError in whichever suite runs next.
     head: new Element('head'),
     hidden: false,
+    /**
+     * Where the keyboard is.
+     *
+     * Real, so a test can ask. `Element#focus` and the `hidden` setter both move
+     * it, which is what makes "pressing this button hides it and the browser
+     * drops focus" expressible at all.
+     */
+    activeElement: null,
     getElementById: byId,
     createElement: (tagName) => new Element(tagName),
     createTextNode: (data) => new TextNode(data),
@@ -394,6 +440,23 @@ function makeDocument() {
     querySelectorAll: () => [],
     addEventListener: () => {},
     removeEventListener: () => {},
+  }
+  // Every node made through this document carries it, so `focus()` can find the
+  // document to record itself in. Set after construction because `document` is
+  // the object the nodes point back at.
+  documentElement.ownerDocument = document
+  body.ownerDocument = document
+  document.head.ownerDocument = document
+  document.activeElement = body
+  document.createElement = (tagName) => {
+    const element = new Element(tagName)
+    element.ownerDocument = document
+    return element
+  }
+  document.createDocumentFragment = () => {
+    const fragment = new Fragment()
+    fragment.ownerDocument = document
+    return fragment
   }
   return { document, registry }
 }
