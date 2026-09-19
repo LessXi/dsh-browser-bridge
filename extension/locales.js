@@ -101,6 +101,16 @@ export const zh = Object.freeze({
   'row.context': '已附带',
   'row.working': '思考中…',
 
+  // What an attachment row says. The host used to compose this sentence in
+  // English — 「已附带 · selected text from dl.acm.org, 5 chars」 — which put the
+  // only explanation of what was attached in a language the panel does not
+  // speak. The host now sends the facts and these keys write the sentence.
+  'attached.selection': '选中内容',
+  'attached.page': '页面正文',
+  'attached.tab': '标签页',
+  'attached.from': '来自 {host}',
+  'attached.chars': '{count} 字',
+
   // Relative time, for a session row's trailing label.
   'time.now': '刚刚',
   'time.minutes': '{count} 分钟前',
@@ -217,6 +227,12 @@ export const en = Object.freeze({
   'row.reasoning': 'Thinking',
   'row.context': 'Attached',
   'row.working': 'Thinking…',
+
+  'attached.selection': 'selected text',
+  'attached.page': 'page text',
+  'attached.tab': 'tab',
+  'attached.from': 'from {host}',
+  'attached.chars': '{count} chars',
 
   'time.now': 'just now',
   'time.minutes': '{count}m ago',

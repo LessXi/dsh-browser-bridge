@@ -1216,7 +1216,36 @@ function renderRow(row, index) {
   wrapper.dataset.kind = 'context'
   const notice = document.createElement('div')
   notice.className = 'notice'
-  notice.textContent = `${t('row.context')} · ${row.text}`
+  // Write the sentence here rather than printing the host's.
+  //
+  // `row.text` is the host's English summary — 「selected text from
+  // dl.acm.org, 5 chars」 — and it was rendered verbatim after 「已附带 · 」,
+  // so the one line explaining what had been attached was in a language the
+  // rest of the panel does not use. The host now sends the facts and this
+  // reads them; a row with no facts (an older host, or another plugin using
+  // the same id) still has `row.text` and still renders.
+  //
+  // The three literals are written out rather than looked up in a table
+  // because `panel-i18n.test.js` proves there are no dead dictionary entries by
+  // matching literal translation calls — a key reached through a variable reads
+  // as unreferenced. That test caught this exact thing, and it also reads
+  // comments, so this one names no keys.
+  const what = row.attach === 'selection'
+    ? t('attached.selection')
+    : row.attach === 'page'
+      ? t('attached.page')
+      : row.attach === 'tab'
+        ? t('attached.tab')
+        : ''
+  const parts = what.length > 0 ? [what] : []
+  if (parts.length > 0 && typeof row.host === 'string' && row.host.length > 0) {
+    parts.push(t('attached.from', { host: row.host }))
+  }
+  if (parts.length > 0 && Number.isFinite(row.chars) && row.chars > 0) {
+    parts.push(t('attached.chars', { count: row.chars }))
+  }
+  const sentence = parts.length > 0 ? parts.join(' · ') : row.text
+  notice.textContent = `${t('row.context')} · ${sentence}`
   wrapper.append(notice)
   return wrapper
 }

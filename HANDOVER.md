@@ -1,14 +1,46 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v48 已交付。** 下一节就是最新的一轮改动；下面标 v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v48 那一段为止即可。
+> **当前状态：v49 已交付。** 下一节就是最新的一轮改动；下面标 v48/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v49 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（444 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（452 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 >
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
+
+> ### v49：唯一一行说明「附了什么」的文字是英文（宿主 + 扩展侧，本次修复）
+>
+> 症状：中文面板里渲染出 `已附带 · selected text from dl.acm.org, 5 chars`。
+> **这句英文是我们自己拼的** —— `lib/context.js` 的 `describeAttachment()` 把它
+> 塞进 `source.summary`，面板再原样印出来。`lib/approval.js` 早就写下规则
+> 「send the facts, let the surface phrase them」，只是没用在这条链上。
+>
+> 修法：**两半都发**。`noticeFor(record)` → `{ summary, text, facts }`，
+> `summary` 仍英文（harness 自己的窗口要印），`facts = {kind,title,host,chars}`
+> 且**缺的字段不出现**（没有正文就没有 `chars`，不是 `chars: 0`）。
+> `lib/index.js` 把 facts 放进 `source.attachment`（`createUserMessage` 会
+> `structuredClone` + 展开，自定义字段能活到事件里）；`lib/chat.js` 读它产出
+> `{kind:'context', attach, host, chars}`；面板用 5 个新键自己写句子。
+>
+> **两个必须记住的坑**：
+> 1. `attachment: {}` 是真实形状（有字段没内容），一开始只要有该对象就产出行，
+>    结果渲染成「已附带 · 」后面空无一物 ⇒ **facts 至少要有**
+>    **一个可渲染字段才算数**。
+> 2. 三个 kind 键必须写成**字面量**三元表达式，不能走表查找 ——
+>    `panel-i18n.test.js` 用「匹配字面翻译调用」证明没有死键，走变量的键会被
+>    判成从未读过。这条测试当场抓到了我的写法。
+>
+> **测试 452 条**（444→452），`check:extension` exit 0。**证伪三次**：面板改回
+> 印 `row.text` → 2 红；`chat.js` 忽略 facts → 1 红；`context.js` 不发 facts
+> → **全绿**。第三条是测试自己的洞：夹具的 `makeMessage` 写成
+> `(input) => ({ ...input })`，把输入原样展开，于是**交付路径有没有收集 facts
+> 都能过**。改成复刻宿主真实形状（只搬 `input.source.facts` → `source.attachment`）
+> 并加一条直接断言交付路径的用例后，这条也 1 红了。
+> **教训：夹具把「被测层交给下一层的形状」整个展开时，它测的就不是那一层了。**
+>
+> **交付要求**：`lib/` + `extension/` 都改了 → **重启 `dsh web`** + **重载 Chrome 扩展**。
 
 > ### v48：三种淡色文字里有 27 处读不清（扩展侧，本次修复）
 >

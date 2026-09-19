@@ -249,7 +249,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 444 条
+npm test                          # 全部 452 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -275,7 +275,7 @@ npm run check:extension           # 扩展脚本语法检查（Chrome 加载前�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 444 条
+npm test                 # 452 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -288,7 +288,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 不会把 `@deepseek-ai/*` 拉下来。宿主库由 `lib/deps.js` 在运行时从
 `$DSH_HOME/profiles/node_modules` 解析。
 
-**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **444 passing, 0 failing, 0 skipped**，
+**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **452 passing, 0 failing, 0 skipped**，
 `npm run check:extension` exit 0。前提是这台机器上装过 DSH（宿主库要能解析到）。
 
 **验证环境**：Node **v24.15.0**。两个 `package.json` 里的 `engines.node: ">=20"` 是**保守下限**，
@@ -306,7 +306,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面四层测试，444 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
+**已自动化验证**：上面四层测试，452 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
 
 侧边栏那部分还有一组**静态**检查，防止语言和版式漂回去：两个字典的键必须完全一致、面板里每个
 `t('…')` 的键都必须存在、HTML 里不允许残留裸文案、旧版文案一个都不许出现、**字典里不允许出现整句
@@ -364,6 +364,73 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 「宿主聚合 → 走 `notify` → service worker 转给面板 → 面板逐字画出来」这一段由
 `test/stream.test.js`（真 socket 上的帧形状）+ `test/panel-stream.test.js`（真跑面板模块）分段覆盖，
 **中间那一跳（Chrome 的 `chrome.runtime.sendMessage`）只做了结构断言，没有在真 Chrome 里点过**。
+
+#### v49：唯一一行说明「附了什么」的文字是英文（本次修复）
+
+侧边栏是中文界面，但转录里那行附件说明一直是英文：
+
+```
+已附带 · selected text from dl.acm.org, 5 chars
+```
+
+这不是宿主被迫给的。`lib/context.js` 的 `describeAttachment()` 自己拼出这句
+英文，把它塞进消息的 `source.summary`，面板再用
+`notice.textContent = t('row.context') + ' · ' + row.text` 原样印出来。
+**一个中文面板里唯一解释「这次到底带了什么」的一行，是英文的** ——
+和 v46/v47 的失败行、审批卡是同一个形状：宿主把「给日志看的散文」当成
+「给界面看的文案」送了出去。
+
+`lib/approval.js` 早就写下了这条规则，只是一直没用到附件上：
+
+> send the facts, let the surface phrase them
+
+**修法**：两半都发，各取所需。
+
+- `lib/context.js` 新增 `attachmentFacts(record)` 与 `noticeFor(record)`。
+  `noticeFor` 返回 `{ summary, text, facts }`：`summary` 仍是英文，因为
+  **harness 自己的窗口要印它**；`facts` 是
+  `{ kind, title, host, chars }`，且**缺的字段直接不出现**（一个没有正文的
+  标签页没有 `chars`，不是 `chars: 0`——后者会让面板写出「0 字」）。
+- `lib/index.js` 的 `makeMessage` 把 `facts` 放进 `source.attachment`。
+  `createUserMessage` 用 `structuredClone` + 展开，所以 `source` 上的自定义
+  字段会活到事件里（这是整条路能走通的原因）。
+- `lib/chat.js` 的 `describeEvents` 读 `source.attachment` 产出
+  `{ kind:'context', attach, host, chars }`。**注意判别式写反过的坑**：
+  一开始只要有 `attachment` 对象就产出，于是 `attachment: {}` 变成一个
+  「已附带 · 」后面空无一物的行 —— facts 只有在**至少带一个可渲染字段**时才算数。
+- 面板新增 5 个键（`attached.selection` / `attached.page` / `attached.tab` /
+  `attached.from` / `attached.chars`）自己写句子。三个 kind 键写成**字面量**
+  三元表达式而不是表查找：`panel-i18n.test.js` 用「匹配字面 `t('…')` 调用」
+  来证明没有死键，走变量的键会被判成从未读过 —— **这条测试当场抓到了我这个写法**。
+
+**实测**（无头 Chrome 截图，392px，`?s=attached`）：
+
+| 行 | 渲染结果 |
+|---|---|
+| 选中内容 | `已附带 · 选中内容 · 来自 dl.acm.org · 5 字` |
+| 页面正文 | `已附带 · 页面正文 · 来自 dl.acm.org · 1204 字` |
+| 标签页（无正文） | `已附带 · 标签页 · 来自 example.com` |
+| 旧宿主（只有 `text`） | `已附带 · selected text from dl.acm.org, 5 chars`（回退路径仍在） |
+
+**测试 452 条**（444→452）：`context.test.js` +3（facts 齐全 / 缺字段不出现 /
+**交付路径上确实带着 facts**），`chat.test.js` +2（有 facts 用 facts、英文
+summary 不许泄漏；无 facts 仍渲染），`panel-stream.test.js` +3（中文句子 / 回退 /
+缺字段的句子）。`check:extension` exit 0。
+
+**证伪三次，其中一次抓到了测试自己的洞**：
+
+| 改坏什么 | 结果 |
+|---|---|
+| 面板改回 `sentence = row.text` | 2 红 |
+| `chat.js` 忽略 facts | 1 红 |
+| `context.js` 不再发 `facts` | **全绿** ← 测试的洞 |
+
+第三条是关键：夹具的 `makeMessage` 当时写成 `(input) => ({ ...input })`，
+把整个输入原样展开，于是**无论交付路径有没有收集 facts 都能通过**。修法是让
+夹具复刻宿主真实的形状（只把 `input.source.facts` 搬到 `source.attachment`），
+并加一条直接断言交付路径的用例 —— 之后这条也 1 红了。
+
+**交付要求**：`lib/` + `extension/` 都改了 → **重启 `dsh web`** + **重载 Chrome 扩展**。
 
 #### v48：三种淡色文字里有 27 处读不清（本次修复）
 
@@ -2623,7 +2690,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 444 条，含真实 Chrome 端到端
+└─ test/                  # 452 条，含真实 Chrome 端到端
 
 extension/
 ├─ manifest.json

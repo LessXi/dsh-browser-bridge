@@ -53,8 +53,13 @@ const TOOL_SUMMARY_MAX = 80
 /** Longest a derived fallback title may be. */
 const TITLE_MAX = 60
 
-/** Longest an attachment notice may be before it is clipped. */
-const CONTEXT_LABEL_MAX = 60
+/**
+ * Longest a site name may be in an attachment row.
+ *
+ * The panel renders the host beside the kind, so a 200-character string that
+ * failed to parse as a URL has to be clipped somewhere; this is that somewhere.
+ */
+const CONTEXT_HOST_MAX = 48
 
 /**
  * Longest a failure reason may be before it is clipped.
@@ -300,7 +305,33 @@ export function describeEvents(events, api) {
           break
         }
         if (source?.plugin === PLUGIN_ID) {
-          const label = oneLine(asText(source.summary) || textBlocks(data?.content), CONTEXT_LABEL_MAX)
+          // Facts, not the English sentence. `source.summary` is what the
+          // harness's own window prints — a Chinese panel echoing
+          // 「selected text from dl.acm.org, 5 chars」 inside a 「已附带 · 」
+          // row is the defect this replaces. The panel writes the sentence;
+          // here we only say what was attached.
+          //
+          // A notice whose facts carry nothing renderable falls back to the
+          // summary rather than becoming a row with a label and no content:
+          // `attachment: {}` is a real shape (a sender that has the field but
+          // nothing to put in it), and 「已附带 · 」 trailing off is worse than
+          // the English it replaced.
+          const attached = source?.attachment
+          if (attached !== undefined && typeof attached === 'object' && attached !== null) {
+            const kind = typeof attached.kind === 'string' ? attached.kind : ''
+            const host = oneLine(asText(attached.host), CONTEXT_HOST_MAX)
+            const chars = Number.isFinite(attached.chars) && attached.chars > 0 ? attached.chars : 0
+            if (kind.length > 0 || host.length > 0 || chars > 0) {
+              rows.push({
+                kind: 'context',
+                ...(kind.length > 0 ? { attach: kind } : {}),
+                ...(host.length > 0 ? { host } : {}),
+                ...(chars > 0 ? { chars } : {}),
+              })
+              break
+            }
+          }
+          const label = oneLine(asText(source.summary) || textBlocks(data?.content))
           rows.push({ kind: 'context', text: label })
         }
         break

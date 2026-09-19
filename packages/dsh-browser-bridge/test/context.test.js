@@ -17,6 +17,7 @@ import {
   attachmentKey,
   createAttachment,
   describeAttachment,
+  noticeFor,
   renderAttachment,
 } from '../lib/context.js'
 
@@ -41,7 +42,7 @@ function fixture(options = {}) {
   const deferred = []
   const store = new ContextAttachments({
     settings: () => settings,
-    makeMessage: (input) => ({ kind: 'message', ...input }),
+    makeMessage: makeMessageLikeHost,
     path: join(dir, 'context.json'),
     schedule: (task) => { deferred.push(task) },
   })
@@ -63,6 +64,28 @@ function agentStub(sessionId, log) {
     id: sessionId,
     session: { id: sessionId },
     inject: (message) => log.push(message),
+  }
+}
+
+/**
+ * The message builder the real plugin installs.
+ *
+ * Deliberately the same shape as the one in `lib/index.js`: it copies
+ * `input.source.facts` into `source.attachment`, which is the hand-off the panel
+ * reads. A fixture that simply spread its whole input would pass whether or not
+ * the delivery path actually gathered the facts — which is exactly the hole a
+ * falsification run found here (removing `facts:` from `context.js` left every
+ * test green).
+ *
+ * @param {{ summary: string, text: string, source: object }} input - The message parts.
+ * @returns {object} A stand-in for the harness's user message.
+ */
+function makeMessageLikeHost(input) {
+  return {
+    kind: 'message',
+    summary: input.summary,
+    text: input.text,
+    source: { kind: 'plugin', plugin: 'browser-bridge', form: 'notice', attachment: input.source?.facts ?? {} },
   }
 }
 
@@ -365,6 +388,69 @@ test('the description names the site and the size', (t) => {
   assert.equal(describeAttachment(createAttachment({ kind: 'selection', url: 'https://a.test', text: '12345' })), 'selected text from a.test, 5 chars')
   assert.equal(describeAttachment(createAttachment({ kind: 'page', url: 'https://a.test', text: 'x' })), 'page text from a.test, 1 chars')
   assert.equal(describeAttachment(createAttachment({ kind: 'tab', url: 'https://a.test' })), 'tab from a.test')
+})
+
+test('an attachment travels with its facts, not only its English sentence', (t) => {
+  // The panel used to render the host's English summary verbatim inside a
+  // 「已附带 · …」 row — the one line explaining what had been attached was in a
+  // language the rest of the panel does not speak. The fix only works if the
+  // facts actually reach the message, so this pins each of them.
+  const f = fixture()
+  t.onCleanup(f.cleanup)
+  const notice = noticeFor(createAttachment({
+    kind: 'selection',
+    url: 'https://dl.acm.org/doi/10.1145/3809166#sec-3',
+    title: 'Network Edge Inference',
+    text: '结构化剪枝',
+  }))
+  assert.equal(notice.summary, 'selected text from dl.acm.org, 5 chars', 'the harness still gets its English line')
+  assert.deepEqual(notice.facts, {
+    kind: 'selection',
+    title: 'Network Edge Inference',
+    host: 'dl.acm.org',
+    chars: 5,
+  }, 'the panel was sent no facts, so it can only print the English')
+})
+
+test('the facts omit what is absent rather than claiming it is empty', (t) => {
+  // A tab attachment has no body and a page can arrive with no title. Sending
+  // `chars: 0` or `host: ''` would make the panel say 「0 字」 and 「来自 」
+  // instead of simply not mentioning them — an absent key is the only shape
+  // that distinguishes the two.
+  const f = fixture()
+  t.onCleanup(f.cleanup)
+  const tab = noticeFor(createAttachment({ kind: 'tab', url: 'https://a.test' }))
+  assert.deepEqual(tab.facts, { kind: 'tab', host: 'a.test' })
+  assert.equal('chars' in tab.facts, false, 'an empty body is not "0 chars"')
+  const nameless = noticeFor(createAttachment({ kind: 'page', url: 'not a url', text: 'x' }))
+  assert.equal('title' in nameless.facts, false)
+  // An unparseable url falls back to the raw string, which is still the most
+  // useful thing to name the page by.
+  assert.equal(nameless.facts.host, 'not a url')
+})
+
+test('the facts travel with the delivered message, not only its prose', (t) => {
+  // This is the hand-off the panel reads. Asserting it at the delivery path —
+  // rather than only on `noticeFor` — is what makes "the host stopped sending
+  // facts" a failing test instead of a silent English row in a Chinese panel.
+  const f = fixture()
+  t.onCleanup(f.cleanup)
+  f.store.add(createAttachment({
+    kind: 'selection',
+    url: 'https://dl.acm.org/doi/10.1145/3809166',
+    title: 'Network Edge Inference',
+    text: '结构化剪枝',
+  }), 's1')
+  f.store.adoptAgent(agentStub('s1', f.injected))
+  assert.equal(f.injected.length, 1)
+  assert.deepEqual(f.injected[0].source.attachment, {
+    kind: 'selection',
+    title: 'Network Edge Inference',
+    host: 'dl.acm.org',
+    chars: 5,
+  })
+  // The English summary stays, because the harness's own window prints it.
+  assert.match(f.injected[0].summary, /selected text from dl\.acm\.org/)
 })
 
 test('clear drops a session queue and reports how much', (t) => {

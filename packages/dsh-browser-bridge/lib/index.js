@@ -26,7 +26,7 @@ import {
   policyLayers,
   resolveSettings,
 } from './config.js'
-import { ContextAttachments } from './context.js'
+import { ContextAttachments, describeAttachment } from './context.js'
 import { createChat } from './chat.js'
 import { createApprovalRelay } from './approval.js'
 import { loadPeer } from './deps.js'
@@ -210,7 +210,20 @@ export async function apply(ctx, _config) {
     settings,
     /**
      * Build the plugin-form message that carries one attachment into context.
-     * @param {{ summary: string, text: string }} input - The attachment body.
+     *
+     * `createUserMessage` clones and spreads its input, so a field added to
+     * `source` survives into the appended event. That is what lets the panel
+     * write its own sentence about an attachment instead of printing the
+     * English one this layer composed: the panel is a Chinese surface, and
+     * `describeAttachment`'s 「selected text from dl.acm.org, 5 chars」 was
+     * rendered verbatim inside a 「已附带 · …」 row — the same defect the
+     * approval card had, and `lib/approval.js` already carries the rule that
+     * fixes it: *send the facts, let the surface phrase them*.
+     *
+     * The `summary` stays as it is, because it is not only the panel's: the
+     * harness prints it in its own window, where English is right.
+     *
+     * @param {{ summary: string, text: string, source: object }} input - The attachment body.
      * @returns {unknown} A user-role message the agent can inject.
      */
     makeMessage: (input) => createUserMessage({
@@ -220,6 +233,9 @@ export async function apply(ctx, _config) {
         plugin: 'browser-bridge',
         form: 'notice',
         summary: boundContextSummary(input.summary),
+        // The structured half, for a surface that writes its own copy. Same
+        // shape and same reasoning as `factsFor` in `lib/approval.js`.
+        attachment: input.source?.facts ?? {},
       },
     }),
   })

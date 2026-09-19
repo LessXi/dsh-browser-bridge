@@ -104,6 +104,47 @@ test('this bridge’s own attachment shows as a notice carrying its summary', ()
   assert.deepEqual(rows, [{ kind: 'context', text: '当前标签页 · Example' }])
 })
 
+test('an attachment with facts reports the facts, not the English sentence', () => {
+  // The row used to carry `source.summary` — 「selected text from dl.acm.org,
+  // 5 chars」 — which the panel printed verbatim after 「已附带 · 」. It now
+  // carries what was attached, and the panel writes the sentence in its own
+  // language. The English summary must NOT survive into the row, or the panel
+  // has nothing to translate and falls back to printing it.
+  const rows = describeEvents([{
+    seq: 9,
+    time: 9,
+    type: 'user/message',
+    data: {
+      content: [{ type: 'text', text: '结构化剪枝' }],
+      source: {
+        kind: 'plugin',
+        plugin: 'browser-bridge',
+        form: 'notice',
+        summary: 'selected text from dl.acm.org, 5 chars',
+        attachment: { kind: 'selection', title: 'Network Edge Inference', host: 'dl.acm.org', chars: 5 },
+      },
+    },
+  }], SURFACE)
+  assert.deepEqual(rows, [{ kind: 'context', attach: 'selection', host: 'dl.acm.org', chars: 5 }])
+  assert.equal('text' in rows[0], false, 'the English summary leaked into the row')
+})
+
+test('a notice with no facts still renders, from its summary', () => {
+  // The fallback has to exist: an older host sends no facts, and a plugin that
+  // reuses this id may send none either. Dropping the row would lose the only
+  // sign that anything was attached.
+  const rows = describeEvents([{
+    seq: 9,
+    time: 9,
+    type: 'user/message',
+    data: {
+      content: [{ type: 'text', text: 'body' }],
+      source: { kind: 'plugin', plugin: 'browser-bridge', form: 'notice', attachment: {}, summary: 'tab from a.test' },
+    },
+  }], SURFACE)
+  assert.deepEqual(rows, [{ kind: 'context', text: 'tab from a.test' }])
+})
+
 test('an assistant message reads its prose and folds its reasoning, in order', () => {
   const rows = describeEvents([
     assistantEvent([

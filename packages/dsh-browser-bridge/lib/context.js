@@ -441,10 +441,14 @@ export class ContextAttachments {
 
     for (const attachment of pending) {
       try {
+        const notice = noticeFor(attachment)
         agent.inject(this.#makeMessage({
-          summary: describeAttachment(attachment),
-          text: renderAttachment(attachment),
-          source: { url: attachment.url, title: attachment.title, kind: attachment.kind },
+          summary: notice.summary,
+          text: notice.text,
+          // The English prose above is what the harness's own window prints;
+          // these are the facts the panel writes its sentence from. Both go out
+          // on purpose rather than picking one.
+          source: { url: attachment.url, title: attachment.title, facts: notice.facts },
         }))
       } catch (error) {
         // An injection that fails leaves the attachment pending; the user can
@@ -514,6 +518,72 @@ export class ContextAttachments {
 }
 
 /**
+ * Extract the host from whichever field is usable.
+ *
+ * A label names a *site*, so the scheme is stripped: `origin` holds a full
+ * origin (`https://a.test`) and the label wants the host. Both `describeAttachment`
+ * and the delivery path go through this same extraction, so a malformed url
+ * cannot leak a whole string into a label that is meant to be short. It sits at
+ * module scope rather than inside `describeAttachment` because the delivery path
+ * needs the host as a *fact* for the panel, not only as a word in a sentence.
+ *
+ * @param {string} value - An origin or an absolute URL.
+ * @returns {string} The host, or the input when it cannot be parsed.
+ */
+function hostOf(value) {
+  if (typeof value !== 'string' || value.length === 0) return ''
+  try {
+    return new URL(value).host
+  } catch {
+    return value
+  }
+}
+
+/**
+ * The structured facts about one attachment, for a surface that writes its own
+ * sentence.
+ *
+ * The harness's window prints the English `summary` and is right to; the side
+ * panel is a Chinese surface and used to print that same English sentence
+ * inside a 「已附带 · …」 row. Both halves now travel: the prose for the harness,
+ * these fields for the panel. Same shape and same reasoning as `factsFor` in
+ * `lib/approval.js` — send the facts, let the surface phrase them.
+ *
+ * Absent fields are omitted rather than sent as empty strings, so the panel can
+ * tell "no host" from "a host that happens to be blank" by the key being there.
+ * It is a free function rather than a closure inside `ContextAttachments` so a
+ * test can call it directly: the mapping from a record to these five keys is
+ * the part that can silently be wrong.
+ *
+ * @param {object} attachment - The record.
+ * @returns {{ kind?: string, title?: string, host?: string, chars?: number }} The facts.
+ */
+export function attachmentFacts(attachment) {
+  const host = hostOf(attachment?.origin) || hostOf(attachment?.url)
+  const facts = {}
+  if (typeof attachment?.kind === 'string' && attachment.kind.length > 0) facts.kind = attachment.kind
+  if (typeof attachment?.title === 'string' && attachment.title.length > 0) facts.title = attachment.title
+  if (host.length > 0) facts.host = host
+  if (Number.isFinite(attachment?.chars) && attachment.chars > 0) facts.chars = attachment.chars
+  return facts
+}
+
+/**
+ * Everything needed to inject one attachment: its English one-liner for the
+ * harness's window, its body, and the facts for the panel.
+ *
+ * @param {object} attachment - The record.
+ * @returns {{ summary: string, text: string, facts: object }} The message parts.
+ */
+export function noticeFor(attachment) {
+  return {
+    summary: describeAttachment(attachment),
+    text: renderAttachment(attachment),
+    facts: attachmentFacts(attachment),
+  }
+}
+
+/**
  * One line naming an attachment, used as the injected message's summary and on
  * its chip.
  *
@@ -521,23 +591,6 @@ export class ContextAttachments {
  * @returns {string} The description.
  */
 export function describeAttachment(attachment) {
-  // A label names a *site*, so the scheme is stripped: `origin` holds a full
-  // origin (`https://a.test`) and the label wants the host. Both fields go
-  // through the same extraction, so a malformed url cannot leak a whole string
-  // into a label that is meant to be short.
-  /**
-   * Extract the host from whichever field is usable.
-   * @param {string} value - An origin or an absolute URL.
-   * @returns {string} The host, or the input when it cannot be parsed.
-   */
-  const hostOf = (value) => {
-    if (typeof value !== 'string' || value.length === 0) return ''
-    try {
-      return new URL(value).host
-    } catch {
-      return value
-    }
-  }
   const host = hostOf(attachment.origin) || hostOf(attachment.url)
   const kind = attachment.kind === 'selection' ? 'selected text' : attachment.kind === 'page' ? 'page text' : 'tab'
   const size = attachment.chars > 0 ? `, ${attachment.chars} chars` : ''

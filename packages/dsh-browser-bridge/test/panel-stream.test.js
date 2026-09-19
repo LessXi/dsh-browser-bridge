@@ -1207,6 +1207,44 @@ function copyButtonIn(scope) {
   return transcript.querySelector(scope).querySelector('.copy')
 }
 
+/** The text of the one attachment row on screen. */
+function contextNotice() {
+  // The DOM shim matches compound selectors on a single node, not descendants
+  // (`.chip .label` never matches), so the row is found here and its child read
+  // separately.
+  const row = transcript.querySelector('.row[data-kind="context"]')
+  assert.ok(row !== null, 'no attachment row was rendered')
+  return row.children[0].textContent
+}
+
+test('an attachment row is written in the panel’s own language', async () => {
+  // The host used to compose this sentence in English — 「selected text from
+  // dl.acm.org, 5 chars」 — and the panel printed it after 「已附带 · 」, so the
+  // one line saying what had been attached was the only English in a Chinese
+  // transcript. The host now sends facts and this renders them.
+  await show([{ kind: 'context', attach: 'selection', host: 'dl.acm.org', chars: 5 }])
+  const notice = contextNotice()
+  assert.equal(notice, '已附带 · 选中内容 · 来自 dl.acm.org · 5 字')
+  assert.equal(/selected text|chars/.test(notice), false, 'the English summary leaked through')
+})
+
+test('a notice the host composed still renders, sentence and all', async () => {
+  // The fallback path: an older host sends `text` and no facts. Dropping the
+  // row would lose the only sign that anything was attached.
+  await show([{ kind: 'context', text: 'tab from a.test' }])
+  assert.equal(contextNotice(), '已附带 · tab from a.test')
+})
+
+test('the attachment sentence drops the parts the host did not send', async () => {
+  // A tab attachment has no body, so there is no 「N 字」 to print, and a page
+  // with no title still names its site. Each part appears only when it has
+  // something to say — otherwise the row reads 「来自  · 0 字」.
+  await show([{ kind: 'context', attach: 'tab', host: 'a.test' }])
+  assert.equal(contextNotice(), '已附带 · 标签页 · 来自 a.test')
+  await show([{ kind: 'context', attach: 'page', chars: 12 }])
+  assert.equal(contextNotice(), '已附带 · 页面正文 · 12 字')
+})
+
 test('a failed turn is still visible after the panel is reloaded', async () => {
   // The live toast is gone the moment the panel is rebuilt. The host puts the
   // failure in the transcript so a reload, a cold replay, or a second window
