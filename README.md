@@ -249,7 +249,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 429 条
+npm test                          # 全部 430 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -275,7 +275,7 @@ npm run check:extension           # 扩展脚本语法检查（Chrome 加载前�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 429 条
+npm test                 # 430 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -288,7 +288,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 不会把 `@deepseek-ai/*` 拉下来。宿主库由 `lib/deps.js` 在运行时从
 `$DSH_HOME/profiles/node_modules` 解析。
 
-**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **429 passing, 0 failing, 0 skipped**，
+**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **430 passing, 0 failing, 0 skipped**，
 `npm run check:extension` exit 0。前提是这台机器上装过 DSH（宿主库要能解析到）。
 
 **验证环境**：Node **v24.15.0**。两个 `package.json` 里的 `engines.node: ">=20"` 是**保守下限**，
@@ -306,7 +306,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面四层测试，429 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
+**已自动化验证**：上面四层测试，430 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
 
 侧边栏那部分还有一组**静态**检查，防止语言和版式漂回去：两个字典的键必须完全一致、面板里每个
 `t('…')` 的键都必须存在、HTML 里不允许残留裸文案、旧版文案一个都不许出现、**字典里不允许出现整句
@@ -364,6 +364,69 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 「宿主聚合 → 走 `notify` → service worker 转给面板 → 面板逐字画出来」这一段由
 `test/stream.test.js`（真 socket 上的帧形状）+ `test/panel-stream.test.js`（真跑面板模块）分段覆盖，
 **中间那一跳（Chrome 的 `chrome.runtime.sendMessage`）只做了结构断言，没有在真 Chrome 里点过**。
+
+#### v42：面板拖矮之后，对话整块消失（本次修复）
+
+**怎么发现的**：v39 量了宽度，这回量**高度** —— Chrome 侧栏同样可以往下拖。
+这次量的是**结构**而非外观（`#geometry` 探针输出各区域的像素高度），因为外观上看不出来：
+
+| 面板高度 | `stage`（对话区） | `footer`（chip 行 + 输入区） |
+|---|---|---|
+| 812px | 529px | 144px |
+| 420px | 137px | 144px |
+| **260px** | **0px** | **144px** |
+
+**`stage=392x0`**：对话区被压成零，而 chip 行和输入区**一格都没让**。
+屏幕最大的区域留给了一条看不见的对话 —— 用户看到的是几行文字浮在白板上，
+**没有任何东西告诉他内容被压没了**。
+
+**根因**：`#stage { flex: 1 }`（`min-height: 0`）配 `footer { flex: none }` ——
+空间不够时，**只有 stage 会缩，而且一直缩到 0**。
+
+**三次尝试，前两次都错，两个失败都值得留下**
+
+| 尝试 | 结果 |
+|---|---|
+| ① 只给 stage 地板 | footer 被压到 **10px**，**输入框整个消失** —— 面板变成「能读不能打字」 |
+| ② 再让 footer 自己滚动 | 320px 时 footer 只有 **49px** 却装着 **78px** 的输入框，输入框被**自己的 overflow 裁掉** |
+| ③ 两个地板 + **body 是唯一滚动容器** | ✅ |
+
+**最终方案**：stage 有地板（`min-height: 96px`）、composer **永不压缩**（`flex: none`）、
+**body 是唯一的滚动容器**（`overflow-y: auto`）。
+面板矮到地板加起来超过窗口时（约 300px 以下），由 body 滚动承担 ——
+**发送键滑到折叠线以下，而不是被裁掉**。
+
+**低于 340px 时降低地板而不是隐藏任何东西**：我一度写了 `@media (max-height: 340px) { #contexts { display: none } }`，
+**然后删掉了** —— chip 行是**唯一**回答「我的划词会不会被送出去」的地方，
+而这个问题**这个面板已经失败过一次**（用户原话：「我也不知道会不会被加进上下文」）。
+隐藏它等于用一个布局 bug 换一个信任 bug。改成把 stage 地板降到 72px。
+260px 的算术：`header 44 + stage 72 + chips 56 + composer 88 = 260`，**一个控件都不消失**。
+
+**实测**（`body` 滚动到底之后量发送键是否可见）：
+
+| 面板高度 | `send.bottom` | `viewportH` | 可见 |
+|---|---|---|---|
+| 812px | 699 | 717 | ✅（无需滚动） |
+| 420px | 307 | 325 | ✅（无需滚动） |
+| 340px | 227 | 245 | ✅（滚 15px） |
+| 260px | 147 | 165 | ✅（滚 95px） |
+
+**顺带删掉一条重复规则**：`#composer` 被声明了**两次**（一个孤立的 `{ flex: none; }` 加后面完整的规则）。
+**这是证伪时抓出来的**：把 composer 的 `flex: none` 改坏，测试**照样通过** ——
+因为断言匹配到了前面那条孤立规则，而真正生效的是后面那条。
+现在测试断言 `#composer` **只能声明一次**。
+
+**测试**：`npm test` **430 passed / 0 failed**；`check:extension` exit 0。
+新增 1 条断言（stage 有地板且 basis 为 0、composer 不缩、body 是滚动容器、
+短面板有媒体查询、**且该媒体查询不许隐藏 chip 行**、`#composer` 只声明一次）。
+**证伪两次**：composer 改回可缩 → 1 红；stage 地板改回 0 → 1 红。
+
+**一个踩到的坑**：用 pwsh 的 `Set-Content` 改这个文件会**把 LF 静默换成 CRLF**，
+而 `stream.test.js` 里有一条断言要求 `"...{\n        .live-body::after"` 这个**字面 LF 形式**，
+于是它红了 —— 看起来像我把样式改坏了，实际是**行尾符被换了**。
+用 `[System.IO.File]::WriteAllText` 写回 LF 即可。**改这个仓库的文件时优先用 edit 工具，不要用 pwsh 写回。**
+
+**交付要求**：只改 `extension/` → **重载 Chrome 扩展**即可。
 
 #### v41：设置页有和侧边栏一模一样的毛病（本次修复）
 
@@ -1908,7 +1971,7 @@ v13 我已经在 health 里放了 `approvalPending`，**但面板从来没读它
 
 | 项 | 结果 |
 |---|---|
-| `npm test` | **429 passing, 0 failing, 0 skipped** |
+| `npm test` | **430 passing, 0 failing, 0 skipped** |
 | `npm run check:extension` | exit 0 |
 | **把 `content-selection.js` 换回 `git show HEAD:` 的那一版，再跑新测试** | **3 条变红**（接管、死副本被替换、失败后重试），换回新版全绿 → 测试确实能抓住这两个缺陷 |
 | 旧版跑「死副本被替换」用例 | 直接把进程打崩：`Error: Extension context invalidated.` —— 无人接管的 rejection，正是线上那个缺陷的真身 |
@@ -2256,7 +2319,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 429 条，含真实 Chrome 端到端
+└─ test/                  # 430 条，含真实 Chrome 端到端
 
 extension/
 ├─ manifest.json

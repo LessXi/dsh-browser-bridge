@@ -388,6 +388,36 @@ test('the options page keeps its palette in one place, and it flips', (t) => {
   }
 })
 
+test('a short panel keeps both a conversation and a composer', (t) => {
+  // Measured before this: at a 260px-tall panel, `stage=392x0` while the chip row
+  // and composer kept their full height — the conversation was gone. Flooring the
+  // stage alone then collapsed the footer to 10px and the composer with it, so
+  // the panel could be read but not typed into. Both floors have to exist, and
+  // the body has to be the scroller that absorbs the remainder.
+  const html = readExtensionFile('sidepanel.html').replace(/\n\s*/g, ' ')
+  assert.match(html, /#stage \{[^}]*min-height: 96px/, 'the stage has no floor and can reach zero')
+  assert.match(html, /#stage \{[^}]*flex: 1 1 0/, 'a content-sized basis makes the stage steal height from the footer')
+  assert.match(html, /#composer \{[^}]*flex: none/, 'the composer can shrink away')
+  assert.match(html, /body \{[^}]*overflow-y: auto/, 'nothing absorbs the shortfall, so the send key gets clipped')
+  // Declared once. There were briefly two `#composer` blocks, and the earlier
+  // `{ flex: none; }` satisfied this assertion while the later, fuller rule — the
+  // one that actually wins — was free to shrink. Falsifying the composer's floor
+  // passed because of it, which is how the duplicate was found.
+  assert.equal(
+    (html.match(/#composer \{/g) ?? []).length,
+    1,
+    'the composer is declared more than once, so one rule can be shadowed',
+  )
+  // And the very short case lowers the floor rather than hiding anything: the
+  // chip row is the only place that answers "will my highlight be sent?", so
+  // dropping it would be trading a layout bug for a trust bug.
+  assert.match(html, /@media \(max-height: 340px\)/, 'the short-panel case is not handled')
+  assert.ok(
+    !/@media \(max-height: 340px\)[^}]*\{[^}]*#contexts \{ display: none/.test(html),
+    'the chip row is hidden on a short panel',
+  )
+})
+
 test('no dictionary entry is dead weight', () => {
   // A key nothing reads is either a leftover from a control that was removed
   // (the header's reload button) or a label that was meant to be wired and

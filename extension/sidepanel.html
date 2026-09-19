@@ -79,10 +79,18 @@
       }
       * { box-sizing: border-box; }
       html, body { height: 100%; }
+      html { overflow: hidden; }
       body {
         margin: 0;
         display: flex;
         flex-direction: column;
+        /* The two floors — 132px of conversation and a full composer — add up to
+           more than a very short panel has. Below about 330px something has to
+           overflow, and `auto` lets the body scroll rather than clipping the
+           composer off the bottom, which is what a plain `hidden` would do. At
+           every ordinary height this never engages. */
+        overflow-y: auto;
+        overflow-anchor: none;
         font: var(--text-sm)/1.5 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
         background: Canvas;
         color: CanvasText;
@@ -137,7 +145,14 @@
       .icon:disabled { opacity: .4; }
 
       /* ---- the stage: one scroller visible at a time ---- */
-      #stage { flex: 1; min-height: 0; position: relative; display: flex; }
+      /* `flex: 1 1 0` — basis zero, not `auto`. With a content-sized basis the
+         stage claims its content height first and the shortfall is then shared
+         with the footer, which shrank it by 10px and clipped the composer even at
+         a normal panel height. A zero basis means the stage takes only the space
+         left over, so the footer is untouched unless the window is genuinely too
+         short. `min-height` is the floor: at a 260px panel it stops at 132px,
+         where it used to reach zero and the conversation vanished. */
+      #stage { flex: 1 1 0; min-height: 96px; position: relative; display: flex; }
       .scroll {
         flex: 1;
         min-width: 0;
@@ -690,8 +705,48 @@
       /* The unreachable-host state lives in #blocked, above. It used to be one
          quiet line here, which put the explanation of why nothing works in the
          smallest type on screen while the content area stayed empty. */
-      footer { flex: none; padding: 0 10px 10px; }
+      /* A short panel used to hand the whole window to the chrome. `#stage` is
+         `flex: 1` and this is `flex: none`, so when the panel was dragged short
+         the stage absorbed every pixel of the loss and reached zero: measured at
+         a 260px-tall panel, `stage=392x0` while the composer and the chip row
+         kept their full height, and the conversation was simply gone.
+         Two attempts got it wrong before this one, and both failures are worth
+         keeping. Flooring the stage but not the composer left the panel readable
+         and untypable — the footer collapsed to 10px. Making the footer itself a
+         scroller looked like it kept every control reachable, until a 49px footer
+         was found holding a 78px composer, clipping the input inside its own
+         overflow.
+         What works: the stage has a floor, the composer never shrinks, and the
+         body is the only scroller. Below roughly 300px the floors exceed the
+         window, so the body scrolls — the send key sits below the fold at 260px
+         rather than being cut off, which is the honest failure of the two. */
+      footer {
+        display: flex;
+        flex-direction: column;
+        flex: none;
+        padding: 0 10px 10px;
+      }
       #contexts { display: flex; flex-wrap: wrap; gap: 5px; padding-bottom: 7px; }
+      /* The chip row is the first thing to give when the panel is short: it
+         describes what would be attached, while the composer is how anything is
+         sent at all. `min-height: 0` lets it be the row that shrinks, and
+         `overflow: hidden` keeps a half-row from spilling over the composer. */
+      #contexts {
+        flex: 0 1 auto;
+        min-height: 0;
+        overflow: hidden;
+      }
+      #contexts[hidden] { display: none; }
+      /* A very short panel: everything must fit without hiding anything.
+         Hiding the chip row was the obvious move and it is the wrong one — the
+         chips are the only place that answers "will my highlight be sent?", which
+         is a question this panel has already failed to answer once. So the stage
+         floor drops instead: 72px is about three lines, which is a thin
+         conversation but still a conversation, and no control disappears.
+         Arithmetic at 260px: header 44 + stage 72 + chips 56 + composer 88 = 260. */
+      @media (max-height: 340px) {
+        #stage { min-height: 72px; }
+      }
       .chip {
         display: inline-flex;
         align-items: center;
@@ -743,6 +798,12 @@
          The bar is where the model picker belongs — it is a property of how the
          next message is sent, not of the conversation being read. */
       #composer {
+        /* Never shrinks. The stage has a floor so the conversation stays
+           readable, and if the composer were allowed to give as well, a short
+           panel would end up readable but not typable — measured at a 260px
+           panel, the footer collapsed to 10px and the composer disappeared
+           entirely. The chip row above it is what yields instead. */
+        flex: none;
         display: flex;
         flex-direction: column;
         align-items: stretch;
