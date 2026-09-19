@@ -148,7 +148,8 @@ export const zh = Object.freeze({
   'approval.wantsSite': '要在 {site} 上使用 {tool}',
   'approval.sensitive': '这一步会改动页面或花钱，不只是读',
   'approval.aTool': '一个工具',
-  'approval.allow': '允许一次',
+  'approval.allow': '本会话允许',
+  'approval.once': '只允许一次',
   'approval.reject': '拒绝',
   'approval.detail': '技术详情',
 })
@@ -235,8 +236,9 @@ export const en = Object.freeze({
   'approval.wantsSite': 'Wants to use {tool} on {site}',
   'approval.sensitive': 'Changes the page or spends money',
   'approval.aTool': 'a tool',
-  'approval.allow': 'Allow once',
-  'approval.reject': 'Reject',
+  'approval.allow': 'Allow this session',
+  'approval.once': 'Allow once',
+  'approval.reject': 'Deny',
   'approval.detail': 'Technical detail',
 })
 

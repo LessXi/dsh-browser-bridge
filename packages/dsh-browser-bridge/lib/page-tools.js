@@ -22,6 +22,7 @@
  */
 
 import { BRIDGE_ERRORS } from './bridge.js'
+import { APPROVAL_SCOPES } from './approval.js'
 import { classifySensitivity } from './grants.js'
 import { METHODS } from './protocol.js'
 import { normalizeOrigin, PolicySyntaxError, resolveOriginPolicy } from './policy.js'
@@ -51,6 +52,17 @@ const NEEDS_FULL_CDP = 'full_cdp_access'
  */
 export function buildPageTools(ports) {
   const { bridge, settings, connectionStatus, grants, contextAttachments, attachmentStore, approval, tabOrigin } = ports
+  /**
+   * Which answer scope the person chose, read back from the relay.
+   *
+   * The harness's approval outcome has no room for a duration, so the surface
+   * that answered records it and this asks for it. Absent means an older panel
+   * or the graphical client, and the configured default applies.
+   *
+   * @param {unknown} callId - The tool call the question was about.
+   * @returns {string | undefined} `'once'`, `'conversation'`, or undefined.
+   */
+  const scopeOf = (callId) => (typeof ports.approvalScope === 'function' ? ports.approvalScope(callId) : undefined)
 
   /**
    * Resolve the normalized origin a call is acting on.
@@ -130,7 +142,35 @@ export function buildPageTools(ports) {
     }
 
     if (verdict === 'allowed-once') {
+      // The harness has exactly one grant word, `allowed-once`, so the duration
+      // has to be decided here. It is read from what the answering surface
+      // actually offered rather than from a config default: the panel now shows
+      // three buttons that say what they do ("Allow once" / "Allow this
+      // conversation" / "Always allow"), and a config knob that silently widened
+      // "once" into "for this session" is how a button labelled 「允许一次」 was
+      // recording a session-wide grant.
+      //
+      // `approval.request` resolves to the outcome alone, so the chosen scope
+      // travels back on the relay and is read from there. An older panel, or the
+      // graphical client, sends nothing — then the configured default applies,
+      // which is what that setting is for.
+      const asked = typeof input.approvalScope === 'function' ? input.approvalScope() : undefined
+      const wanted = APPROVAL_SCOPES.includes(asked) ? asked : undefined
       const persistent = effective.persistentApproval !== false
+      if (wanted === 'once') {
+        // "Once" means once, so nothing is recorded and the next call asks
+        // again. It used to fall through to the configured default, so the
+        // button labelled 「允许一次」 recorded a site grant lasting the session.
+        //
+        // `record: false` rather than `lifetime: 'turn'`: a turn grant is swept
+        // on an idle gap, which means it still covers every call for the next
+        // five minutes — a real grant the label did not promise. Not recording
+        // is the only reading of "once" that keeps the button honest.
+        return { outcome: 'allowed', choice: 'allow-once', lifetime: 'turn', record: false }
+      }
+      if (wanted === 'conversation') {
+        return { outcome: 'allowed', choice: 'allow-for-site', lifetime: 'thread' }
+      }
       return {
         outcome: 'allowed',
         // `thread` is the product default, so an approved site does not re-ask
@@ -214,6 +254,10 @@ export function buildPageTools(ports) {
       // The structural twin of the sentence above, so a surface can state the
       // consequence without parsing prose.
       sensitive: sensitivity.sensitive === true,
+      // Which of the two affirmative buttons was pressed, read back from the
+      // relay. Resolved as a function so the answer is read after the question
+      // settles, not before it is asked.
+      approvalScope: () => scopeOf(input.exec?.callId),
       exec: input.exec,
     })
 
@@ -223,7 +267,7 @@ export function buildPageTools(ports) {
         : 'no approval answerer is available (the session may be unattended), and the harness fails closed'
       return { ok: false, text: `${input.toolName} did not run: ${detail}.` }
     }
-    if (input.alwaysAsk !== true && sensitivity.sensitive !== true) {
+    if (decision.record !== false && input.alwaysAsk !== true && sensitivity.sensitive !== true) {
       grants.record({ sessionId, origin, capabilities: [capability], lifetime: decision.lifetime, persistent: decision.choice === 'allow-for-site' })
     }
     return { ok: true, origin }

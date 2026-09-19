@@ -1194,6 +1194,23 @@ function approvalButtons() {
   return actions?.children ?? []
 }
 
+/**
+ * The button that grants for this call only.
+ *
+ * Named rather than indexed because the card grew a second affirmative button,
+ * and `[0]` silently changed meaning from "allow the site" to "allow once" —
+ * three tests kept passing their setup while asserting the wrong grant.
+ *
+ * @returns {object|undefined} The button.
+ */
+const onceButton = () => approvalButtons().find((button) => button.className === 'approval-once')
+
+/** The button that grants for the rest of the session. */
+const allowButton = () => approvalButtons().find((button) => button.className === 'approval-allow')
+
+/** The button that refuses. */
+const rejectButton = () => approvalButtons().find((button) => button.className === 'approval-reject')
+
 /** Put one question on screen the way the worker would. */
 async function askApproval(overrides = {}) {
   post('dsh-approval-asked', {
@@ -1216,11 +1233,13 @@ test('a pending approval is shown as a question with exactly two answers', async
     const card = approvalCard()
     assert.ok(card, 'a waiting turn showed no approval card')
     assert.equal(card.dataset.approvalId, 'panel-1')
-    const buttons = approvalButtons()
+    // Three answers, because two of them mean yes and they differ in how long —
+    // which the card used to hide behind a single button reading 「允许一次」
+    // while the grant it recorded lasted the whole session.
     assert.deepEqual(
-      buttons.map((button) => button.textContent),
-      ['允许一次', '拒绝'],
-      'the card does not offer exactly allow-once and reject',
+      approvalButtons().map((button) => button.textContent),
+      ['只允许一次', '本会话允许', '拒绝'],
+      'the card does not offer the two scopes and a refusal',
     )
   })
 })
@@ -1283,12 +1302,39 @@ test('answering sends the choice, and takes the card away', async () => {
     host.approval = { status: 200, payload: { answered: true } }
     await askApproval()
 
-    const [allow] = approvalButtons()
-    allow.emit('click')
+    allowButton().emit('click')
     await settle()
 
-    assert.deepEqual(host.approvals, [{ action: 'approval', id: 'panel-1', outcome: 'allowed-once' }])
+    assert.deepEqual(host.approvals, [
+      { action: 'approval', id: 'panel-1', outcome: 'allowed-once', scope: 'conversation' },
+    ])
     assert.equal(approvalCard(), null, 'the card outlived its answer')
+  })
+})
+
+test('the two yes buttons send different scopes, which is the whole point', async () => {
+  // The host reads the scope back to decide the grant, so a button whose label
+  // and scope disagree is a promise the product does not keep. Before this, one
+  // button read 「允许一次」 and recorded a grant lasting the session.
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    host.approvals.length = 0
+    host.approval = { status: 200, payload: { answered: true } }
+
+    await askApproval({ id: 'panel-a' })
+    onceButton().emit('click')
+    await settle()
+    post('dsh-approval-settled', { id: 'panel-a' })
+    await settle()
+
+    await askApproval({ id: 'panel-b' })
+    allowButton().emit('click')
+    await settle()
+
+    assert.deepEqual(host.approvals, [
+      { action: 'approval', id: 'panel-a', outcome: 'allowed-once', scope: 'once' },
+      { action: 'approval', id: 'panel-b', outcome: 'allowed-once', scope: 'conversation' },
+    ])
   })
 })
 
@@ -1299,10 +1345,11 @@ test('rejecting sends the refusal rather than allowing the tool', async () => {
     host.approval = { status: 200, payload: { answered: true } }
     await askApproval({ id: 'panel-7' })
 
-    const [, reject] = approvalButtons()
-    reject.emit('click')
+    rejectButton().emit('click')
     await settle()
 
+    // No scope: a refusal grants nothing, and sending one would invite the host
+    // to read a duration out of a no.
     assert.deepEqual(host.approvals, [{ action: 'approval', id: 'panel-7', outcome: 'rejected' }])
     assert.equal(approvalCard(), null)
   })
@@ -1330,7 +1377,7 @@ test('an answer the host refuses says so and drops the stale card', async () => 
     host.approval = { status: 409, payload: { answered: false, reason: 'that question is no longer open' } }
     await askApproval({ id: 'panel-11' })
 
-    const [allow] = approvalButtons()
+    const allow = allowButton()
     allow.emit('click')
     await settle()
 
@@ -1362,18 +1409,22 @@ test('the buttons go inert while an answer is in flight, so one click is one ans
     host.approval = { status: 200, payload: { answered: true } }
     await askApproval({ id: 'panel-13' })
 
-    const [allow] = approvalButtons()
+    const allow = allowButton()
     assert.equal(allow.disabled, false, 'the buttons started out inert')
     allow.emit('click')
 
     // Mid-flight: the same card, redrawn with its buttons disabled. Without the
     // busy state counting as a change, this redraw is skipped entirely and a
     // second press sends a second answer for a question that is already gone.
-    const [stillAllow, stillReject] = approvalButtons()
+    const stillAllow = allowButton()
+    const stillOnce = onceButton()
+    const stillReject = rejectButton()
     assert.equal(stillAllow.disabled, true, 'allow was still pressable mid-flight')
+    assert.equal(stillOnce.disabled, true, 'once was still pressable mid-flight')
     assert.equal(stillReject.disabled, true, 'reject was still pressable mid-flight')
 
     stillAllow.emit('click')
+    stillOnce.emit('click')
     stillReject.emit('click')
     await settle()
     assert.equal(host.approvals.length, 1, 'a second press answered twice')
@@ -1400,7 +1451,7 @@ test('a panel opened after the question learns about it from health', async () =
     assert.equal(card.dataset.approvalId, 'panel-20')
     assert.deepEqual(
       approvalButtons().map((button) => button.textContent),
-      ['允许一次', '拒绝'],
+      ['只允许一次', '本会话允许', '拒绝'],
     )
     host.health = {}
   })

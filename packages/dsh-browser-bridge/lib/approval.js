@@ -49,6 +49,21 @@ export const APPROVAL_OUTCOMES = Object.freeze(['allowed-once', 'rejected', 'can
  */
 export const PANEL_OPTIONS = Object.freeze(['allowed-once', 'rejected'])
 
+/**
+ * How long an approval lasts, as the person answering chose it.
+ *
+ * The harness has one grant word, `allowed-once`, and no room for this, so the
+ * duration is the bridge's decision — which is exactly why the buttons have to
+ * say it. `once` is this turn; `conversation` is the rest of the session.
+ *
+ * There is deliberately no `always`: grants are in-memory and a harness restart
+ * drops them, so a button promising "always allow" could not keep its word. The
+ * official extension offers one (`approvalRequestCard.alwaysAllow`) because its
+ * host can persist it; this one cannot, and a button that lies is worse than a
+ * button that is missing. `README.md` records the gap.
+ */
+export const APPROVAL_SCOPES = Object.freeze(['once', 'conversation'])
+
 /** A promise that never settles, for "this branch has nothing to say yet". */
 const NEVER = new Promise(() => {})
 
@@ -62,8 +77,22 @@ const NEVER = new Promise(() => {})
 export class ApprovalRelay {
   #bridge
   #log
-  /** @type {Map<string, { resolve: (outcome: string) => void, sessionId: string, toolName: string }>} */
+  /** @type {Map<string, { resolve: (outcome: string) => void, sessionId: string, toolName: string, scope?: string }>} */
   #pending = new Map()
+  /**
+   * What the panel last chose, by question id.
+   *
+   * The harness's `approval.request()` resolves to an outcome and nothing else,
+   * so how long the grant should last cannot travel back through it. The relay
+   * answered the question, so it is the natural place to remember the scope the
+   * person picked; the asking tool reads it back through `scopeOf` and decides
+   * the grant from what the button actually said.
+   *
+   * Kept small on purpose: one entry per settled question, dropped on read.
+   *
+   * @type {Map<string, string>}
+   */
+  #scopes = new Map()
   #seq = 0
   #stats = { asked: 0, delivered: 0, undeliverable: 0, byPanel: 0, byOther: 0, refused: 0 }
 
@@ -95,7 +124,7 @@ export class ApprovalRelay {
    * @param {unknown} outcome - One of {@link PANEL_OPTIONS}.
    * @returns {{ answered: boolean, reason?: string, id?: string, outcome?: string }} The result.
    */
-  answer(id, outcome) {
+  answer(id, outcome, scope) {
     const entry = typeof id === 'string' ? this.#pending.get(id) : undefined
     if (entry === undefined) {
       this.#stats.refused += 1
@@ -109,10 +138,33 @@ export class ApprovalRelay {
       return { answered: false, reason: `the panel may only answer ${PANEL_OPTIONS.join(' or ')}` }
     }
     this.#pending.delete(id)
+    // Remembered before the promise resolves, because resolving it wakes the
+    // asking tool, which reads the scope back immediately.
+    if (entry.callId !== undefined && APPROVAL_SCOPES.includes(scope)) {
+      this.#scopes.set(entry.callId, scope)
+    }
     entry.resolve(outcome)
     this.#stats.byPanel += 1
     this.#withdraw(id, outcome)
-    return { answered: true, id, outcome }
+    return { answered: true, id, outcome, ...(APPROVAL_SCOPES.includes(scope) ? { scope } : {}) }
+  }
+
+  /**
+   * The scope the panel chose for one call, if it chose one.
+   *
+   * The harness's approval outcome carries no room for this, so it comes back
+   * through the relay that asked the question. Reading it removes it: a scope
+   * belongs to the one decision it was given for.
+   *
+   * @param {unknown} callId - The tool call the question was about.
+   * @returns {string | undefined} One of {@link APPROVAL_SCOPES}.
+   */
+  scopeOf(callId) {
+    if (typeof callId !== 'string') return undefined
+    const scope = this.#scopes.get(callId)
+    if (scope === undefined) return undefined
+    this.#scopes.delete(callId)
+    return scope
   }
 
   /** Questions still waiting for an answer. For the health route. */
@@ -149,7 +201,12 @@ export class ApprovalRelay {
     this.#stats.asked += 1
     this.#stats.delivered += 1
     const viaPanel = new Promise((resolve) => {
-      this.#pending.set(id, { resolve, sessionId: payload.sessionId, toolName: payload.toolName })
+      this.#pending.set(id, {
+      resolve,
+      sessionId: payload.sessionId,
+      toolName: payload.toolName,
+      ...(typeof payload.callId === 'string' ? { callId: payload.callId } : {}),
+    })
     })
 
     const downstream = Promise.resolve()

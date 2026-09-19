@@ -146,6 +146,66 @@ test('a state-changing question is marked as more than a read', async () => {
   assert.equal(lastAsked().sensitive, true)
 })
 
+test('the scope the panel chose survives the harness, which has no room for it', async () => {
+  // `approval.request()` resolves to an outcome and nothing else, so how long a
+  // yes lasts cannot come back that way. The relay answered the question, so it
+  // carries the scope and the asking tool reads it back by call id.
+  const { ask, lastAsked, relay } = fixture()
+  const promise = ask(request({ callId: 'call-scope' }), unavailable)
+  const asked = lastAsked()
+
+  assert.equal(relay.scopeOf('call-scope'), undefined, 'a scope existed before anyone chose one')
+  assert.deepEqual(relay.answer(asked.id, 'allowed-once', 'once'), {
+    answered: true,
+    id: asked.id,
+    outcome: 'allowed-once',
+    scope: 'once',
+  })
+  assert.equal(await promise, 'allowed-once')
+  assert.equal(relay.scopeOf('call-scope'), 'once', 'the chosen scope did not survive the answer')
+  // Read-once: a scope belongs to the one decision it was given for, so a later
+  // question about the same call cannot inherit it.
+  assert.equal(relay.scopeOf('call-scope'), undefined, 'the scope was handed out twice')
+})
+
+test('an unknown scope is not recorded, and the answer still lands', async () => {
+  const { ask, lastAsked, relay } = fixture()
+  const promise = ask(request({ callId: 'call-bad' }), unavailable)
+  const result = relay.answer(lastAsked().id, 'allowed-once', 'always')
+
+  // The button that would promise "always" does not exist, because the grant
+  // table is in memory and a restart drops it.
+  assert.equal(result.answered, true)
+  assert.equal(result.scope, undefined)
+  assert.equal(relay.scopeOf('call-bad'), undefined)
+  assert.equal(await promise, 'allowed-once')
+})
+
+test('a refusal carries no scope at all', async () => {
+  const { ask, lastAsked, relay } = fixture()
+  const promise = ask(request({ callId: 'call-no' }), unavailable)
+  relay.answer(lastAsked().id, 'rejected')
+
+  assert.equal(relay.scopeOf('call-no'), undefined, 'a duration was read out of a no')
+  assert.equal(await promise, 'rejected')
+})
+
+test('two questions on one session keep their own scopes', async () => {
+  const { ask, relay, sent } = fixture()
+  const first = ask(request({ callId: 'call-1' }), unavailable)
+  const asked1 = sent.filter((entry) => entry.name === NOTIFICATIONS.approvalAsked).at(-1).payload
+  relay.answer(asked1.id, 'allowed-once', 'once')
+  await first
+
+  const second = ask(request({ callId: 'call-2' }), unavailable)
+  const asked2 = sent.filter((entry) => entry.name === NOTIFICATIONS.approvalAsked).at(-1).payload
+  relay.answer(asked2.id, 'allowed-once', 'conversation')
+  await second
+
+  assert.equal(relay.scopeOf('call-1'), 'once')
+  assert.equal(relay.scopeOf('call-2'), 'conversation')
+})
+
 test('nobody downstream taking the question is not a decision', async () => {
   // The load-bearing case. `unavailable` is the harness's word for "no answerer
   // took this", and the graphical client returns exactly that when it is not

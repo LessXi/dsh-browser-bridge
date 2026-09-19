@@ -249,7 +249,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 401 条
+npm test                          # 全部 412 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -275,7 +275,7 @@ npm run check:extension           # 扩展脚本语法检查（Chrome 加载前�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 401 条
+npm test                 # 412 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -288,7 +288,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 不会把 `@deepseek-ai/*` 拉下来。宿主库由 `lib/deps.js` 在运行时从
 `$DSH_HOME/profiles/node_modules` 解析。
 
-**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **401 passing, 0 failing, 0 skipped**，
+**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **412 passing, 0 failing, 0 skipped**，
 `npm run check:extension` exit 0。前提是这台机器上装过 DSH（宿主库要能解析到）。
 
 **验证环境**：Node **v24.15.0**。两个 `package.json` 里的 `engines.node: ">=20"` 是**保守下限**，
@@ -306,7 +306,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面四层测试，401 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
+**已自动化验证**：上面四层测试，412 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
 
 侧边栏那部分还有一组**静态**检查，防止语言和版式漂回去：两个字典的键必须完全一致、面板里每个
 `t('…')` 的键都必须存在、HTML 里不允许残留裸文案、旧版文案一个都不许出现、**字典里不允许出现整句
@@ -364,6 +364,73 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 「宿主聚合 → 走 `notify` → service worker 转给面板 → 面板逐字画出来」这一段由
 `test/stream.test.js`（真 socket 上的帧形状）+ `test/panel-stream.test.js`（真跑面板模块）分段覆盖，
 **中间那一跳（Chrome 的 `chrome.runtime.sendMessage`）只做了结构断言，没有在真 Chrome 里点过**。
+
+#### v34：按钮写着「允许一次」，实际给了整个会话（本次修复）
+
+**症状**：审批卡上只有一个肯定的按钮，写着「允许一次」。按下去之后，
+**同一站点在本次会话里再也不会问** —— 按钮说的话和它做的事不是一回事。
+
+**用真实模块量出来的**（不是读代码推断）：
+
+```js
+// 出厂默认
+persistentApproval     = true
+accessApprovalLifetime = 'thread'
+// 宿主回答 allowed-once 之后，桥记录的是：
+choice   = allow-for-site
+lifetime = thread
+// 于是：
+right after          true
+after 10 min idle    true
+after 1 hour idle    true
+after 30 days idle   true      // 只要进程不停，它就是永久授权
+```
+
+**为什么会这样**：harness 的审批**只有一个授予词** `allowed-once`，
+「这次」「本会话」「永久」这层语义**根本不在它的返回里**；
+桥是在事后用一个**配置默认值**猜的。于是「允许一次」被默认值悄悄放大成了「本会话」。
+
+**一手依据（官方原版）**：从官方扩展产物里逐条抽出的
+`approvalRequestCard.*` 文案表 —— 它的卡片给的是**三个**答案：
+
+| 官方 id | defaultMessage |
+|---|---|
+| `approvalRequestCard.allowOnce` | `Allow once` |
+| `approvalRequestCard.allowConversation` | `Allow this conversation` |
+| `approvalRequestCard.alwaysAllow` | `Always allow` |
+| `approvalRequestCard.deny` | `Deny` |
+
+**修法：按钮说的话，就是实际发生的事**
+- 面板给**两个**肯定的按钮：`只允许一次` / `本会话允许`（外加 `拒绝`）。
+- 两个按钮 POST 的 `scope` 不同（`once` / `conversation`），
+  宿主据此决定授予时长，**不再看配置默认值**。
+- `once` **什么都不记录**（不是 `lifetime: 'turn'` —— 那是个真实授予，
+  在接下来 5 分钟空闲窗口内一直覆盖后续调用，仍然超出「一次」的字面意思）。
+- 没有 `always` 按钮：授予表在内存里，harness 一重启就没了，
+  **写「永久允许」的按钮无法兑现**。官方有，是因为它的宿主能持久化；我们记录为差距而不是假装有。
+
+**实测（真实模块端到端）**：
+
+| 按下的按钮 | 记录到的授予 |
+|---|---|
+| `只允许一次` | **`granted=false`** —— 下一次还会问 |
+| `本会话允许` | `granted=true` |
+| 旧面板（不带 scope） | 回退到配置默认值，行为不变 |
+
+**测试**：`npm test` **412 passed / 0 failed**；`check:extension` exit 0。
+新增 `test/grant-scope.test.js`（6 条，**直接驱动真实 `askApproval`**，
+夹具不桩掉审批链路——`screenshot.test.js` 就是因为绕开 `askApproval`
+才让这个缺陷从它眼皮底下过去）。
+`test/approval.test.js` 新增 4 条（scope 经 harness 返回、未知 scope 不记录、
+拒绝不带 scope、两个问题各留各的 scope）。
+**三处按索引取按钮的测试已改为按类名命名**（`onceButton()` / `allowButton()` / `rejectButton()`）：
+卡片多了一个按钮之后，`approvalButtons()[0]` **从「本会话允许」悄悄变成了「只允许一次」**，
+三条测试的设置还在、断言的意思已经错了。
+
+**证伪三次**（各命中不同断言）：宿主忽略面板的 scope → 1 红；
+中继不再把 scope 带回来 → 2 红；两个按钮发同一个 scope → 1 红。
+
+**交付要求**：`lib/` + `extension/` 都改了 → **重启 `dsh web` + 重载 Chrome 扩展**。
 
 #### v33：一个会话有 6969 行，面板只给你看最后 60 行（本次修复）
 
@@ -1530,7 +1597,7 @@ v13 我已经在 health 里放了 `approvalPending`，**但面板从来没读它
 
 | 项 | 结果 |
 |---|---|
-| `npm test` | **401 passing, 0 failing, 0 skipped** |
+| `npm test` | **412 passing, 0 failing, 0 skipped** |
 | `npm run check:extension` | exit 0 |
 | **把 `content-selection.js` 换回 `git show HEAD:` 的那一版，再跑新测试** | **3 条变红**（接管、死副本被替换、失败后重试），换回新版全绿 → 测试确实能抓住这两个缺陷 |
 | 旧版跑「死副本被替换」用例 | 直接把进程打崩：`Error: Extension context invalidated.` —— 无人接管的 rejection，正是线上那个缺陷的真身 |
@@ -1785,11 +1852,20 @@ paragraph，表格的每一行都掉进 paragraph，几行被 `\n` 连成一个�
 
 ### 未确证的实现假设
 
-- `approval.request()` 返回 `allowed-once` 时，本实现把它记为「本会话该站点免问」（`thread`）。
-  这是 Codex 的产品默认值，但 DSH 的一次性授权语义与「记住」之间需要这一层映射，映射规则
-  写在 `lib/grants.js` 顶部注释里。
+- `approval.request()` 返回 `allowed-once` 时，**时长由面板上按下的那个按钮决定**
+  （`scope: 'once'` 不记录任何授予；`scope: 'conversation'` 记为 `thread`）。
+  **（v34 更新）** 这一条以前写的是「本实现把它记为『本会话该站点免问』」——
+  那正是缺陷本身：面板只有一个写着「允许一次」的按钮，却按配置默认值记成了会话级授权。
+  现在两个按钮各自带 `scope`，宿主读 `scope` 而不是读 `persistentApproval` 默认值。
+  旧面板或图形界面不带 `scope` 时，才回退到配置默认值（这条回退路径有测试）。
+- **没有「永久允许」按钮**，而官方原版有（`approvalRequestCard.alwaysAllow`）。
+  原因是能力而不是取舍：授予表在内存里（`lib/grants.js` 明确「Deliberately not persisted」），
+  harness 一重启就没了，写「永久允许」的按钮无法兑现。要补上它得先让授予落盘，
+  并且要处理「重启后如何确认还是同一个人在看同一个任务」这个问题。
 - `turn` 时长的近似：turn 边界在工具上下文里不可观测，所以用「5 分钟无浏览器活动」近似。
   误差方向是**偏向重新询问**，不会偏向放宽授权。
+  **注意**：`scope: 'once'` **不走这条近似**——它什么都不记录，
+  因为一个 `turn` 授予在 5 分钟窗口内仍然覆盖后续调用，那已经超出「一次」的字面意思。
 - chip 的确切视觉、发送后是否留存、`@` 提及标签页的交互细节——这三条官方文档没有明确记载，
   本实现按「显式加入 + 可见 + 可 X 掉」的语义做，以你的实际体验为准。
   **（v23 更新）** 其中 `@` 提及现已实现；官方产物里能读到的是它的**候选字段与分组名**，
@@ -1869,7 +1945,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 401 条，含真实 Chrome 端到端
+└─ test/                  # 412 条，含真实 Chrome 端到端
 
 extension/
 ├─ manifest.json

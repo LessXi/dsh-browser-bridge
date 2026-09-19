@@ -436,6 +436,9 @@
         color: #fff !important;
       }
       .approval-allow:hover:not(:disabled) { opacity: .9; }
+      /* The narrow grant takes the outline treatment, so the wider one reads as
+         the primary action without the small one looking disabled. */
+      .approval-once { color: var(--muted); }
 
       /* Waiting feedback: the text itself sweeps, the way the original does,
          but as one gradient-clipped element instead of two stacked copies with

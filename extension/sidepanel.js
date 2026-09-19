@@ -1276,19 +1276,33 @@ function renderApproval() {
 
   const actions = document.createElement('div')
   actions.className = 'approval-actions'
-  const allow = document.createElement('button')
-  allow.type = 'button'
-  allow.className = 'approval-allow'
-  allow.textContent = t('approval.allow')
-  allow.disabled = answering
-  allow.addEventListener('click', () => answerApproval('allowed-once'))
+  // Two ways to say yes, because they mean different things and the old card hid
+  // that: one button reading 「允许一次」 recorded a grant lasting the whole
+  // session, which is a promise the label did not make. The official card offers
+  // the same distinction (`approvalRequestCard.allowOnce` next to
+  // `approvalRequestCard.allowConversation`), and only one of them asks again.
+  //
+  // There is no "always allow": the grant table is in memory and a harness
+  // restart drops it, so the button could not keep its word.
+  const once = document.createElement('button')
+  once.type = 'button'
+  once.className = 'approval-once'
+  once.textContent = t('approval.once')
+  once.disabled = answering
+  once.addEventListener('click', () => answerApproval('allowed-once', 'once'))
+  const always = document.createElement('button')
+  always.type = 'button'
+  always.className = 'approval-allow'
+  always.textContent = t('approval.allow')
+  always.disabled = answering
+  always.addEventListener('click', () => answerApproval('allowed-once', 'conversation'))
   const reject = document.createElement('button')
   reject.type = 'button'
   reject.className = 'approval-reject'
   reject.textContent = t('approval.reject')
   reject.disabled = answering
   reject.addEventListener('click', () => answerApproval('rejected'))
-  actions.append(allow, reject)
+  actions.append(once, always, reject)
   card.append(actions)
 
   transcript.append(card)
@@ -1304,9 +1318,13 @@ function renderApproval() {
  * the answer was lost.
  *
  * @param {'allowed-once' | 'rejected'} outcome - Which answer the user chose.
+ * @param {'once' | 'conversation'} [scope] - How long a yes lasts. Only the
+ *   duration differs between the two affirmative buttons, so it travels with the
+ *   answer rather than being re-derived at the host from a config default —
+ *   which is how 「允许一次」 came to record a session-wide grant.
  * @returns {Promise<void>} Resolves once the host has been told.
  */
-async function answerApproval(outcome) {
+async function answerApproval(outcome, scope) {
   const question = pendingApproval
   if (question === null || answering) return
   answering = true
@@ -1317,7 +1335,7 @@ async function answerApproval(outcome) {
     const result = await fetch(`http://127.0.0.1:${port}/browser-bridge/chat`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ action: 'approval', id: question.id, outcome }),
+      body: JSON.stringify({ action: 'approval', id: question.id, outcome, ...(scope === undefined ? {} : { scope }) }),
     })
     const payload = await result.json().catch(() => ({}))
     if (payload?.answered !== true) {

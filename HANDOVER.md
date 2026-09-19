@@ -1,11 +1,73 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v33 已交付。** 下一节就是最新的一轮改动；下面标 v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v33 那一段为止即可。
+> **当前状态：v34 已交付。** 下一节就是最新的一轮改动；下面标 v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v34 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（401 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（412 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
+>
+> **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
+> 换成你自己克隆它的目录即可（例：`cd <repo>`）。
+
+> ### v34：按钮写着「允许一次」，实际给了整个会话（宿主 + 扩展，本次修复）
+>
+> **缺陷**：审批卡只有一个肯定按钮「允许一次」，按下去之后同一站点在本次会话里再也不问。
+> **量出来的**（真实模块，非推断）：
+> `persistentApproval=true` + `accessApprovalLifetime='thread'` ⇒ 宿主回 `allowed-once` 后
+> 记的是 `choice=allow-for-site, lifetime=thread` ⇒ **30 天不活动仍然有效**（进程不停就是永久）。
+> **根因**：harness 的审批**只有一个授予词** `allowed-once`，时长语义根本不在它的返回里；
+> 桥是用**配置默认值**猜的，于是「一次」被放大成「本会话」。
+>
+> **一手依据**：官方扩展产物里的 `approvalRequestCard.*` 分别是
+> `allowOnce` = `Allow once` / `allowConversation` = `Allow this conversation` /
+> `alwaysAllow` = `Always allow` / `deny` = `Deny` —— **三个**答案，我们只有一个且标签是错的。
+>
+> **修法**：面板两个肯定按钮 `只允许一次`(`scope:'once'`) / `本会话允许`(`scope:'conversation'`)；
+> scope 经**中继**回到 `lib/page-tools.js`（`approval.request()` 的返回值装不下它），
+> 宿主据此决定授予，**不再看配置默认值**；`once` **什么都不记录**
+> （不是 `lifetime:'turn'` —— 那是真授予，5 分钟空闲窗口内一直覆盖后续调用）。
+> 没有 `always`：授予表在内存里、重启即失，按钮无法兑现（已记入 README 差距表）。
+>
+> **实测（真实模块端到端）**：`只允许一次` → **`granted=false`**；`本会话允许` → `granted=true`；
+> 旧面板不带 scope → 回退配置默认值，行为不变。
+>
+> **测试 412 条**；新增 `test/grant-scope.test.js`（6 条，**直接驱动真实 `askApproval`**）。
+> **教训**：`screenshot.test.js` 绕开 `askApproval`（用预置授权），所以这条链路一直没被测过。
+> 另外**三条按索引取按钮的测试必须改成按类名命名**：卡片多一个按钮后 `approvalButtons()[0]`
+> 从「本会话允许」悄悄变成「只允许一次」，设置还在、断言的意思已经错了。
+>
+> **证伪三次**：宿主忽略 scope → 1 红；中继不带回 scope → 2 红；两个按钮发同一 scope → 1 红。
+>
+> **交付要求**：`lib/` + `extension/` 都改了 → **重启 `dsh web` + 重载 Chrome 扩展**。
+
+>
+> **量出来的事实**：用户自己的会话 `session-44c33409`（标题「打造类似codex的dsh网页插件」）
+> 向线上 3080 请求 `limit: 60` 返回 60 行，`limit: 20000` 返回 **6969 行**。
+> 面板写死 `limit: 60` 且**没有任何「上面还有」的提示，也没有办法往回走** ——
+> 99.1% 的对话在面板里根本不存在。
+>
+> **修法：把「页码」换成「窗口」**
+> - 宿主 `readMessages(sessionId, limit, before)` 新增 `before`，返回 `more`。
+>   切片**从末尾算起**，所以最新的一行永远是返回的最后一行。
+> - 面板请求「从最新往回数的 N 行」，`depth` 从 60 起、点一次加 60 ——
+>   **轮询和翻页是同一个请求的两种尺寸**，不会出现两段数据重叠或对不上。
+> - 顶部胶囊 `#earlier`「更早的内容」，**只在 `more` 为真时出现**。
+>
+> **必须记住的坑**：翻页把新行插在读者**上方**，只恢复原 `scrollTop` 会把读者
+> 正在读的那段顶出屏幕 —— 就是当初轮询那个「自己滚下去了」，换了一条路。
+> `drawTranscript` 量 `scrollHeight` 增量，用一次性标记 `grewEarlier` 补偿。
+>
+> **实测**：`npm test` **401 passed / 0 failed**；`check:extension` exit 0。
+> 探针（真实宿主 3199）：`limit=1`→1 行 `more=True`；**逐行往回走到头再拼起来，
+> 与一次性读到的全文逐字节相等（`TILES EXACTLY: True`）**；`before=999`→0 行 `more=False`。
+> **证伪三次**：窗口不增长 → 3 红；宿主忽略 `before` → 1 红；切换会话不重置窗口 → 6 红。
+>
+> **夹具教训**：桩此前**永远返回全部行且没有 `more` 字段**，所以「会话比一屏长」
+> 是不可测的 —— 这就是它活了 33 轮的原因。新增 `host.down` / `host.reads` / `host.more`。
+>
+> **交付要求**：`lib/` + `extension/` 都改了 → **重启 `dsh web` + 重载 Chrome 扩展**。
+
 >
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。

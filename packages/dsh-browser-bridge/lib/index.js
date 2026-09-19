@@ -192,10 +192,17 @@ export async function apply(ctx, _config) {
   // the harness's only shipped answerer renders that question in the graphical
   // client — a window the person is not looking at while they work in Chrome.
   // The relay asks the panel too, and lets whichever surface answers first win.
+  //
+  // Held in a ref because the tool ports are built below and need to read back
+  // the scope of the answer; the relay itself needs the bridge, which is already
+  // available here.
+  /** @type {{ current?: import('./approval.js').ApprovalRelay }} */
+  const approvalRelayRef = {}
   const approvalRelay = createApprovalRelay({
     bridge,
     log: (message) => ctx.logger?.debug?.(`browser-bridge: ${message}`),
   })
+  approvalRelayRef.current = approvalRelay
   const detachApproval = approvalRelay.attach(ctx)
   ctx.effect(() => () => detachApproval(), 'browser-bridge: approval relay')
 
@@ -276,6 +283,11 @@ export async function apply(ctx, _config) {
     attachmentStore: () => ctx.get?.('attachments'),
     tabOrigin,
     policyLayers: layers,
+    // The relay is built below this object, so it is reached by a late-bound
+    // reference rather than captured. It carries back which of the two
+    // affirmative buttons the person pressed, because the harness's
+    // `approval.request()` resolves to an outcome and has no room for a duration.
+    approvalScope: (callId) => approvalRelayRef.current?.scopeOf(callId),
   }
 
   // Settings, the tool surface, and the approval handle all wait for the
@@ -580,7 +592,7 @@ export async function apply(ctx, _config) {
         // The panel answering a question it was asked, on the way back. The
         // bridge socket carries requests one way only, so the reply rides the
         // panel's own HTTP route.
-        const result = approvalRelay.answer(parsed.id, parsed.outcome)
+        const result = approvalRelay.answer(parsed.id, parsed.outcome, parsed.scope)
         // A refusal is ordinary — the question was answered in the graphical
         // client first, or the turn was cancelled — so it is a 409 carrying the
         // reason rather than a 500.
