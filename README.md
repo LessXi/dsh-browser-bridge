@@ -249,7 +249,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 428 条
+npm test                          # 全部 429 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -275,7 +275,7 @@ npm run check:extension           # 扩展脚本语法检查（Chrome 加载前�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 428 条
+npm test                 # 429 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -288,7 +288,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 不会把 `@deepseek-ai/*` 拉下来。宿主库由 `lib/deps.js` 在运行时从
 `$DSH_HOME/profiles/node_modules` 解析。
 
-**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **428 passing, 0 failing, 0 skipped**，
+**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **429 passing, 0 failing, 0 skipped**，
 `npm run check:extension` exit 0。前提是这台机器上装过 DSH（宿主库要能解析到）。
 
 **验证环境**：Node **v24.15.0**。两个 `package.json` 里的 `engines.node: ">=20"` 是**保守下限**，
@@ -306,7 +306,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面四层测试，428 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
+**已自动化验证**：上面四层测试，429 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
 
 侧边栏那部分还有一组**静态**检查，防止语言和版式漂回去：两个字典的键必须完全一致、面板里每个
 `t('…')` 的键都必须存在、HTML 里不允许残留裸文案、旧版文案一个都不许出现、**字典里不允许出现整句
@@ -364,6 +364,46 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 「宿主聚合 → 走 `notify` → service worker 转给面板 → 面板逐字画出来」这一段由
 `test/stream.test.js`（真 socket 上的帧形状）+ `test/panel-stream.test.js`（真跑面板模块）分段覆盖，
 **中间那一跳（Chrome 的 `chrome.runtime.sendMessage`）只做了结构断言，没有在真 Chrome 里点过**。
+
+#### v41：设置页有和侧边栏一模一样的毛病（本次修复）
+
+**怎么发现的**：v40 修侧边栏的调色板时，按同一条判据（`color-scheme: light dark` 下**硬编码的颜色
+是唯一会失守的东西**）把设置页也量了一遍。它中招得更重：
+
+| 颜色（设置页） | 浅色 | 深色 |
+|---|---|---|
+| `#d9971f` 警告竖条（左边框） | **2.50 ❌**（边框需要 3.0） | 6.88 ✅ |
+| `#d1453b` 结果边框 | 4.54 ✅ | 3.79 ⚠️ |
+| `#2f9e63` 结果边框 | 3.39 ⚠️ | 5.07 ✅ |
+| `#4d6bfe` 主按钮填充 | 4.33 ⚠️ | 3.97 ⚠️ |
+| `#fff` 放在主按钮上 | 4.33 ⚠️ | — |
+
+**2.50 是 FAIL**，不是「稍差一点」：它是一条 3px 的左边框，用户要靠它认出「这里有安全提醒」。
+
+**修法：和侧边栏同一套 token 与同一条规则**
+`:root` 里一次性声明，**任何地方都不写字面色值**：
+
+| token | 浅色 | 深色 |
+|---|---|---|
+| `--accent` | `#4a63e7`（4.96） | `#3a83f7`（4.72） |
+| `--on-accent` | `#ffffff`（4.96） | `#10101a`（5.19） |
+| `--ok` | `#2f7d52`（5.03） | `#3fae74`（6.16） |
+| `--bad` | `#d1453b`（4.54） | `#fa423e`（4.84） |
+| `--warn` | `#8a5a00`（5.93） | `#e5b567`（9.12） |
+
+四处字面色值（`button.primary` 的 `#fff`、`#result` 的两个边框、`.warn` 的竖条）全部改为读 token。
+
+**像素级验证**：预览宿主新增对**字面页面**（`path:options.html`）注入 dark 声明的能力
+（此前静态文件读不到 query 参数，**两次截图字节完全相同** —— 这本身就是个陷阱：它看起来像
+「深色模式没生效」，实际是「深色请求压根没送进去」）。
+验证结果：主按钮填充浅色 `74,99,231`（=`#4a63e7`）、深色 `58,131,247`（=`#3a83f7`），逐字节符合。
+
+**测试**：`npm test` **429 passed / 0 failed**；`check:extension` exit 0。
+新增 1 条断言：`:root` 之外**不许出现任何字面色值**，五个 token 必须是 `light-dark()`，
+且**每个都必须被真正用到**（声明了不用是装饰，不是调色板）。
+证伪：把 `.warn` 的竖条改回 `#d9971f` → 1 红。
+
+**交付要求**：只改 `extension/` → **重载 Chrome 扩展**即可。
 
 #### v40：暗色模式下，红色的字太淡（本次修复）
 
@@ -1868,7 +1908,7 @@ v13 我已经在 health 里放了 `approvalPending`，**但面板从来没读它
 
 | 项 | 结果 |
 |---|---|
-| `npm test` | **428 passing, 0 failing, 0 skipped** |
+| `npm test` | **429 passing, 0 failing, 0 skipped** |
 | `npm run check:extension` | exit 0 |
 | **把 `content-selection.js` 换回 `git show HEAD:` 的那一版，再跑新测试** | **3 条变红**（接管、死副本被替换、失败后重试），换回新版全绿 → 测试确实能抓住这两个缺陷 |
 | 旧版跑「死副本被替换」用例 | 直接把进程打崩：`Error: Extension context invalidated.` —— 无人接管的 rejection，正是线上那个缺陷的真身 |
@@ -2216,7 +2256,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 428 条，含真实 Chrome 端到端
+└─ test/                  # 429 条，含真实 Chrome 端到端
 
 extension/
 ├─ manifest.json

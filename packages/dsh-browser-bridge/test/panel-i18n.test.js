@@ -367,6 +367,27 @@ test('the palette colours clear AA in both schemes, not just the light one', (t)
   }
 })
 
+test('the options page keeps its palette in one place, and it flips', (t) => {
+  // The options page hit the same defect as the panel: it declares
+  // `color-scheme: light dark`, so a hex written at the point of use is the only
+  // thing that can fail in one scheme. Measured before this: the warning stripe
+  // was 2.50 against a white Canvas, below the 3.0 a border needs.
+  const html = readExtensionFile('options.html')
+  const root = /:root \{([\s\S]*?)\}/.exec(html)
+  assert.ok(root, 'the options page has no :root block to hold its palette')
+  // Every hex must live in the token block, and each must be scheme-aware.
+  const body = html.replace(root[0], '')
+  const strays = body.match(/#[0-9a-fA-F]{3,8}\b/g) ?? []
+  assert.deepEqual(strays, [], 'a colour is written at the point of use instead of as a token')
+  for (const name of ['accent', 'on-accent', 'ok', 'bad', 'warn']) {
+    assert.match(root[1], new RegExp(`--${name}:\\s*light-dark\\(`), `--${name} does not flip with the scheme`)
+  }
+  // And the tokens are actually consumed, or they are decoration.
+  for (const name of ['accent', 'on-accent', 'ok', 'bad', 'warn']) {
+    assert.ok(body.includes(`var(--${name})`), `--${name} is declared but never used`)
+  }
+})
+
 test('no dictionary entry is dead weight', () => {
   // A key nothing reads is either a leftover from a control that was removed
   // (the header's reload button) or a label that was meant to be wired and

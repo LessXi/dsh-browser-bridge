@@ -8,7 +8,21 @@
         color-scheme: light dark;
         --line: color-mix(in srgb, currentColor 18%, transparent);
         --muted: color-mix(in srgb, currentColor 62%, transparent);
-        --accent: #4d6bfe;
+        /* Same rule as the side panel, and the same reasoning: this page also
+           declares `color-scheme: light dark`, so a hardcoded value is the only
+           thing that can fail in one scheme. Measured against Chrome's two
+           Canvas values, the single hexes used here gave:
+             warn #d9971f   2.50 light (below the 3.0 a border needs) / 6.88 dark
+             bad  #d1453b   4.54 light / 3.79 dark
+             ok   #2f9e63   3.39 light / 5.07 dark
+             accent #4d6bfe 4.33 / 3.97, and white on it 4.33
+           `light-dark()` resolves each from the scheme the browser already
+           knows, so there is one value per scheme and no media query. */
+        --accent: light-dark(#4a63e7, #3a83f7);
+        --on-accent: light-dark(#ffffff, #10101a);
+        --ok: light-dark(#2f7d52, #3fae74);
+        --bad: light-dark(#d1453b, #fa423e);
+        --warn: light-dark(#8a5a00, #e5b567);
       }
       body {
         margin: 0 auto;
@@ -48,7 +62,7 @@
         font: inherit;
         cursor: pointer;
       }
-      button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+      button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
       #result {
         margin-top: 12px;
         padding: 10px 12px;
@@ -57,12 +71,12 @@
         white-space: pre-wrap;
         font: 12.5px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
       }
-      #result[data-state="ok"] { border-color: #2f9e63; }
-      #result[data-state="bad"] { border-color: #d1453b; }
+      #result[data-state="ok"] { border-color: var(--ok); }
+      #result[data-state="bad"] { border-color: var(--bad); }
       ol { margin: 8px 0 0; padding-left: 20px; }
       li { margin-bottom: 5px; }
       .warn {
-        border-left: 3px solid #d9971f;
+        border-left: 3px solid var(--warn);
         padding-left: 12px;
         color: var(--muted);
       }
