@@ -278,6 +278,10 @@ export function renderInline(document, text) {
  * @param {object[]} blocks - Blocks from `parseMarkdown`.
  * @param {object} [options] - Rendering labels.
  * @param {string} [options.copy] - Label for a code block's copy button.
+ * @param {string} [options.copyCode] - Accessible name for that button, which says
+ *   it copies the code rather than the answer. Both buttons draw the same short
+ *   word, so without this Chrome's accessibility tree carries two controls named
+ *   「复制」 with nothing to tell them apart.
  * @returns {DocumentFragment} The fragment.
  */
 export function renderBlocks(document, blocks, options = {}) {
@@ -303,6 +307,10 @@ export function renderBlocks(document, blocks, options = {}) {
       copy.className = 'copy'
       copy.dataset.copy = 'code'
       copy.textContent = typeof options.copy === 'string' ? options.copy : ''
+      if (typeof options.copyCode === 'string' && options.copyCode.length > 0) {
+        copy.setAttribute('aria-label', options.copyCode)
+        copy.title = options.copyCode
+      }
       head.append(copy)
       card.append(head)
       const pre = document.createElement('pre')

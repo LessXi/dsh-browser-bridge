@@ -475,6 +475,36 @@ test('the panel has somewhere to announce what it says', (t) => {
   )
 })
 
+test('the name a screen reader speaks is not a decoration', (t) => {
+  // Chrome's accessibility tree, asked directly, returned a reasoning toggle named
+  // 「思考 ⌄」 — the glyph was part of the button's text, so it became part of the
+  // accessible name and a reader pronounced it. The same tree held two controls
+  // named exactly 「复制」, one per code block and one per answer.
+  //
+  // The runtime suite cannot assert either: it never builds the real markup. So
+  // this reads the files.
+  const script = readExtensionFile('sidepanel.js')
+  // A glyph may be drawn — the header's buttons are glyphs — but only inside a
+  // statement that also names the control, or on a node marked `aria-hidden`.
+  // What must not happen is a glyph becoming part of a name that is otherwise
+  // text, which is what 「思考 ⌄」 was. The window spans a few lines because the
+  // label is set right after the glyph.
+  const lines = script.split('\n')
+  for (const [at, raw] of lines.entries()) {
+    const line = raw.trim()
+    if (!/textContent = .*[⌄⌃↓＋‹]/.test(line)) continue
+    const window = lines.slice(Math.max(0, at - 3), at + 4).join('\n')
+    const guarded = /aria-hidden|aria-label|title =/.test(window)
+    assert.ok(guarded, `line ${at + 1} puts a glyph into a name with nothing to hide it: ${line}`)
+  }
+  // Both arrows the reasoning toggle draws must be hidden from the reader.
+  assert.ok(script.includes("caret.setAttribute('aria-hidden', 'true')"), 'the reasoning caret is still spoken')
+  // And the two copy buttons must not share one name.
+  assert.ok(script.includes("t('action.copyCode')"), 'the code copy button has no name of its own')
+  assert.ok(script.includes("t('action.copyAnswer')"), 'the answer copy button has no name of its own')
+  assert.notEqual(zh['action.copyCode'], zh['action.copyAnswer'], 'both copy buttons read the same')
+})
+
 test('no dictionary entry is dead weight', () => {
   // A key nothing reads is either a leftover from a control that was removed
   // (the header's reload button) or a label that was meant to be wired and

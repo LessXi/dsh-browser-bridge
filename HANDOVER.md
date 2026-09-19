@@ -1,14 +1,45 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v46 已交付。** 下一节就是最新的一轮改动；下面标 v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v46 那一段为止即可。
+> **当前状态：v47 已交付。** 下一节就是最新的一轮改动；下面标 v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v47 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（440 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（443 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 >
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
+
+> ### v47：屏幕阅读器念出「思考 ⌄」，而且有两个一模一样的「复制」（扩展侧，本次修复）
+>
+> 方法上的关键一步：**不再读源码猜可访问名称，改用 CDP 的 `Accessibility.getFullAXTree`** ——
+> 那是 Chrome 真正会念出来的东西，唯一权威来源。工具在
+> `%TEMP%\panel-preview\cdp-ax.mjs`（`ws` 从 `~/.dsh/profiles/node_modules/` 取，
+> spawn `chrome --headless=new --remote-debugging-port=<port>`，从 `/json/list` 拿 ws URL）。
+>
+> **实测（修复前）**：`button "思考 ⌄"`（装饰符号被念）、`button "复制"` ×2（**同一个名字，
+> 无法区分** —— 一个属于代码块、一个属于整条回答）。
+>
+> **修法**：reasoning 箭头拆成文字 span + `aria-hidden="true"` 装饰 span；
+> 复制按钮**可见文字不变**（「复制」短才好），另给 `aria-label`（`复制代码` / `复制整条回答`），
+> 代码块的名字由 `markdown.js` 的新可选参数 `copyCode` 传入（只传 `copy` 时不产生
+> `aria-label="undefined"`）。新增 `action.copyCode` / `action.copyAnswer` 两键。
+>
+> **实测（修复后）**：`"思考"` / `"复制代码"` / `"复制整条回答"`。
+>
+> **顺带补上 v46 的权威验证**（上轮只有断言）：驱动真实审批问题后，AX 树里有
+> **两个 live region** —— `role=alert live=assertive atomic=true`、
+> `role=status live=polite atomic=true`，且 `announce-urgent` 写着
+> 「需要你确认：要在 https://dl.acm.org 上使用 browser_eval」。
+>
+> **测试 443 条**（440→443）：`markdown.test.js` +2（shim 补 `setAttribute`/`getAttribute`）；
+> `panel-i18n.test.js` +1 静态断言 —— **任何把字形写进 `textContent` 的地方，
+> 前后三行的语句窗里必须有 `aria-hidden`/`aria-label`/`title`**。
+> **这条断言第一版写错两次**：先把正确代码（`aria-hidden` 的 caret）误报成违规，
+> 收紧后又因 `aria-label` 设在**下一行**而误报 ⇒ 判据必须看语句窗，不能看同一行。
+> **证伪两次**：去掉 caret 的 `aria-hidden` → 1 红；代码复制按钮共用 `copy` → 1 红。
+>
+> **交付要求**：只改 `extension/` → **重载 Chrome 扩展**。
 
 > ### v46：审批问题对屏幕阅读器是完全静默的（扩展侧，本次修复）
 >

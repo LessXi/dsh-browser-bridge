@@ -249,7 +249,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 440 条
+npm test                          # 全部 443 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -275,7 +275,7 @@ npm run check:extension           # 扩展脚本语法检查（Chrome 加载前�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 440 条
+npm test                 # 443 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -288,7 +288,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 不会把 `@deepseek-ai/*` 拉下来。宿主库由 `lib/deps.js` 在运行时从
 `$DSH_HOME/profiles/node_modules` 解析。
 
-**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **440 passing, 0 failing, 0 skipped**，
+**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **443 passing, 0 failing, 0 skipped**，
 `npm run check:extension` exit 0。前提是这台机器上装过 DSH（宿主库要能解析到）。
 
 **验证环境**：Node **v24.15.0**。两个 `package.json` 里的 `engines.node: ">=20"` 是**保守下限**，
@@ -306,7 +306,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面四层测试，440 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
+**已自动化验证**：上面四层测试，443 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
 
 侧边栏那部分还有一组**静态**检查，防止语言和版式漂回去：两个字典的键必须完全一致、面板里每个
 `t('…')` 的键都必须存在、HTML 里不允许残留裸文案、旧版文案一个都不许出现、**字典里不允许出现整句
@@ -364,6 +364,63 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 「宿主聚合 → 走 `notify` → service worker 转给面板 → 面板逐字画出来」这一段由
 `test/stream.test.js`（真 socket 上的帧形状）+ `test/panel-stream.test.js`（真跑面板模块）分段覆盖，
 **中间那一跳（Chrome 的 `chrome.runtime.sendMessage`）只做了结构断言，没有在真 Chrome 里点过**。
+
+#### v47：屏幕阅读器念出「思考 ⌄」，而且有两个一模一样的「复制」（本次修复）
+
+v46 加了 live region，顺理成章要问：**每个控件的可访问名称到底是什么？**
+不再靠读源码猜，改用 **CDP 的 `Accessibility.getFullAXTree`** ——
+这是 Chrome 真正会念出来的东西，也是唯一的权威来源。
+
+**实测（修复前）**：
+
+```
+button  "结构化剪枝的用法"
+button  "新建会话"
+button  "思考 ⌄"          ← 装饰符号被念了出来
+button  "复制"            ← 两个按钮
+button  "复制"            ← 完全相同，无法区分
+textbox "问点什么…"
+```
+
+**两个缺陷**
+
+1. **`⌄` 进了可访问名称**。`toggle.textContent = \`${t('row.reasoning')} ${open ? '⌃' : '⌄'}\``
+   —— 箭头是**文本内容**，所以屏幕阅读器会念它。面板别处早就做对了
+   （`#new` 是「＋」配 `aria-label`，`#to-bottom` 同理），只有这一处漏了。
+2. **两个「复制」同名**。一个属于代码块、一个属于整条回答，画出来的字一样，
+   而可访问名称也**没有区别** ⇒ 屏幕阅读器用户听到两个同样的标签，
+   **没有任何信息能分辨**。
+
+**修法**
+- reasoning 箭头拆成两个 span：文字一个、`aria-hidden="true"` 的装饰一个。
+- 复制按钮的**可见文字保持不变**（「复制」，短才好），另给 `aria-label`：
+  `复制代码` / `复制整条回答`。代码块的名字由 `markdown.js` 的新选项 `copyCode` 传入
+  （渲染器仍是纯函数，选项可选 —— 只传 `copy` 时不会产生 `aria-label="undefined"`）。
+- 两个新 locale 键：`action.copyCode` / `action.copyAnswer`。
+
+**实测（修复后）**：
+
+```
+button  "思考"            ← 符号不再被念
+button  "复制代码"
+button  "复制整条回答"     ← 两个按钮可以分辨了
+```
+
+**顺带把 v46 补上权威验证**（上轮只做了断言，没查真实 AX 树）：
+驱动一个真实审批问题进面板后，AX 树里有**两个 live region** ——
+`role=alert live=assertive atomic=true` 与 `role=status live=polite atomic=true`，
+且 DOM 里 `announce-urgent` 确实写着「需要你确认：要在 https://dl.acm.org 上使用 browser_eval」。
+
+**测试**：`npm test` **443 passed / 0 failed**（440 → 443）；`check:extension` exit 0。
+- `markdown.test.js`：+2（代码复制按钮带自己的名字；只传 `copy` 时仍能渲染且不产生
+  `aria-label="undefined"`）。shim 补 `setAttribute`/`getAttribute`。
+- `panel-i18n.test.js`：+1 静态断言 —— **任何把字形写进 `textContent` 的地方，
+  周围几行必须有 `aria-hidden`/`aria-label`/`title`**，否则就是被念出来的装饰。
+  **这条断言第一版写错了两处**：先是把正确代码（`aria-hidden` 的 caret）误报成违规，
+  收紧后又因为 `aria-label` 设在**下一行**而误报 —— 判据从「同一行」改成「前后三行的语句窗」。
+- **证伪两次**：去掉 caret 的 `aria-hidden` → 1 红；让代码复制按钮共用 `copy` → 1 红。
+
+**交付要求**：只改 `extension/` → **重载 Chrome 扩展**即可。
 
 #### v46：审批问题对屏幕阅读器是完全静默的（本次修复）
 
@@ -2172,7 +2229,7 @@ v13 我已经在 health 里放了 `approvalPending`，**但面板从来没读它
 
 | 项 | 结果 |
 |---|---|
-| `npm test` | **440 passing, 0 failing, 0 skipped** |
+| `npm test` | **443 passing, 0 failing, 0 skipped** |
 | `npm run check:extension` | exit 0 |
 | **把 `content-selection.js` 换回 `git show HEAD:` 的那一版，再跑新测试** | **3 条变红**（接管、死副本被替换、失败后重试），换回新版全绿 → 测试确实能抓住这两个缺陷 |
 | 旧版跑「死副本被替换」用例 | 直接把进程打崩：`Error: Extension context invalidated.` —— 无人接管的 rejection，正是线上那个缺陷的真身 |
@@ -2520,7 +2577,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 440 条，含真实 Chrome 端到端
+└─ test/                  # 443 条，含真实 Chrome 端到端
 
 extension/
 ├─ manifest.json

@@ -14,7 +14,7 @@
  */
 
 import { assert, test } from './harness.js'
-import { isSafeHref, parseMarkdown, renderMarkdown } from '../../../extension/markdown.js'
+import { isSafeHref, parseMarkdown, renderBlocks, renderMarkdown } from '../../../extension/markdown.js'
 
 /**
  * The smallest faithful document that `renderBlocks` uses.
@@ -34,6 +34,14 @@ function makeDocument() {
     textContent: '',
     dataset: {},
     style: {},
+    /** The attributes a code block's copy button carries its name in. */
+    attrs: {},
+    setAttribute(name, value) {
+      this.attrs[name] = String(value)
+    },
+    getAttribute(name) {
+      return Object.prototype.hasOwnProperty.call(this.attrs, name) ? this.attrs[name] : null
+    },
     append(...kids) {
       for (const kid of kids) {
         if (typeof kid === 'string') {
@@ -54,6 +62,22 @@ function makeDocument() {
     createElement: make,
     createDocumentFragment: () => make('#fragment'),
   }
+}
+
+/**
+ * Find the first descendant matching a predicate.
+ * @param {object} node - A node from the shim.
+ * @param {(node: object) => boolean} predicate - What to look for.
+ * @returns {object|null} The match, or null.
+ */
+function findFirst(node, predicate) {
+  for (const child of node.children ?? []) {
+    if (typeof child === 'string') continue
+    if (predicate(child)) return child
+    const deeper = findFirst(child, predicate)
+    if (deeper !== null) return deeper
+  }
+  return null
 }
 
 /**
@@ -274,4 +298,31 @@ test('inline spans still work inside a cell', () => {
     cell.children.map((kid) => (typeof kid === 'string' ? kid : kid.tagName)),
     ['STRONG'],
   )
+})
+
+test('the code copy button says which thing it copies', () => {
+  // Chrome's own accessibility tree reported two controls named exactly 「复制」 in
+  // one conversation — one per code block, one per answer — with nothing to tell
+  // them apart. The drawn label stays short, so the accessible name carries the
+  // distinction and a screen reader can say which is which.
+  const document = makeDocument()
+  const fragment = renderBlocks(document, parseMarkdown('```js\nconst a = 1\n```\n'), {
+    copy: '复制',
+    copyCode: '复制代码',
+  })
+  const button = findFirst(fragment, (node) => node.dataset?.copy === 'code')
+  assert.ok(button !== null, 'the code block has no copy button')
+  assert.equal(button.textContent, '复制', 'the drawn label changed')
+  assert.equal(button.getAttribute('aria-label'), '复制代码')
+})
+
+test('a copy button renders without the accessible name', () => {
+  // The renderer is a pure function whose options are optional, so a caller that
+  // passes only `copy` must keep working instead of producing an `aria-label`
+  // reading "undefined".
+  const document = makeDocument()
+  const fragment = renderBlocks(document, parseMarkdown('```js\nconst a = 1\n```\n'), { copy: '复制' })
+  const button = findFirst(fragment, (node) => node.dataset?.copy === 'code')
+  assert.equal(button.textContent, '复制')
+  assert.equal(button.getAttribute('aria-label'), null)
 })

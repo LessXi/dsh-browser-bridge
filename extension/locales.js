@@ -43,6 +43,10 @@ export const zh = Object.freeze({
   'action.drop': '移除',
   'action.copy': '复制',
   'action.copied': '已复制',
+  // Both copy buttons draw the same short word, so the accessible name is what
+  // tells them apart — Chrome's tree carried two controls named 「复制」.
+  'action.copyCode': '复制代码',
+  'action.copyAnswer': '复制整条回答',
 
   // The history view.
   'history.empty': '还没有会话',
@@ -178,6 +182,8 @@ export const en = Object.freeze({
   'action.drop': 'Remove',
   'action.copy': 'Copy',
   'action.copied': 'Copied',
+  'action.copyCode': 'Copy code',
+  'action.copyAnswer': 'Copy the whole answer',
 
   'history.empty': 'No chats yet',
   'history.ungrouped': 'Ungrouped',

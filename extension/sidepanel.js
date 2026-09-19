@@ -1099,7 +1099,7 @@ function renderRow(row, index) {
     wrapper.dataset.kind = 'assistant'
     const answer = document.createElement('div')
     answer.className = 'answer'
-    answer.append(renderMarkdown(document, row.text, { copy: t('action.copy') }))
+    answer.append(renderMarkdown(document, row.text, { copy: t('action.copy'), copyCode: t('action.copyCode') }))
     wrapper.append(answer)
     // Copying the whole answer lives here rather than in the header: it acts on
     // one row, and the row is where the reader is looking. It stays invisible
@@ -1111,7 +1111,14 @@ function renderRow(row, index) {
     copy.type = 'button'
     copy.className = 'copy'
     copy.dataset.copy = 'answer'
+    // The visible word is the same on both copy buttons — one per code block, one
+    // per answer — and Chrome's accessibility tree reported two controls named
+    // exactly 「复制」 in one conversation. A screen reader user hears the same
+    // label twice with nothing to tell them apart, so the accessible name says
+    // which one it is while the drawn label stays short.
     copy.textContent = t('action.copy')
+    copy.setAttribute('aria-label', t('action.copyAnswer'))
+    copy.title = t('action.copyAnswer')
     actions.append(copy)
     wrapper.append(actions)
     return wrapper
@@ -1124,7 +1131,17 @@ function renderRow(row, index) {
     const toggle = document.createElement('button')
     toggle.type = 'button'
     toggle.className = 'reasoning-toggle'
-    toggle.textContent = `${t('row.reasoning')} ${open ? '⌃' : '⌄'}`
+    // The glyph is drawn, not spoken. As text it became part of the button's
+    // accessible name — a screen reader read 「思考 ⌄」, pronouncing a decoration —
+    // and this is the shape the rest of the panel already uses for its other
+    // arrows (`#new` is 「＋」 with an `aria-label`, `#to-bottom` likewise).
+    const label = document.createElement('span')
+    label.textContent = t('row.reasoning')
+    const caret = document.createElement('span')
+    caret.className = 'caret'
+    caret.setAttribute('aria-hidden', 'true')
+    caret.textContent = open ? '⌃' : '⌄'
+    toggle.append(label, caret)
     toggle.setAttribute('aria-expanded', String(open))
     wrapper.append(toggle)
     if (open) {
