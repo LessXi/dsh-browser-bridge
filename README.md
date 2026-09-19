@@ -365,6 +365,46 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 `test/stream.test.js`（真 socket 上的帧形状）+ `test/panel-stream.test.js`（真跑面板模块）分段覆盖，
 **中间那一跳（Chrome 的 `chrome.runtime.sendMessage`）只做了结构断言，没有在真 Chrome 里点过**。
 
+#### v50b：三条候选轴实测清白，零缺陷（本轮无代码改动）
+
+按「找不到缺陷就如实说找不到」的纪律，这一轮报的是一条**否定结果**：三条从未量过的轴
+全部实测清白，没有改动任何产品代码。真正留下来的产出是一个教训——**三次"发现缺陷"的读数
+其实是量具自己造成的**。
+
+**① 键盘焦点可见性与链接对比度：达标。**
+规则在 `extension\sidepanel.html:123-126`（`:focus-visible` → `outline: 2px solid var(--accent)`）。
+量具 `cdp-focus.mjs` 逐个 `focus()` 每个可聚焦元素再读计算样式：每个都是
+`outlineWidth: 2px` / `outlineStyle: solid` / `:focus-visible` 为真，焦点环对**实际背景**的对比度
+**4.96**（多数）/ **4.55**（代码块内的复制键），都过 WCAG 非文字 3:1；`.answer a` 链接 **4.96**，过 AA。
+`#send` 报 `outlineStyle: none` 是因为它当时 `disabled`——`disabled` 元素不可聚焦，正确。
+
+**② 暗色模式：首次真正看到渲染。**
+此前只有 v40 的数值验证、没有人真的看过深色下的面板。截图确认色阶、层级、对比全部成立，无缺陷。
+
+**③ chip 行的裁剪与矮面板算术：与设计一致。**
+跨 812/600/480/400/340/300/260/220 八个高度量 `#contexts`：`rowH = clientH = scrollH = 56`，
+两个 chip 各 1 行、零裁剪、零越界。`sidepanel.html:762-771` 的算术
+`header 44 + stage 72 + chips 56 + composer 88 = 260` 实测**逐项吻合**（`footer 144 = 56 + 78 + 10`），
+260px 下 `pageOverflow: 0`。
+最坏负载（3 个 chip = 3 行 = 83px）在 260px 下确实溢出 27px，**但这是 `sidepanel.html:110-114`
+明文记载的有意设计**（「Below about 330px something has to overflow, and `auto` lets the body
+scroll rather than clipping the composer off the bottom」），且实测**滚到底后发送键完全可见**。
+
+**★ 三次假象，全部来自量具：**
+
+| 假象 | 真相 |
+|---|---|
+| 长选区 chip 高 58px、页脚 279px、页面溢出 868 | 我把选区文本当**裸文本节点**塞进 chip；真实代码用 `<span class="label">` 包裹（`sidepanel.js:1044-1055`），`.chip .label` 的单行截断规则（`sidepanel.html:783`）让它保持 **22px、单行** |
+| 260px 视口溢出 20px、220px 下发送键"消失" | 预览宿主往 `document.body` 追加 **7 个**诊断盒（`#geometry`/`#perf`/`#cost` 等），body 是 `display:flex`，每个盒子都是偷高度的 flex item，**`#perf` 恰好 20px** |
+| 最坏负载下发送键不可见 | 判据只看 `send.bottom <= innerHeight`，没区分**被裁掉**与**可滚动**；实测 `scrollTop` 可到 27，滚到底后按钮完全可见 |
+
+前两条已**修进工具本身**：`preview.mjs` 装了一个探针登记表，暴露 `globalThis.__dropProbes()`，
+量具一次清干净；登记代码必须等 `DOMContentLoaded`——stub 注入在 `<head>`，那时 `document.body`
+是 `null`，`MutationObserver.observe(null)` 抛异常会**静默中断 stub.js 从该行往后的全部代码**。
+
+**这一轮与 v49 前的横向溢出轴同型**：那一次也把 `<pre>` 里可以横向滚动的长代码行报成了溢出。
+**凡是要说「某个东西不见了」，必须先证明它够不到。**
+
 #### v50：Windows 高对比度下，面板靠背景色说的状态全部消失（本次修复）
 
 前 49 轮没碰过可访问性媒体特性。这一轮量 `forced-colors`（Windows 高对比度模式），

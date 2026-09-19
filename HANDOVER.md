@@ -10,6 +10,71 @@
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
 
+> ### v50b：三条候选轴实测清白，但量具本身骗了我三次（无代码改动）
+>
+> **结论先行：本轮零产品缺陷，没有改动任何产品代码。** 下面记的是三条被测清的轴，
+> 以及一个必须传下去的教训——**"发现缺陷"的读数有三次其实是量具自己造成的**。
+>
+> **① 键盘焦点可见性与链接对比度：达标。**
+> 量具 `%TEMP%\panel-preview\cdp-focus.mjs <scene> <width> [dark]`。规则在
+> `extension\sidepanel.html:123-126`（`button:focus-visible, textarea:focus-visible, a:focus-visible`
+> → `outline: 2px solid var(--accent); outline-offset: 1px`）。实测每个可聚焦元素
+> `outlineWidth: 2px` / `outlineStyle: solid` / `:focus-visible` 为真，焦点环对实际背景的对比度
+> **4.96**（多数）/ **4.55**（`.code-block` 内的 `.copy`）—— 都过 WCAG 非文字 3:1。
+> `.answer a` 链接的 accent 对白底 **4.96**，过 AA。`#send` 报 `outlineStyle: none` 是因为它当时
+> `disabled`（`disabled` 元素不可聚焦，属正确行为）。
+> **量具自身的坑**：`getComputedStyle` 返回**活对象**，先取引用、`focus()` 之后再读属性，
+> 会让 `hadOutlineBefore` 全部报 `solid`（未聚焦时本应是 `none`）。要取快照必须当场把值拷成字符串。
+>
+> **② 暗色模式：首次真正看到渲染（此前只有 v40 的数值验证）。**
+> 面板声明 `color-scheme: light dark`（`sidepanel.html:27`），预览宿主用 `?dark=1`。
+> 截图 `%TEMP%\panel-preview\shots\dark-chat.png`：色阶、层级、对比都成立，无缺陷。
+> 截图里上下文行显示英文 `已附带 · browser-bridge · selected text from dl.acm.org, 5 chars`
+> **是桩故意的**——`preview.mjs` 的 `chat` 场景（约 :106）只有 `{kind:'context', text}`、没有 v49 的
+> facts 字段，走的是"旧宿主"回退路径，英文是正确行为。v49 的 facts 形状在 `attached` 场景（约 :498-509）。
+>
+> **③ chip 行的裁剪与矮面板算术：实测清白。**
+> 量具 `%TEMP%\panel-preview\cdp-clip.mjs <scene> <width> [dark]`，跨 812/600/480/400/340/300/260/220
+> 八个高度量 `#contexts` 的 `clientH`/`scrollH`、每个 chip 是否完全在框内、`#stage`/`footer` 高度、
+> `pageOverflow`、发送键是否可见。
+> `attached` 场景：`rowH = clientH = scrollH = 56`，两个 chip 各 1 行、`offscreen: 0`、
+> `clipped: 0` —— **零裁剪**。
+> `sidepanel.html:762-771` 的算术 `header 44 + stage 72 + chips 56 + composer 88 = 260`
+> **实测逐项吻合**（`footer 144 = #contexts 56 + #composer 78 + padding-bottom 10`）。
+> 260px 下 `pageOverflow: 0`。
+>
+> **最坏 chip 负载（3 个 chip = 3 行 = 83px）在 260px 下确实溢出 27px，但这是有意设计且用户够得到。**
+> 预览新增场景 `?s=worstChips`（长选区 + 标签页 + 桥警告，真实代码能产生的最大 chip 数；
+> 上限是 4：@提及 + 桥警告 + 标签页 + 选区，见 `extension\sidepanel.js:943-1073`）。
+> 量具 `verify-scroll.mjs` 实测：260px 下 `bodyScrollH 287 > 260`、`body.scrollTop` 可到 27、
+> **滚到底后 `sendVisibleAfterScroll: true`**；300px 及以上 `pageOverflow: 0`。
+> `sidepanel.html:110-114` 已明文写下这个决定：「Below about 330px something has to overflow,
+> and `auto` lets the body scroll rather than clipping the composer off the bottom」。
+>
+> **★ 必须记住的教训：三次假象，全部来自量具，不是产品。**
+> 1. **注入式量测必须复刻真实 DOM 形状。** 我把长选区文本作为**裸文本节点**塞进 chip，
+>    量到 chip 58px（3 行）、footer 279px、页面溢出 868 —— 而真实代码
+>    （`extension\sidepanel.js:1044-1055` 的 `renderContexts()`）用 `<span class="label">` 包裹，
+>    `.chip .label` 的 `min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap`
+>    （`sidepanel.html:783`）才让它保持单行。用正确的 `.label` 重建后 chip 是 **22px、单行**。
+>    **裸文本节点与 `.label` 包裹在 flex 布局里行为完全不同** —— 这与"夹具把被测层交给下一层的
+>    形状整个展开，测的就不是那一层了"是同一类错误，本轮**又犯了一次**。
+> 2. **预览宿主往 `document.body` 追加的 7 个诊断盒会偷走面板高度。**
+>    面板 body 是 `display:flex; height:100%`，所以每个诊断盒都是 flex item：
+>    `#scroll-report`、`#focus-report`、`#hunt`、`#geometry`、`#hidden-log`、
+>    **`#perf`（恰好 20px）**、`#cost`，且**按场景条件触发**——只删自己知道的那几个，
+>    就会把仪器量成产品。`#perf` 一个盒子正好解释了"260px 下溢出 20px"。
+>    **已修进 `preview.mjs`**：装了一个探针登记表，暴露 **`globalThis.__dropProbes()`**，
+>    量具调它即可一次清干净（`cdp-clip.mjs` 已改用）。注意登记代码必须在 `DOMContentLoaded`
+>    之后才 `observe(document.body)` —— stub 注入在 `<head>`，那时 `body` 是 `null`，
+>    `MutationObserver.observe(null)` 抛异常会**静默中断 stub.js 从该行往后的全部代码**。
+> 3. **判定"不可见"必须区分"被裁掉"与"可滚动"。** 我的 `sendVisible` 只看
+>    `send.bottom <= innerHeight`，于是把"能滚到"报成"消失了"。这与之前横向溢出的
+>    `<pre>` 误报（`overflow-x:auto` 且 `scrollW > clientW` 是**正确行为**）是同一条。
+>    **凡是要说"某个东西不见了"，必须先证明它够不到。**
+>
+> 交付：本轮**无代码改动**，不需要重载扩展或重启宿主。
+>
 > ### v50：Windows 高对比度下，面板靠背景色说的状态全部消失（扩展侧，本次修复）
 >
 > **量法**：CDP `Emulation.setEmulatedMedia` + `{name:'forced-colors',value:'active'}`（精确、可逆）。
