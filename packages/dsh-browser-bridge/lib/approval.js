@@ -183,11 +183,19 @@ export class ApprovalRelay {
     const sessionId = request.agent?.session?.id
     if (typeof sessionId !== 'string' || sessionId.length === 0) return undefined
     const toolName = typeof request.toolName === 'string' && request.toolName.length > 0 ? request.toolName : 'a tool'
+    const reason = typeof request.reason === 'string' && request.reason.length > 0 ? request.reason : ''
     return {
       sessionId,
       toolName,
-      ...(typeof request.reason === 'string' && request.reason.length > 0 ? { reason: request.reason } : {}),
+      ...(reason.length > 0 ? { reason } : {}),
       ...(typeof request.callId === 'string' ? { callId: request.callId } : {}),
+      // The panel writes its own sentence, so it needs facts rather than the
+      // prose this layer happened to pass to `approval.request()`. That prose is
+      // English, written for a log, and names the site only in passing —
+      // 「the browser bridge wants to use https://dl.acm.org」 was rendered
+      // verbatim inside a Chinese card, which is the same defect the failure row
+      // had. `page-tools.js` already knows both halves, so it sends them.
+      ...factsFor(request),
     }
   }
 
@@ -229,4 +237,33 @@ export class ApprovalRelay {
  */
 export function createApprovalRelay(options = {}) {
   return new ApprovalRelay(options)
+}
+
+/**
+ * The structured half of a question, for a surface that writes its own sentence.
+ *
+ * The panel is a Chinese product surface and the `reason` it used to receive was
+ * an English log line — 「the browser bridge wants to use https://dl.acm.org」 was
+ * printed verbatim inside a 「需要你确认」 card. That is the same defect the
+ * failure row had, and the fix is the same shape: send the facts, let the
+ * surface phrase them.
+ *
+ * `origin` and `sensitive` are read from the request when the asking tool
+ * supplies them. When it does not (an older caller, or a tool this plugin does
+ * not own), nothing is invented — the panel falls back to its own generic
+ * sentence, which is still better than echoing prose.
+ *
+ * @param {unknown} request - The approval request.
+ * @returns {{ origin?: string, sensitive?: boolean }} Whatever could be read.
+ */
+function factsFor(request) {
+  const facts = {}
+  const origin = request.origin
+  if (typeof origin === 'string' && origin.length > 0) facts.origin = origin
+  // A capability the page can only be asked for when it does more than read.
+  // Derived from the reason's own wording only as a last resort, because the
+  // structural field is the one that cannot drift.
+  if (typeof request.sensitive === 'boolean') facts.sensitive = request.sensitive
+  else if (typeof request.reason === 'string' && request.reason.includes('more than reading the page')) facts.sensitive = true
+  return facts
 }

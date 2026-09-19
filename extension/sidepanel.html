@@ -402,6 +402,20 @@
         font-size: var(--text-sm);
         overflow-wrap: anywhere;
       }
+      /* The consequence, stated once, and only when it is more than a read. */
+      .approval-note {
+        margin-top: 2px;
+        font-size: var(--text-xs);
+        color: var(--muted);
+      }
+      /* The host's own wording, kept reachable and kept out of the way: the same
+         treatment a failure's detail line gets, for the same reason. */
+      .approval-detail {
+        font-size: 11px;
+        line-height: 1.4;
+        color: var(--faint);
+        overflow-wrap: anywhere;
+      }
       .approval-actions { display: flex; gap: 6px; }
       .approval-actions button {
         height: 28px;

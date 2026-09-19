@@ -132,9 +132,12 @@ export const zh = Object.freeze({
   // standing between a running turn and one that waits forever.
   'approval.asking': '需要你确认',
   'approval.wants': '要用 {tool}',
+  'approval.wantsSite': '要在 {site} 上使用 {tool}',
+  'approval.sensitive': '这一步会改动页面或花钱，不只是读',
   'approval.aTool': '一个工具',
   'approval.allow': '允许一次',
   'approval.reject': '拒绝',
+  'approval.detail': '技术详情',
 })
 
 /** English. Same keys as {@link zh}. */
@@ -210,9 +213,12 @@ export const en = Object.freeze({
   'error.code.empty': 'The model returned nothing',
   'approval.asking': 'Needs your call',
   'approval.wants': 'Wants to use {tool}',
+  'approval.wantsSite': 'Wants to use {tool} on {site}',
+  'approval.sensitive': 'Changes the page or spends money',
   'approval.aTool': 'a tool',
   'approval.allow': 'Allow once',
   'approval.reject': 'Reject',
+  'approval.detail': 'Technical detail',
 })
 
 /** Every dictionary, by locale tag. */

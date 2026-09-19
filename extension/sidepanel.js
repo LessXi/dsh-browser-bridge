@@ -1111,7 +1111,11 @@ function renderApproval() {
   // What is on screen is compared as a whole, not by id alone: the busy state
   // changes the buttons, and an early return that ignored it would leave them
   // live while a request is already in flight.
-  const key = `${pendingApproval.id}:${answering}`
+  // The whole card is in the key, not just the id. Keying on the id alone meant a
+  // question whose facts arrived later — the health poll catching up with a
+  // notification, or the same id redelivered with more fields — kept the card
+  // drawn from the earlier, poorer payload, and the redraw was skipped.
+  const key = `${pendingApproval.id}:${answering}:${pendingApproval.site ?? ''}:${pendingApproval.sensitive === true}:${pendingApproval.reason ?? ''}`
   if (existing !== null && drawnApproval === key) return
   existing?.remove()
   drawnApproval = key
@@ -1127,8 +1131,43 @@ function renderApproval() {
 
   const what = document.createElement('div')
   what.className = 'approval-what'
-  what.textContent = pendingApproval.reason ?? t('approval.wants', { tool: pendingApproval.toolName })
+  // The panel writes this sentence, because `reason` is English prose written
+  // for the harness log — 「the browser bridge wants to use https://dl.acm.org」
+  // was landing verbatim inside a 「需要你确认」 card, which is the same defect
+  // the failure row had and reads just as wrong in a Chinese panel. The facts
+  // come from the asking tool (`lib/approval.js` `factsFor`), so the sentence is
+  // in the reader's language and names the site on its own terms.
+  const site = typeof pendingApproval.site === 'string' ? pendingApproval.site : ''
+  const tool = pendingApproval.toolName === 'a tool' ? t('approval.aTool') : pendingApproval.toolName
+  what.textContent = site.length > 0
+    ? t('approval.wantsSite', { tool, site })
+    : t('approval.wants', { tool })
   card.append(what)
+
+  // Its own row rather than a line inside the sentence: nesting it would make
+  // `approval-what` read as 「要在 … 上使用 browser_click 这一步会改动页面或花钱」,
+  // one run-on sentence doing two jobs.
+  if (pendingApproval.sensitive === true) {
+    const warn = document.createElement('div')
+    warn.className = 'approval-note'
+    warn.textContent = t('approval.sensitive')
+    card.append(warn)
+  }
+
+  // The host's own wording stays reachable, but only when it still carries
+  // information. With the site in hand the sentence above already says what the
+  // prose said, and printing both put the same URL on screen twice — three lines
+  // to say one thing, which is the noise this card exists to avoid. Without a
+  // site the prose is the only thing naming the target, so it is kept, demoted
+  // the way a failure's detail is.
+  const detail = site.length === 0 ? failureDetail(pendingApproval.reason) : ''
+  if (detail !== '') {
+    const more = document.createElement('div')
+    more.className = 'approval-detail'
+    more.textContent = detail
+    more.title = t('approval.detail')
+    card.append(more)
+  }
 
   const actions = document.createElement('div')
   actions.className = 'approval-actions'
@@ -1573,13 +1612,35 @@ function adoptOpenApproval(payload) {
     (entry) => typeof entry?.id === 'string' && entry?.sessionId === currentSessionId,
   )
   if (next === undefined) return
-  pendingApproval = {
-    id: next.id,
-    sessionId: next.sessionId,
-    toolName: typeof next.toolName === 'string' ? next.toolName : t('approval.aTool'),
-    ...(typeof next.reason === 'string' ? { reason: next.reason } : {}),
-  }
+  pendingApproval = approvalQuestion(next)
   renderApproval()
+}
+
+/**
+ * Keep the half of a question the card draws.
+ *
+ * Two paths receive a question — the live notification and the health poll that
+ * catches one asked before the panel opened — and they used to build this object
+ * separately. They drifted: when the card learned to phrase the site itself, only
+ * one of them carried `origin`, so the same question read differently depending
+ * on which path delivered it. Reading it once is the fix.
+ *
+ * @param {unknown} question - A question from either path.
+ * @returns {{ id: string, sessionId: string, toolName: string, reason?: string, site?: string, sensitive?: boolean }} The fields the card uses.
+ */
+function approvalQuestion(question) {
+  const entry = question ?? {}
+  return {
+    id: entry.id,
+    sessionId: entry.sessionId,
+    toolName: typeof entry.toolName === 'string' ? entry.toolName : t('approval.aTool'),
+    ...(typeof entry.reason === 'string' ? { reason: entry.reason } : {}),
+    // The facts the card phrases in the reader's language. The host calls the
+    // site `origin`; the card calls it `site`, because that is what the person
+    // is being asked about.
+    ...(typeof entry.origin === 'string' ? { site: entry.origin } : {}),
+    ...(typeof entry.sensitive === 'boolean' ? { sensitive: entry.sensitive } : {}),
+  }
 }
 
 /**
@@ -2190,12 +2251,7 @@ chrome.runtime.onMessage.addListener((message) => {
     // Only the shape this panel can answer is kept; anything else would render
     // buttons that cannot say what they are answering.
     if (typeof question.id === 'string' && typeof question.sessionId === 'string') {
-      pendingApproval = {
-        id: question.id,
-        sessionId: question.sessionId,
-        toolName: typeof question.toolName === 'string' ? question.toolName : t('approval.aTool'),
-        ...(typeof question.reason === 'string' ? { reason: question.reason } : {}),
-      }
+      pendingApproval = approvalQuestion(question)
       renderApproval()
       // The question is about a turn, and the turn may be in a session the
       // panel is not showing; following it is what makes the card reachable

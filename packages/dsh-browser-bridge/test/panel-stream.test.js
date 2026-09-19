@@ -1090,18 +1090,54 @@ test('a pending approval is shown as a question with exactly two answers', async
   })
 })
 
-test('the card says why, and names the tool when there is no reason', async () => {
+test('the card writes its own sentence, and demotes the host prose', async () => {
+  // The card used to print the host's `reason` verbatim, which is English prose
+  // written for the harness log — 「the browser bridge wants to use
+  // https://dl.acm.org」 inside a 「需要你确认」 card. It now phrases the tool's
+  // structured facts in the reader's language, exactly as the failure row does.
   await onStoppedClock(async () => {
     await settleToIdle()
-    await askApproval()
+    await askApproval({ origin: 'https://example.com', reason: 'the bridge wants to use https://example.com' })
     const body = approvalCard().children.find((child) => child.className === 'approval-what')
-    assert.equal(body.textContent, 'clicking on https://example.com', 'the reason was dropped')
+    assert.equal(body.textContent, '要在 https://example.com 上使用 browser_click')
+    // With the site in the sentence the prose adds nothing, so it is not printed
+    // a second time: the URL used to appear twice in one three-line card.
+    const detail = approvalCard().children.find((child) => child.className === 'approval-detail')
+    assert.equal(detail, undefined, 'the same URL was printed twice')
 
     post('dsh-approval-settled', { id: 'panel-1' })
     await settle()
-    await askApproval({ id: 'panel-2', reason: undefined })
+    // An older host sends prose and no facts. The prose is then the only thing
+    // naming the target, so it is kept — demoted, not dropped.
+    await askApproval({ id: 'panel-2', reason: 'clicking on https://example.com' })
+    const fallback = approvalCard().children.find((child) => child.className === 'approval-what')
+    assert.equal(fallback.textContent, '要用 browser_click')
+    const kept = approvalCard().children.find((child) => child.className === 'approval-detail')
+    assert.equal(kept?.textContent, 'clicking on https://example.com', 'the prose was dropped entirely')
+
+    post('dsh-approval-settled', { id: 'panel-2' })
+    await settle()
+    await askApproval({ id: 'panel-3', reason: undefined, origin: undefined })
     const named = approvalCard().children.find((child) => child.className === 'approval-what')
     assert.equal(named.textContent, '要用 browser_click', 'a reasonless question did not name the tool')
+  })
+})
+
+test('a question that changes the page says so, not just which tool', async () => {
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    await askApproval({ id: 'panel-4', origin: 'https://example.com', sensitive: true })
+    const note = approvalCard().children.find((child) => child.className === 'approval-note')
+    assert.ok(note, 'a state-changing request read exactly like a read')
+
+    post('dsh-approval-settled', { id: 'panel-4' })
+    await settle()
+    await askApproval({ id: 'panel-5', origin: 'https://example.com', sensitive: false })
+    assert.equal(
+      approvalCard().children.find((child) => child.className === 'approval-note'),
+      undefined,
+      'an ordinary read was warned about as if it spent money',
+    )
   })
 })
 

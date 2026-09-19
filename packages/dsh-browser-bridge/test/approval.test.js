@@ -118,6 +118,34 @@ test('a question reaches the panel with the options it may answer with', async (
   assert.equal(await promise, 'allowed-once')
 })
 
+test('the tool structured facts travel with the question, not just its prose', async () => {
+  // The panel writes its own sentence in the reader's language, so it needs the
+  // facts rather than the English line `page-tools.js` passes to
+  // `approval.request()`. Without these it can only echo the prose.
+  const { ask, lastAsked } = fixture()
+  ask(request({ origin: 'https://dl.acm.org', capability: 'access' }), unavailable)
+
+  const asked = lastAsked()
+  assert.equal(asked.origin, 'https://dl.acm.org')
+})
+
+test('a question with no facts invents none', async () => {
+  // A tool this plugin does not own supplies no origin, and a fabricated one
+  // would name the wrong site in a card whose whole job is naming the site.
+  const { ask, lastAsked } = fixture()
+  ask(request(), unavailable)
+
+  const asked = lastAsked()
+  assert.equal(typeof asked.origin, 'undefined')
+  assert.equal(typeof asked.sensitive, 'undefined')
+})
+
+test('a state-changing question is marked as more than a read', async () => {
+  const { ask, lastAsked } = fixture()
+  ask(request({ sensitive: true }), unavailable)
+  assert.equal(lastAsked().sensitive, true)
+})
+
 test('nobody downstream taking the question is not a decision', async () => {
   // The load-bearing case. `unavailable` is the harness's word for "no answerer
   // took this", and the graphical client returns exactly that when it is not

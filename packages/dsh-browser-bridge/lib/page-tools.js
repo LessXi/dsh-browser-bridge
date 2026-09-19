@@ -115,6 +115,14 @@ export function buildPageTools(ports) {
         toolName: input.toolName,
         callId: input.exec.callId,
         reason: input.reason,
+        // `reason` is prose for a log; these are the facts behind it. The
+        // harness passes the request object through the waterfall untouched
+        // (`dsh-user-approval/lib/index.js` forwards `req` verbatim), so a
+        // surface that wants to write its own sentence — the side panel, in the
+        // reader's language — can do that instead of echoing this English line.
+        origin: input.origin,
+        capability: input.capability,
+        ...(input.sensitive === true ? { sensitive: true } : {}),
         signal: input.exec.signal,
       })
     } catch (error) {
@@ -198,7 +206,16 @@ export function buildPageTools(ports) {
     const reason = sensitivity.sensitive
       ? `${origin}: this action ${sensitivity.reason}, which is more than reading the page`
       : `the browser bridge wants to use ${origin}`
-    const decision = await askApproval({ toolName: input.toolName, origin, capability, reason, exec: input.exec })
+    const decision = await askApproval({
+      toolName: input.toolName,
+      origin,
+      capability,
+      reason,
+      // The structural twin of the sentence above, so a surface can state the
+      // consequence without parsing prose.
+      sensitive: sensitivity.sensitive === true,
+      exec: input.exec,
+    })
 
     if (decision.outcome !== 'allowed') {
       const detail = decision.outcome === 'denied'

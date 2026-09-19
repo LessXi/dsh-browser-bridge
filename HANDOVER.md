@@ -1,14 +1,52 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v27 已交付。** 下一节就是最新的一轮改动；下面标 v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v27 那一段为止即可。
+> **当前状态：v28 已交付。** 下一节就是最新的一轮改动；下面标 v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v28 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（386 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（390 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 >
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
+
+> ### v28：审批卡把英文开发者日志当正文念给用户（宿主 + 扩展，本次修复）
+>
+> **症状**：中文面板的「需要你确认」卡片正文是
+> `the browser bridge wants to use https://dl.acm.org`，敏感类还会更长：
+> `https://dl.acm.org: this action spends money or changes state, which is more than reading the page`。
+> 这是 **v16 修过的同一个缺陷**（写给日志的英文散文被当作界面文案）长在 v16 没覆盖的**另一条路径**上：
+> v16 只修了回合失败行（`extension/failure.js`），审批卡一直在 `extension/sidepanel.js` 里原样渲染宿主的 `reason`。
+>
+> **为什么之前看不见**：预览夹具里的审批**没有 `reason` 字段**，走的是
+> `t('approval.wants', { tool })` 回退分支，渲染出干净的中文。
+> 而生产里 `packages/dsh-browser-bridge/lib/page-tools.js` **总是**设 `reason`。
+> **夹具比产品干净，所以截图里看不见** —— 与 v24「`chrome.tabs.query` 返回空数组导致 chip 零覆盖」同类。
+>
+> **修法：宿主送事实，面板自己写句子。**
+> 1. `lib/page-tools.js` 的 `approval.request({...})` 多送 `origin` 与 `sensitive`
+>    （宿主把请求对象原样透传，加字段不用改宿主）。
+> 2. `lib/approval.js` 的 `#question()` 经新的 `factsFor(request)` 把它们带进面板通知；
+>    **`sensitive` 优先读结构字段**，只有拿不到才从 reason 措辞回退推断——结构字段不会漂移。
+> 3. `extension/sidepanel.js` 自己组句：`approval.wantsSite` = `要在 {site} 上使用 {tool}`，
+>    `approval.note` = `这一步会改动页面或花钱，不只是读`（仅 `sensitive` 为真时出现）。
+> 4. 宿主英文原话降级为 `.approval-detail`，**且只在没有 `site` 时显示**——否则同一个 URL 在一张卡里出现两次。
+>
+> **顺带修掉一个我自己引入的缺陷**：`renderApproval` 的去重键原本只有 `id:answering`，
+> 于是**同一个 id 带更完整字段再次到达时（健康轮询追上通知）重绘被跳过**，卡片停在信息更少的那版；
+> 键现包含 `site`/`sensitive`/`reason`。**这条是写新测试时抓出来的，不是事后想到的。**
+>
+> **实测**：探针 3199 上用 `page-tools.js` 真实构造的请求驱动中继 →
+> `origin:"https://dl.acm.org"` / `sensitive:true` 到达面板，作答 `{"answered":true,...,"outcome":"allowed-once"}`；
+> 无头 Chrome 截图三个场景（有新事实 / 只有英文原话 / 两者都没有）各自正确；
+> `npm test` **390 passed / 0 failed**；`check:extension` exit 0。
+> **证伪三次**：宿主不转发 origin → 1 红；面板改回渲染 `reason` → 2 红；去重键退回 `id:answering` → 1 红。
+>
+> **交付：`lib/` + `extension/` 都改了 → 重启 `dsh web` + 重载 Chrome 扩展。**
+>
+> **可复用的排查手段（本轮新增）**：`%TEMP%\panel-preview\shoot.mjs` ——
+> 一个自持生命周期的截图/量测工具（自己起 `preview.mjs`、跑无头 Chrome、读 `#geometry` 探针、最后收尾）。
+> **必须自持**：从 pwsh 后台任务起的预览服务会在任务结束时被杀，之后每次量测都静默得到空 DOM（本轮在这上面白跑了一轮）。
 
 > ### v27：切换会话时，上一个会话的东西跟着过来了（扩展侧，本次修复）
 >

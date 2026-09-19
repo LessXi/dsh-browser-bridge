@@ -249,7 +249,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 386 条
+npm test                          # 全部 390 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -275,7 +275,7 @@ npm run check:extension           # 扩展脚本语法检查（Chrome 加载前�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 386 条
+npm test                 # 390 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -288,7 +288,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 不会把 `@deepseek-ai/*` 拉下来。宿主库由 `lib/deps.js` 在运行时从
 `$DSH_HOME/profiles/node_modules` 解析。
 
-**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **386 passing, 0 failing, 0 skipped**，
+**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **390 passing, 0 failing, 0 skipped**，
 `npm run check:extension` exit 0。前提是这台机器上装过 DSH（宿主库要能解析到）。
 
 **验证环境**：Node **v24.15.0**。两个 `package.json` 里的 `engines.node: ">=20"` 是**保守下限**，
@@ -306,7 +306,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面四层测试，386 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
+**已自动化验证**：上面四层测试，390 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
 
 侧边栏那部分还有一组**静态**检查，防止语言和版式漂回去：两个字典的键必须完全一致、面板里每个
 `t('…')` 的键都必须存在、HTML 里不允许残留裸文案、旧版文案一个都不许出现、**字典里不允许出现整句
@@ -364,6 +364,65 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 「宿主聚合 → 走 `notify` → service worker 转给面板 → 面板逐字画出来」这一段由
 `test/stream.test.js`（真 socket 上的帧形状）+ `test/panel-stream.test.js`（真跑面板模块）分段覆盖，
 **中间那一跳（Chrome 的 `chrome.runtime.sendMessage`）只做了结构断言，没有在真 Chrome 里点过**。
+
+#### v28：审批卡把英文开发者日志当正文念给用户（本次修复）
+
+**症状**：一个中文面板的「需要你确认」卡片，正文是
+
+```
+the browser bridge wants to use https://dl.acm.org
+```
+
+以及更敏感的那一类：
+
+```
+https://dl.acm.org: this action spends money or changes state, which is more than reading the page
+```
+
+这正是 v16 修过的同一个缺陷 —— **把写给日志的英文散文当作界面文案** —— 只是长在 v16 没覆盖的另一条路径上。
+v16 只修了**回合失败行**（`extension/failure.js`：用 `code` 选句子，原始 message 降级为细节），
+审批卡从头到尾都在 `sidepanel.js:1130` 原样渲染宿主的 `reason`。
+
+**为什么之前没看见**：预览场景里的审批夹具**没有 `reason` 字段**，于是走的是
+`t('approval.wants', { tool })` 这条回退分支，渲染出干净的中文「要用 browser_read」。
+而生产里 `lib/page-tools.js:198-200` **总是**设 `reason`：
+
+```js
+const reason = sensitivity.sensitive
+  ? `${origin}: this action ${sensitivity.reason}, which is more than reading the page`
+  : `the browser bridge wants to use ${origin}`
+```
+
+**夹具比产品干净，所以缺陷在截图里看不见** —— 这和 v24「`chrome.tabs.query` 返回空数组导致两个 chip 零覆盖」是同一类。
+
+**修法：宿主送事实，面板自己写句子。**
+
+1. `lib/page-tools.js` 在 `approval.request({...})` 上多送 `origin` 与 `sensitive` ——
+   宿主把请求对象原样透传给 waterfall（`dsh-user-approval/lib/index.js` 转发 `req`），所以多两个字段不需要改宿主。
+2. `lib/approval.js` 的 `#question()` 经新的 `factsFor(request)` 把 `origin` / `sensitive` 带进面板通知。
+   **`sensitive` 优先读结构字段**，只有拿不到时才从 reason 的措辞里回退推断 —— 结构字段不会漂移。
+3. `extension/sidepanel.js` 自己组句：`approval.wantsSite` = `要在 {site} 上使用 {tool}`，
+   `approval.note` = `这一步会改动页面或花钱，不只是读`（只在 `sensitive` 为真时出现）。
+4. 宿主的英文原话**降级为 `.approval-detail`**，且**只在没有 `site` 时**才显示 ——
+   有了 site，上面那句话已经说完它要说的事，再印一遍会让同一个 URL 在一张卡里出现两次。
+
+**顺带修掉一个我自己引入的缺陷**：`renderApproval` 的去重键原本只有 `id:answering`，
+于是**同一个 id 带着更完整的字段再次到达时（健康轮询追上通知）重绘被跳过**，卡片停在信息更少的那一版。
+键改为包含 `site` / `sensitive` / `reason`。**这一条是写新测试时被抓出来的**，不是事后想到的。
+
+**实测（不靠推断）**：
+- `extension/sidepanel.js` 里的去重键与卡片结构由 `test/panel-stream.test.js` 两条用例钉住
+  （自带句子 + 降级细节；`sensitive` 才出提示行）。
+- 探针 3199（junction 指向工作区）上跑 `facts-probe.mjs`，用 `page-tools.js` 真实构造的请求驱动中继：
+  `notified: {"sessionId":"session-probe","toolName":"browser_click","reason":"https://dl.acm.org: …","callId":"call-9","origin":"https://dl.acm.org","sensitive":true,"id":"panel-1","options":["allowed-once","rejected"]}`
+  → `has origin: true` / `has sensitive: true` / 作答 `{"answered":true,...,"outcome":"allowed-once"}` / `race result: allowed-once`。
+- 无头 Chrome 截图三种场景：有新事实 → 全中文两行；只有英文原话（旧宿主）→ 中文句子 + 降级细节；
+  两者都没有 → 「要用 browser_tool」。
+- `npm test` **390 passed / 0 failed / 0 skipped**；`npm run check:extension` exit 0。
+- **证伪三次**：宿主不再转发 origin → 1 红；面板改回原样渲染 `reason` → 2 红（含「字典不许有死键」）；
+  去重键退回 `id:answering` → 1 红。
+
+**交付：`lib/` + `extension/` 都改了 → 要重启 `dsh web` + 重载 Chrome 扩展。**
 
 #### v27：切换会话时，上一个会话的东西跟着过来了（本次修复）
 
@@ -1290,7 +1349,7 @@ v13 我已经在 health 里放了 `approvalPending`，**但面板从来没读它
 
 | 项 | 结果 |
 |---|---|
-| `npm test` | **386 passing, 0 failing, 0 skipped** |
+| `npm test` | **390 passing, 0 failing, 0 skipped** |
 | `npm run check:extension` | exit 0 |
 | **把 `content-selection.js` 换回 `git show HEAD:` 的那一版，再跑新测试** | **3 条变红**（接管、死副本被替换、失败后重试），换回新版全绿 → 测试确实能抓住这两个缺陷 |
 | 旧版跑「死副本被替换」用例 | 直接把进程打崩：`Error: Extension context invalidated.` —— 无人接管的 rejection，正是线上那个缺陷的真身 |
@@ -1629,7 +1688,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 386 条，含真实 Chrome 端到端
+└─ test/                  # 390 条，含真实 Chrome 端到端
 
 extension/
 ├─ manifest.json
