@@ -68,6 +68,10 @@ const host = {
   releaseCreate: null,
   /** When true, every request is refused, as if nothing were listening. */
   down: false,
+  /** Every `POST {action:'messages'}` body, in order. */
+  reads: [],
+  /** Whether the host says rows exist beyond the window it returned. */
+  more: false,
   /** The active tab the panel sees. `icon` is swapped per test. */
   tab: {
     id: 7,
@@ -194,7 +198,15 @@ globalThis.fetch = async (url, options = {}) => {
   if (address.includes('/browser-bridge/chat')) {
     if ((options.method ?? 'GET') === 'GET') return respond(groupsPayload())
     const body = options.body === undefined ? {} : JSON.parse(options.body)
-    if (body.action === 'messages') return respond({ sessionId: body.sessionId, messages: host.messages, title: host.title })
+    if (body.action === 'messages') {
+      host.reads.push(body)
+      return respond({
+        sessionId: body.sessionId,
+        messages: host.messages,
+        title: host.title,
+        more: host.more === true,
+      })
+    }
     if (body.action === 'models') return respond({ error: 'empty-catalog' })
     if (body.action === 'send') {
       host.sent.push(body)
@@ -557,6 +569,71 @@ test('the blocked surface clears itself the moment the host answers', async () =
   )
 })
 
+test('a conversation longer than one window offers a way back up, and takes it', async () => {
+  // A real session of the author's is 6969 rows, and the panel asked for 60 with
+  // no way to ask for more: the newest 0.9% of a conversation, presented as the
+  // whole of it.
+  await settleToIdle()
+  host.more = true
+  // The transcript poll is what re-reads; `settleToIdle` only settles a turn.
+  await clockOf('transcript')
+  host.reads.length = 0
+  await clockOf('transcript')
+
+  const earlier = registry.get('earlier')
+  assert.ok(earlier, 'the panel has no way back into the earlier part')
+  assert.equal(earlier.hidden, false, 'older rows exist and nothing offered them')
+  assert.equal(earlier.textContent, '更早的内容')
+
+  // Asking for earlier is the same read at a wider window, which is what keeps
+  // a poll and a page-back from disagreeing about what is on screen.
+  const firstLimit = Number(host.reads.at(-1).limit)
+  earlier.emit('click')
+  await settle()
+
+  const widened = Number(host.reads.at(-1).limit)
+  assert.equal(widened, firstLimit + 60, `the window did not widen: ${firstLimit} -> ${widened}`)
+
+  // And once the host says there is nothing above, the offer goes away rather
+  // than inviting a click that returns nothing.
+  host.more = false
+  await clockOf('transcript')
+  assert.equal(registry.get('earlier').hidden, true, 'the panel still offered rows that do not exist')
+})
+
+test('a conversation that fits offers nothing to load', async () => {
+  await settleToIdle()
+  assert.equal(host.more, false)
+  await clockOf('transcript')
+  assert.equal(registry.get('earlier').hidden, true)
+})
+
+test('the window resets when the session changes', async () => {
+  // Depth belongs to the session being read. Carried across a switch, a short
+  // conversation would open demanding the previous session's window from a host
+  // that has no such rows, and claim there was more above it.
+  await settleToIdle()
+  // The suite shares one panel, so get to a known view before depending on one.
+  if (currentViewInPanel() === 'history') {
+    registry.get('back').click()
+    await settle()
+  }
+  host.more = true
+  await clockOf('groups')
+  await clockOf('transcript')
+  registry.get('earlier').emit('click')
+  await settle()
+  assert.ok(Number(host.reads.at(-1).limit) > 60, 'the window never widened')
+
+  host.more = false
+  host.reads.length = 0
+  await switchTo(OTHER)
+  await settle()
+  assert.equal(Number(host.reads.at(-1).limit), 60, 'the new session inherited the old depth')
+
+  // Leave the shared panel where every other test expects it.
+  await switchTo(SESSION)
+})
 test('a start frame shows the waiting line and no empty live block', async () => {
   await idle()
   assert.equal(liveNode(), null, 'a live block was on screen before a turn began')

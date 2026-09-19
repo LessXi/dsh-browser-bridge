@@ -570,19 +570,32 @@ export function createChat(ports) {
   /**
    * Read one session's transcript.
    *
+   * `limit` is how many rows to return and `before` is how many rows to skip
+   * from the end, so the panel can walk backwards through a conversation that
+   * does not fit on screen. A long session is not unusual — one of the author's
+   * own is 6969 rows — and returning only the tail with no way to ask for more
+   * meant 99% of a conversation was unreachable.
+   *
    * @param {string} sessionId - The session.
    * @param {number} [limit] - Maximum rows.
-   * @returns {Promise<{ title: string, messages: object[] }>} The title and rows, newest last.
+   * @param {number} [before] - Rows to drop from the end first.
+   * @returns {Promise<{ title: string, messages: object[], more: boolean }>} The title, rows, and whether anything older remains.
    */
-  const readMessages = async (sessionId, limit) => {
+  const readMessages = async (sessionId, limit, before) => {
     const maximum = Number.isInteger(limit) && limit > 0 ? limit : DEFAULT_LIMIT
+    const skip = Number.isInteger(before) && before > 0 ? before : 0
     const replay = await readThrough(sessionId)
     const derived = titleFrom(replay.messages)
+    // Sliced from the end, so `before` walks back through the conversation and
+    // the newest row is always the last one returned.
+    const end = Math.max(0, replay.messages.length - skip)
+    const start = Math.max(0, end - maximum)
     return {
       // The listing is the authority on titles; a session that is not in the
       // list (a brand-new one, say) falls back to the transcript's own words.
       title: replay.title || knownTitles.get(sessionId) || derived,
-      messages: replay.messages.slice(-maximum),
+      messages: replay.messages.slice(start, end),
+      more: start > 0,
     }
   }
 

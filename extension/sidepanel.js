@@ -58,6 +58,16 @@ const NEAR_BOTTOM_PX = 24
 /** How long the transcript poll waits between reads while a turn runs. */
 const POLL_MS = 8000
 
+/**
+ * How many rows of a conversation the panel keeps on screen.
+ *
+ * Reads are windowed from the newest row, and this number grows by one page each
+ * time the reader asks for earlier rows. It is not a cache: the host returns the
+ * window and the panel replaces what it has, so a poll and a "load earlier" are
+ * the same request at two sizes.
+ */
+const PAGE_ROWS = 60
+
 const backButton = document.getElementById('back')
 const titleButton = document.getElementById('title')
 const titleText = document.getElementById('title-text')
@@ -65,6 +75,7 @@ const newButton = document.getElementById('new')
 const transcript = document.getElementById('transcript')
 const history = document.getElementById('history')
 const toBottom = document.getElementById('to-bottom')
+const earlierButton = document.getElementById('earlier')
 const toast = document.getElementById('toast')
 const surface = document.getElementById('blocked')
 const blockedTitle = document.getElementById('blocked-title')
@@ -99,6 +110,20 @@ let hostReachable = false
 let bridgeConnected = false
 /** Whether a retry from the blocked surface is in flight. */
 let retrying = false
+/** Whether the host says older rows exist beyond the window on screen. */
+let hasEarlier = false
+/** How many rows of the current conversation the panel is showing. */
+let depth = PAGE_ROWS
+/** Whether a "load earlier" request is in flight. */
+let loadingEarlier = false
+/**
+ * Set by `loadEarlier` so the next `drawTranscript` holds the reading position.
+ *
+ * A one-shot flag rather than a parameter because the redraw happens inside
+ * `refreshTranscript`, which the poll and the send path also call — threading it
+ * through would give those two a meaningless argument to pass.
+ */
+let grewEarlier = false
 /** Whether the host answered, but with a shape this panel does not understand. */
 let hostStale = false
 /** Whether the shown selection should travel with the next send. */
@@ -1089,6 +1114,11 @@ function drawTranscript(next) {
 
   const keep = transcript.scrollTop
   const followed = stickToBottom
+  // Loading earlier rows grows the list above the reader. Without measuring what
+  // was added, `scrollTop` would keep pointing at the same offset from the top of
+  // a now-taller list, which scrolls the text they were reading off the bottom of
+  // the screen — the same jump the poll used to cause, arriving by a new route.
+  const before = transcript.scrollHeight
   const fragment = document.createDocumentFragment()
   next.forEach((row, index) => fragment.append(renderRow(row, index)))
 
@@ -1100,9 +1130,46 @@ function drawTranscript(next) {
   renderApproval()
 
   if (followed) transcript.scrollTop = transcript.scrollHeight
+  else if (grewEarlier) transcript.scrollTop = keep + (transcript.scrollHeight - before)
   else transcript.scrollTop = keep
+  grewEarlier = false
   stickToBottom = atBottom()
   updateToBottom()
+}
+
+/**
+ * Load one more page of older rows, keeping the reader where they were.
+ *
+ * `grewEarlier` tells `drawTranscript` to hold the reading position rather than
+ * restore the raw scroll offset, which is the difference between "the page above
+ * me appeared" and "the text I was reading jumped off the screen".
+ *
+ * @returns {Promise<void>} Resolves once the older page has been drawn.
+ */
+async function loadEarlier() {
+  if (loadingEarlier || !hasEarlier) return
+  loadingEarlier = true
+  renderEarlier()
+  const wanted = depth + PAGE_ROWS
+  try {
+    // The read is the same request the poll makes, one page wider; the drawn
+    // position is held by `grewEarlier` rather than by remembering a row.
+    grewEarlier = true
+    depth = wanted
+    await refreshTranscript()
+  } finally {
+    loadingEarlier = false
+    renderEarlier()
+  }
+}
+
+/** Show or hide the way back into the earlier part of the conversation. */
+function renderEarlier() {
+  const wanted = view === 'chat' && hasEarlier
+  earlierButton.hidden = !wanted
+  if (!wanted) return
+  earlierButton.disabled = loadingEarlier
+  earlierButton.textContent = loadingEarlier ? t('transcript.loading') : t('transcript.earlier')
 }
 
 /** Show the waiting row while the session has a turn in flight. */
@@ -1407,12 +1474,23 @@ async function refreshTranscript() {
   if (currentSessionId.length === 0) {
     drawnSignature = ''
     rows = []
+    hasEarlier = false
     transcript.replaceChildren()
+    renderEarlier()
     return
   }
   const { payload, status } = await bridge('/browser-bridge/chat', {
     method: 'POST',
-    body: { action: 'messages', sessionId: currentSessionId, limit: 60 },
+    body: {
+      action: 'messages',
+      sessionId: currentSessionId,
+      // How many rows to show, counted from the newest. The panel asks for a
+      // window rather than for a page plus an offset, so a poll and a "load
+      // earlier" are the same request at two sizes and there is no overlap to
+      // de-duplicate: the window slides, and the reader's depth is the only
+      // state that grows.
+      limit: depth,
+    },
   })
   if (status === 0) {
     setHostReachable(false)
@@ -1426,7 +1504,9 @@ async function refreshTranscript() {
     session.title = payload.title
     renderTitle()
   }
+  hasEarlier = payload?.more === true
   drawTranscript(messages)
+  renderEarlier()
 }
 
 /**
@@ -1570,10 +1650,12 @@ function showView(next) {
   // hidden. So a switch in either direction has to repaint all three: leaving
   // without this leaves the waiting row and the live block sitting on a hidden
   // transcript, and coming back without it drops the nodes a reply streamed into
-  // while the history was open.
+  // while the history was open. `renderEarlier` belongs to that set as well —
+  // it is positioned over the stage, so it would float above the history list.
   renderLive()
   renderWorking()
   renderApproval()
+  renderEarlier()
   updateToBottom()
 }
 
@@ -1754,6 +1836,13 @@ function selectSession(sessionId) {
     live = null
     pendingApproval = null
     mentioned = null
+    // Windowed state belongs to the session too: carried across, a conversation
+    // would open already scrolled to some other session's depth, showing rows
+    // that the new session does not have and claiming there is more above them.
+    depth = PAGE_ROWS
+    hasEarlier = false
+    grewEarlier = false
+    loadingEarlier = false
     restoreDraft()
   }
   const session = currentSession()
@@ -2194,6 +2283,10 @@ toBottom.addEventListener('click', () => {
   stickToBottom = true
   transcript.scrollTop = transcript.scrollHeight
   updateToBottom()
+})
+
+earlierButton.addEventListener('click', () => {
+  loadEarlier().catch((error) => say(t('error.generic', { reason: error.message })))
 })
 
 /**

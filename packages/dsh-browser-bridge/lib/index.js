@@ -541,8 +541,8 @@ export async function apply(ctx, _config) {
         // One reader for both cases: the controller answers from memory for a
         // live session and from the log for a cold one, so there is no second
         // code path to drift.
-        const { messages, title } = await chat.readMessages(sessionId, parsed.limit)
-        json(200, { sessionId, messages, title })
+        const { messages, title, more } = await chat.readMessages(sessionId, parsed.limit, parsed.before)
+        json(200, { sessionId, messages, title, more })
         return
       }
       if (parsed.action === 'create') {

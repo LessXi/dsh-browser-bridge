@@ -374,6 +374,39 @@ test('a read reports a title and a bounded number of rows', async () => {
   assert.deepEqual(messages.map((row) => row.kind), ['tool', 'assistant'])
 })
 
+test('a long transcript can be walked backwards, one screen at a time', async () => {
+  // A real session of the author's is 6969 rows and the panel asked for 60, so
+  // 99% of the conversation was unreachable with no way to ask for more. `before`
+  // is how many rows to skip from the end, which is what makes paging back
+  // possible without renumbering anything.
+  const events = []
+  for (let at = 0; at < 12; at += 1) events.push(userEvent(`line ${at}`))
+  const { chat } = chatWith([item('session-a')], { events })
+
+  const newest = await chat.readMessages('session-a', 4)
+  assert.deepEqual(newest.messages.map((row) => row.text), ['line 8', 'line 9', 'line 10', 'line 11'])
+  assert.equal(newest.more, true, 'older rows exist and the panel was not told')
+
+  const earlier = await chat.readMessages('session-a', 4, 4)
+  assert.deepEqual(earlier.messages.map((row) => row.text), ['line 4', 'line 5', 'line 6', 'line 7'])
+  assert.equal(earlier.more, true)
+
+  const oldest = await chat.readMessages('session-a', 4, 8)
+  assert.deepEqual(oldest.messages.map((row) => row.text), ['line 0', 'line 1', 'line 2', 'line 3'])
+  assert.equal(oldest.more, false, 'the start of the transcript still claimed more')
+
+  // Past the beginning is empty, not an error and not a wrapped-around tail.
+  const beyond = await chat.readMessages('session-a', 4, 40)
+  assert.deepEqual(beyond.messages, [])
+  assert.equal(beyond.more, false)
+})
+
+test('a transcript that fits is not advertised as having more', async () => {
+  const { chat } = chatWith([item('session-a')], { events: [userEvent('only')] })
+  const page = await chat.readMessages('session-a', 60)
+  assert.equal(page.more, false, 'the panel would offer to load rows that do not exist')
+})
+
 test('a title falls back from the header to the listing to the transcript', async () => {
   const header = chatWith([item('session-a')], { events: [userEvent('explain the parser')] })
   assert.equal((await header.chat.readMessages('session-a')).title, 'from the header')
@@ -449,7 +482,7 @@ test('a read returns an empty transcript rather than throwing', async () => {
       },
     },
   })
-  assert.deepEqual(await chat.readMessages('session-a'), { title: '', messages: [] })
+  assert.deepEqual(await chat.readMessages('session-a'), { title: '', messages: [], more: false })
 })
 
 // ---------------------------------------------------------------------------

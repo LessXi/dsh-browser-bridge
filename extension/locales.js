@@ -61,6 +61,11 @@ export const zh = Object.freeze({
 
   // The composer and its attachments.
   'composer.placeholder': '问点什么…',
+  // The way back into a conversation longer than one window. A long session is
+  // not unusual — one of the author's own is 6969 rows, of which the panel used
+  // to show the last 60 with no indication that anything was missing.
+  'transcript.earlier': '更早的内容',
+  'transcript.loading': '加载中…',
   'context.tab': '当前标签页',
   'context.selection': '选中内容',
   // Shown on the attachment chip only while the extension is not attached to the
@@ -177,6 +182,8 @@ export const en = Object.freeze({
   'session.running': 'Working',
 
   'composer.placeholder': 'Ask anything…',
+  'transcript.earlier': 'Earlier messages',
+  'transcript.loading': 'Loading…',
   'context.tab': 'this tab',
   'context.selection': 'the selection',
   'context.offline': 'Offline',

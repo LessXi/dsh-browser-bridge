@@ -249,7 +249,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 396 条
+npm test                          # 全部 401 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -275,7 +275,7 @@ npm run check:extension           # 扩展脚本语法检查（Chrome 加载前�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 396 条
+npm test                 # 401 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -288,7 +288,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 不会把 `@deepseek-ai/*` 拉下来。宿主库由 `lib/deps.js` 在运行时从
 `$DSH_HOME/profiles/node_modules` 解析。
 
-**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **396 passing, 0 failing, 0 skipped**，
+**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **401 passing, 0 failing, 0 skipped**，
 `npm run check:extension` exit 0。前提是这台机器上装过 DSH（宿主库要能解析到）。
 
 **验证环境**：Node **v24.15.0**。两个 `package.json` 里的 `engines.node: ">=20"` 是**保守下限**，
@@ -306,7 +306,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面四层测试，396 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
+**已自动化验证**：上面四层测试，401 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
 
 侧边栏那部分还有一组**静态**检查，防止语言和版式漂回去：两个字典的键必须完全一致、面板里每个
 `t('…')` 的键都必须存在、HTML 里不允许残留裸文案、旧版文案一个都不许出现、**字典里不允许出现整句
@@ -364,6 +364,52 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 「宿主聚合 → 走 `notify` → service worker 转给面板 → 面板逐字画出来」这一段由
 `test/stream.test.js`（真 socket 上的帧形状）+ `test/panel-stream.test.js`（真跑面板模块）分段覆盖，
 **中间那一跳（Chrome 的 `chrome.runtime.sendMessage`）只做了结构断言，没有在真 Chrome 里点过**。
+
+#### v33：一个会话有 6969 行，面板只给你看最后 60 行（本次修复）
+
+**症状（量出来的，不是猜的）**：拿用户自己的会话 `session-44c33409`（标题「打造类似codex的dsh网页插件」）
+向线上 3080 请求：
+
+| 请求 | 返回 |
+|---|---|
+| `limit: 60` | 60 行 |
+| `limit: 20000` | **6969 行** |
+
+面板写死 `limit: 60`，**而且没有任何提示说明上面还有别的**，也没有任何办法往回走。
+99.1% 的对话在面板里**根本不存在** —— 这不是「少了一点」，是**一段长对话被静默地截成了尾巴**。
+
+**修法：把「页码」换成「窗口」**
+- 宿主 `lib/chat.js` 的 `readMessages(sessionId, limit, before)` 新增 `before`（从末尾往前跳过多少行），
+  并返回 `more`（前面还有没有）。切片从末尾算起，所以**最新的一行永远是返回的最后一行**。
+- 面板不再存「已取到的行」再拼接，而是**请求一个从最新往回数的窗口**：
+  `depth` 从 60 起，点一次「更早的内容」加 60。
+  **这样轮询和翻页是同一个请求的两种尺寸**，不存在两段数据重叠或对不上的可能。
+- 面板顶部新增一个胶囊按钮「更早的内容」（`#earlier`），
+  **只在宿主说 `more` 时才出现**，加载中显示「加载中…」并禁用。
+
+**另一个坑（必须记住）**：翻页会把新行插在**读者正在看的内容上方**，
+如果只恢复原来的 `scrollTop`，读者正在读的那段会被顶到屏幕下方 ——
+这正是当初轮询导致的「它自己滚下去了」，只是换了一条路来。
+所以在 `drawTranscript` 里量了 `scrollHeight` 的增量，用 `grewEarlier`（一次性标记）
+把 `scrollTop` 补上这个增量，**翻页后读者眼前还是同一段文字**。
+
+**测试**：`npm test` **401 passed / 0 failed**；`check:extension` exit 0。
+- 宿主新增 2 条：12 行的会话按 4 行一页往回走，**每页内容与 `more` 都断言**；
+  超出开头返回空且 `more=false`（不是回绕的尾巴）；短会话**不许**声称还有更多。
+- 面板新增 3 条：有更早内容时按钮出现、点一下**窗口确实从 60 变 120**、
+  `more` 变 false 后按钮消失、**切换会话时窗口重置回 60**。
+- 夹具新增 `host.down` / `host.reads` / `host.more`。**此前桩永远返回全部行且没有 `more` 字段，
+  所以「会话比一屏长」这个状态是不可测的** —— 这也是它活了 33 轮的原因。
+
+**证伪三次**（各自命中不同断言）：窗口不增长 → 3 红；宿主忽略 `before` → 1 红；
+切换会话不重置窗口 → 6 红。
+
+**探针实测（真实宿主，3199）**：新建会话发 3 轮后共 6 行；
+`limit=1` → 1 行 `more=True`；`limit=2` → 2 行 `more=True`；
+**逐行往回走到头再拼起来，与一次性读到的全文逐字节相等（`TILES EXACTLY: True`）**；
+`before=999` → 0 行 `more=False`。
+
+**交付要求**：`lib/` + `extension/` 都改了 → **重启 `dsh web` + 重载 Chrome 扩展**。
 
 #### v32：连不上宿主时，面板把最大的一块区域留成了空白（本次修复）
 
@@ -1484,7 +1530,7 @@ v13 我已经在 health 里放了 `approvalPending`，**但面板从来没读它
 
 | 项 | 结果 |
 |---|---|
-| `npm test` | **396 passing, 0 failing, 0 skipped** |
+| `npm test` | **401 passing, 0 failing, 0 skipped** |
 | `npm run check:extension` | exit 0 |
 | **把 `content-selection.js` 换回 `git show HEAD:` 的那一版，再跑新测试** | **3 条变红**（接管、死副本被替换、失败后重试），换回新版全绿 → 测试确实能抓住这两个缺陷 |
 | 旧版跑「死副本被替换」用例 | 直接把进程打崩：`Error: Extension context invalidated.` —— 无人接管的 rejection，正是线上那个缺陷的真身 |
@@ -1823,7 +1869,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 396 条，含真实 Chrome 端到端
+└─ test/                  # 401 条，含真实 Chrome 端到端
 
 extension/
 ├─ manifest.json

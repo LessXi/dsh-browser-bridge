@@ -558,6 +558,27 @@
       }
       #to-bottom:hover { color: CanvasText; }
 
+      /* ---- the way back up, into the part of the conversation not loaded ---- */
+      /* A pill at the top of the scroll area rather than a row inside it: a row
+         scrolls away exactly when it is needed, and the reader who has just
+         scrolled up is looking at the top of the viewport. */
+      #earlier {
+        position: absolute;
+        left: 50%;
+        top: 8px;
+        transform: translateX(-50%);
+        height: 26px;
+        padding: 0 12px;
+        border-radius: 999px;
+        background: Canvas;
+        box-shadow: var(--elevation);
+        color: var(--muted);
+        font-size: var(--text-xs);
+        z-index: 2;
+      }
+      #earlier:hover:not(:disabled) { color: CanvasText; }
+      #earlier:disabled { color: var(--faint); cursor: default; }
+
       /* ---- history ---- */
       .group-label {
         padding: 10px 10px 2px;
@@ -797,6 +818,7 @@
     <div id="stage">
       <main id="transcript" class="scroll"></main>
       <section id="history" class="scroll" hidden></section>
+      <button id="earlier" type="button" hidden></button>
       <button id="to-bottom" type="button" hidden></button>
       <!--
         What the panel says when it cannot work at all. The original's status
