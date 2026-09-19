@@ -1420,6 +1420,16 @@ function drawHistory() {
       label.className = 'group-label'
       label.textContent = group.title
       fragment.append(label)
+    } else {
+      // The bucket for sessions whose directory is not a registered workspace.
+      // It used to draw no label at all, so a run of rows appeared under the
+      // previous workspace's heading and read as belonging to it. DSH's own
+      // sidebar shows the same bucket under 「未分组」, so the word is the
+      // harness's rather than one this panel invented.
+      const label = document.createElement('p')
+      label.className = 'group-label'
+      label.textContent = t('history.ungrouped')
+      fragment.append(label)
     }
 
     for (const session of visible) {

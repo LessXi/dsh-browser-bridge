@@ -46,6 +46,10 @@ export const zh = Object.freeze({
 
   // The history view.
   'history.empty': '还没有会话',
+  // The bucket for sessions whose directory is not a registered workspace. DSH's
+  // own sidebar has the same bucket and names it 「未分组」, so this is its word
+  // rather than one of ours.
+  'history.ungrouped': '未分组',
   'tabs.title': '受控标签页',
   'tabs.none': '没有受控标签页',
   'tabs.untitled': '（无标题）',
@@ -159,6 +163,7 @@ export const en = Object.freeze({
   'action.copied': 'Copied',
 
   'history.empty': 'No chats yet',
+  'history.ungrouped': 'Ungrouped',
   'tabs.title': 'Controlled tabs',
   'tabs.none': 'No controlled tabs',
   'tabs.untitled': '(untitled)',

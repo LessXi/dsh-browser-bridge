@@ -44,6 +44,8 @@ const OTHER = 'session-0f1e2d3c-4b5a-4c6d-8e7f-901234567890'
 const host = {
   messages: [],
   title: 'A session',
+  /** The workspace heading the list is drawn under; `''` is the ungrouped bucket. */
+  groupTitle: 'A workspace',
   running: false,
   requests: [],
   /** Every `POST {action:'send'}` body, in order. */
@@ -108,7 +110,10 @@ const groupsPayload = () => ({
   groups: [
     {
       id: 'workspace-1',
-      title: 'A workspace',
+      // Overridable so the ungrouped bucket — the host's `title: ''` — is
+      // reachable from a test. A real host sends it whenever a session's
+      // directory is not a registered workspace, which is common.
+      title: host.groupTitle,
       sessions: [
         { id: SESSION, title: 'A session', updatedAt: 0, running: host.running, blank: false },
         // Listed, so a test can switch to it by clicking the row. Without a
@@ -1933,4 +1938,37 @@ test('dismissing a mentioned tab takes its chip away and stops it travelling', a
     false,
     'the dismissed mention still travelled',
   )
+})
+
+test('the ungrouped bucket is named, instead of borrowing the heading above it', async () => {
+  // The host sends `title: ''` for every session whose directory is not a
+  // registered workspace, which is an ordinary case rather than an edge one:
+  // the user's own list has three such sessions. The panel drew no heading for
+  // that bucket, so its rows sat under the previous workspace's name and read as
+  // members of it. DSH's sidebar names the same bucket, so the label is its word.
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    host.groupTitle = ''
+    await clockOf('groups')
+    registry.get('title').click()
+    await settle()
+
+    const labels = registry
+      .get('history')
+      .querySelectorAll('p')
+      .filter((node) => node.className === 'group-label')
+      .map((node) => node.textContent)
+    assert.ok(
+      labels.includes('未分组'),
+      `the ungrouped rows have no heading: ${JSON.stringify(labels)}`,
+    )
+
+    // Put it back, so a later test does not inherit an unnamed workspace.
+    host.groupTitle = 'A workspace'
+    await clockOf('groups')
+    if (currentViewInPanel() === 'history') {
+      registry.get('title').click()
+      await settle()
+    }
+  })
 })
