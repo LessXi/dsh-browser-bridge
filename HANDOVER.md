@@ -1,14 +1,44 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v37 已交付。** 下一节就是最新的一轮改动；下面标 v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v37 那一段为止即可。
+> **当前状态：v38 已交付。** 下一节就是最新的一轮改动；下面标 v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v38 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（422 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（426 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 >
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
+
+> ### v38：三个不同的问题，长得一模一样（扩展侧，本次修复）
+>
+> **症状**：扩展没连上宿主时，面板只在 chip 上写一个红色的「未连接」。
+> **为什么是缺陷**：这一个词同时代表**三件解法互不相同**的事 ——
+> 从没填过令牌（去设置页粘贴）/ `dsh web` 没在跑（启动它）/ worker 还没醒（等一秒）。
+> 扩展**一直知道**原因（`background.js` 的 `lastError = 'no token saved'`），
+> **只是从来没告诉过面板**。
+>
+> **修法**：宿主说「是不是」，worker 说「为什么」，面板说人话。
+> - `extension/background.js` 新增 `bridgeState()` → `{ open, connecting, reason: 'no-token'|'connecting'|'refused', detail, version }`
+>   （**代码不是句子**：措辞属于知道读者语言的面板）。
+> - 新增面板→worker 消息 `dsh-bridge-state` 与 `dsh-bridge-retry`。
+>   **面板自己开不了 socket**（socket 属于 worker），所以只能请求、不能重连。
+> - chip 变成按钮：「没填令牌」/「未连接」，点击让 worker 重连；
+>   `no-token` 直接 `openOptionsPage()`。与站点 chip **并列**（两件不同的事），
+>   **只在宿主可达时显示**（宿主不可达已有整块状态面 + 重试按钮）。
+>
+> **顺带修掉一个真会卡死的分支**：`connect()` 在「没令牌」时**直接 return** ——
+> 不但不重连，还**不挂 keepalive 闹钟**，worker 可能在用户去填令牌前就被回收，
+> **面板的重试按钮将没有东西应答它**。现在也走 `scheduleReconnect()`。
+>
+> **测试 426 条**。**夹具教训**：`sendMessage` 此前恒返回 `{}`、`openOptionsPage` 是空函数，
+> **所以这两条路径根本不可测**。新增 `host.bridgeConnected` / `host.bridgeState` /
+> `host.runtimeMessages` / `host.openedOptions`；`bridgeConnected` 与 `bridgeState` **故意分开** ——
+> 宿主只知道「是否连上」，worker 才知道「为什么」，合成一个字段就表达不出「连着但 worker 说没令牌」。
+>
+> **证伪三次**：worker 不应答 `dsh-bridge-state` → 1 红；没令牌时不挂重连 → 1 红；
+> chip 退回只说「未连接」 → 2 红（含死键检查）。
+> **交付要求**：只改 `extension/` → **重载 Chrome 扩展**（不需要重启 `dsh web`）。
 
 > ### v37：量了 7000 行会话的性能 —— 没有找到缺陷（无代码改动）
 >

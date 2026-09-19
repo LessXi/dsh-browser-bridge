@@ -336,3 +336,30 @@ test('the panel re-reads the selection when the active tab changes', (t) => {
     'without this the chip keeps describing the tab the panel was opened on',
   )
 })
+
+test('the service worker answers the panel about the bridge, and can be asked to retry', (t) => {
+  // The socket belongs to the worker, so the panel cannot open it, explain it,
+  // or even see why it is closed. Without these two messages the panel's only
+  // option was a red chip reading 「未连接」 — identical for a missing token, a
+  // host that is not running, and a worker that has not woken up.
+  const source = readExtensionFile('background.js')
+  assert.ok(source.includes("message?.type === 'dsh-bridge-state'"), 'the panel cannot ask why')
+  assert.ok(source.includes("message?.type === 'dsh-bridge-retry'"), 'the panel cannot ask it to try again')
+  assert.ok(/function bridgeState\(\)/.test(source), 'there is no single place that decides the answer')
+  // A code, not a sentence: the panel is the surface that knows the reader's
+  // language, and the worker does not.
+  for (const reason of ["'no-token'", "'connecting'", "'refused'"]) {
+    assert.ok(source.includes(reason), `the worker never reports ${reason}`)
+  }
+})
+
+test('a missing token schedules a retry instead of giving up', (t) => {
+  // It used to `return` outright, which also stopped the keepalive alarm — so
+  // the worker could be evicted before anyone pasted a token, and the panel's
+  // retry button would have nothing left to answer it.
+  const source = readExtensionFile('background.js')
+  const at = source.indexOf("lastError = 'no token saved'")
+  assert.ok(at > 0, 'the no-token branch is gone')
+  const branch = source.slice(at, at + 400)
+  assert.ok(/scheduleReconnect\(\)/.test(branch), 'a missing token still gives up silently')
+})

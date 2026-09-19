@@ -131,6 +131,37 @@ let lastError = ''
 let connectedAt
 let connectionCount = 0
 
+/**
+ * What the panel needs to know about the bridge, and why it is not up.
+ *
+ * Reported as a code rather than a sentence: the wording belongs to the panel,
+ * which is the surface that knows the reader's language. `lastError` stays for
+ * the options page and the log, where a developer is the reader.
+ *
+ * @returns {{ open: boolean, connecting: boolean, reason: string, detail: string, version: string }} The state.
+ */
+function bridgeState() {
+  const readyState = socket?.readyState
+  const open = readyState === WebSocket.OPEN
+  const connecting = readyState === WebSocket.CONNECTING
+  // Ordered by what the person can do about it: a missing token is theirs to
+  // fix, an unreachable host is theirs to start, and anything else is a retry.
+  const reason = open
+    ? ''
+    : lastError === 'no token saved'
+      ? 'no-token'
+      : lastError !== ''
+        ? 'refused'
+        : 'connecting'
+  return {
+    open,
+    connecting,
+    reason,
+    detail: lastError,
+    version: chrome.runtime.getManifest().version,
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Connection
 // ─────────────────────────────────────────────────────────────────────────────
@@ -158,7 +189,12 @@ async function connect() {
 
   const { port, token } = await readSettings()
   if (token.length === 0) {
-    lastError = 'no token saved — open the extension options and paste the token from DSH Settings → Plugins'
+    lastError = 'no token saved'
+    // Still scheduled, unlike a plain return. Without a token there is nothing
+    // to retry until someone saves one, but the alarm is also what keeps this
+    // worker alive long enough to notice that they did — and the panel's retry
+    // button is a message to this worker, which has to exist to receive it.
+    scheduleReconnect()
     return
   }
 
@@ -1488,6 +1524,25 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 })
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // The panel asking whether the bridge is up, and asking it to try again.
+  //
+  // The panel cannot open this socket itself — it is a document, and the socket
+  // belongs to the worker — so "the extension is not connected" is a state only
+  // the worker can explain or change. Before this the panel showed a red
+  // 「未连接」 chip with no reason and nothing to press: a saved-token problem and
+  // a host that is not running looked identical, and neither could be acted on.
+  if (message?.type === 'dsh-bridge-state') {
+    sendResponse({ ok: true, state: bridgeState() })
+    return true
+  }
+  if (message?.type === 'dsh-bridge-retry') {
+    // `connect()` no-ops on an open socket, so pressing this while connected
+    // costs nothing.
+    connect()
+      .then(() => sendResponse({ ok: true, state: bridgeState() }))
+      .catch((error) => sendResponse({ ok: false, state: bridgeState(), reason: error?.message }))
+    return true
+  }
   if (message?.type !== 'dsh-selection') return false
   const tabId = sender.tab?.id
   const payload = {

@@ -72,6 +72,21 @@ const host = {
   reads: [],
   /** Whether the host says rows exist beyond the window it returned. */
   more: false,
+  /**
+   * Whether the host's health answer reports the extension as attached.
+   *
+   * Distinct from `bridgeState` on purpose: the host only knows *whether*, and
+   * the worker knows *why*. A fixture that tied them together could not express
+   * "attached but the worker says it has no token", which is the state the
+   * offline chip exists to explain.
+   */
+  bridgeConnected: true,
+  /** What the worker answers to `dsh-bridge-state` / `dsh-bridge-retry`. */
+  bridgeState: { open: true, connecting: false, reason: '', detail: '', version: '0.4.0' },
+  /** Every message the panel sent to the service worker, in order. */
+  runtimeMessages: [],
+  /** How many times the panel opened the options page. */
+  openedOptions: 0,
   /** The active tab the panel sees. `icon` is swapped per test. */
   tab: {
     id: 7,
@@ -160,9 +175,21 @@ globalThis.chrome = {
   i18n: { getUILanguage: () => 'zh-CN' },
   runtime: {
     onMessage: { addListener: (listener) => inbox.push(listener) },
-    sendMessage: async () => {},
-    openOptionsPage: async () => {},
-    getManifest: () => ({ version: '0.3.0' }),
+    // The panel asks the service worker two things it cannot know on its own:
+    // whether the bridge is up, and why not. Both are recorded, because a
+    // message the panel never sends and a message the worker never answers look
+    // the same from the screen.
+    sendMessage: async (message) => {
+      host.runtimeMessages.push(message ?? {})
+      if (message?.type === 'dsh-bridge-state' || message?.type === 'dsh-bridge-retry') {
+        return { ok: true, state: host.bridgeState }
+      }
+      return {}
+    },
+    openOptionsPage: async () => {
+      host.openedOptions += 1
+    },
+    getManifest: () => ({ version: '0.4.0' }),
     lastError: undefined,
   },
   tabs: {
@@ -234,7 +261,9 @@ globalThis.fetch = async (url, options = {}) => {
     }
     return respond({ accepted: true })
   }
-  if (address.includes('/browser-bridge/health')) return respond({ connected: true, ...host.health })
+  if (address.includes('/browser-bridge/health')) {
+    return respond({ connected: host.bridgeConnected, ...host.health })
+  }
   return realFetch === undefined ? respond({}) : realFetch(url, options)
 }
 
@@ -318,6 +347,20 @@ async function clockOf(name) {
 
 const liveNode = () => transcript.querySelector('.live')
 const liveBody = () => transcript.querySelector('.live-body')
+
+/**
+ * The offline chip, which is a button rather than a span.
+ *
+ * Split out because `tabChip` and `selectionChip` scan spans, and this one is a
+ * control — the state it reports has an action, so it had to become pressable
+ * and stopped being visible to those two helpers.
+ *
+ * @returns {object|undefined} The chip, when the bridge is down.
+ */
+const bridgeChip = () => contexts.querySelectorAll('button').find((node) => node.className.includes('chip'))
+
+/** How many chips are on the row, spans and the offline button together. */
+const offlineChipCount = () => chipCount() + contexts.querySelectorAll('button').filter((node) => node.className.includes('chip')).length
 
 /**
  * The chip describing the current tab.
@@ -634,6 +677,48 @@ test('the window resets when the session changes', async () => {
   // Leave the shared panel where every other test expects it.
   await switchTo(SESSION)
 })
+test('an unconnected bridge says which problem it is, and can be retried', async () => {
+  // 「未连接」 made three different problems identical: no token saved, a host
+  // that is not running, and a worker that has not woken up. The first is fixed
+  // in the options page and the third by waiting a second, so a chip that says
+  // only "offline" leaves the reader with nothing to do.
+  await onStoppedClock(async () => {
+    host.bridgeConnected = false
+    host.bridgeState = { open: false, connecting: false, reason: 'no-token', detail: 'no token saved' }
+    await pollHealth()
+
+    const chip = bridgeChip()
+    assert.ok(chip, `the offline state showed no chip at all (chips: ${JSON.stringify(contexts.querySelectorAll('span').map((n) => n.textContent))})`)
+    assert.equal(chip.textContent, '没填令牌', 'the chip did not name the problem')
+    assert.equal(chip.title, '点击让它重新连接')
+
+    // Pressing it asks the worker, which is the only thing that can open the
+    // socket, and sends the reader to the page where the token is pasted.
+    chip.emit('click')
+    await settle()
+    assert.ok(
+      host.runtimeMessages.some((entry) => entry.type === 'dsh-bridge-retry'),
+      'the chip never asked the worker to retry',
+    )
+    assert.ok(host.openedOptions >= 1, 'a missing token did not open the options page')
+  })
+})
+
+test('a bridge that is merely waking up is not reported as a token problem', async () => {
+  await onStoppedClock(async () => {
+    host.bridgeConnected = false
+    host.bridgeState = { open: false, connecting: true, reason: 'connecting', detail: '' }
+    await pollHealth()
+    assert.equal(bridgeChip()?.textContent, '未连接')
+
+    // And the moment the host says it is attached, the chip goes away.
+    host.bridgeConnected = true
+    await pollHealth()
+    assert.equal(bridgeChip(), undefined, 'the offline chip outlived the problem')
+    assert.equal(offlineChipCount(), 1, 'the site chip did not come back in its place')
+  })
+})
+
 test('a start frame shows the waiting line and no empty live block', async () => {
   await idle()
   assert.equal(liveNode(), null, 'a live block was on screen before a turn began')

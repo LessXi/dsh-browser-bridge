@@ -249,7 +249,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 422 条
+npm test                          # 全部 426 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -275,7 +275,7 @@ npm run check:extension           # 扩展脚本语法检查（Chrome 加载前�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 422 条
+npm test                 # 426 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -288,7 +288,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 不会把 `@deepseek-ai/*` 拉下来。宿主库由 `lib/deps.js` 在运行时从
 `$DSH_HOME/profiles/node_modules` 解析。
 
-**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **422 passing, 0 failing, 0 skipped**，
+**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **426 passing, 0 failing, 0 skipped**，
 `npm run check:extension` exit 0。前提是这台机器上装过 DSH（宿主库要能解析到）。
 
 **验证环境**：Node **v24.15.0**。两个 `package.json` 里的 `engines.node: ">=20"` 是**保守下限**，
@@ -306,7 +306,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面四层测试，422 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
+**已自动化验证**：上面四层测试，426 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
 
 侧边栏那部分还有一组**静态**检查，防止语言和版式漂回去：两个字典的键必须完全一致、面板里每个
 `t('…')` 的键都必须存在、HTML 里不允许残留裸文案、旧版文案一个都不许出现、**字典里不允许出现整句
@@ -364,6 +364,52 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 「宿主聚合 → 走 `notify` → service worker 转给面板 → 面板逐字画出来」这一段由
 `test/stream.test.js`（真 socket 上的帧形状）+ `test/panel-stream.test.js`（真跑面板模块）分段覆盖，
 **中间那一跳（Chrome 的 `chrome.runtime.sendMessage`）只做了结构断言，没有在真 Chrome 里点过**。
+
+#### v38：三个不同的问题，长得一模一样（本次修复）
+
+**症状**：扩展没连上宿主时，面板只在 chip 上写一个红色的「未连接」。
+
+**为什么这是缺陷**：这一个词同时代表**三件完全不同的事**，而三件事的解法**互不相同**：
+
+| 真实原因 | 怎么解决 |
+|---|---|
+| 从没填过令牌 | 去设置页粘贴令牌 |
+| `dsh web` 没在跑 | 启动 `dsh web` |
+| service worker 还没醒 | 等一秒 |
+
+三者在屏幕上**完全一样**，用户只能猜。而「填令牌」还是唯一一个**用户必须自己去做、
+别的地方都不知道**的状态 —— 扩展其实一直知道（`background.js` 里 `lastError = 'no token saved'`），
+**只是从来没告诉过面板**。
+
+**修法：宿主说「是不是」，worker 说「为什么」，面板说人话**
+- `extension/background.js` 新增 `bridgeState()`，返回**代码**而不是句子：
+  `{ open, connecting, reason: 'no-token' | 'connecting' | 'refused', detail, version }` ——
+  措辞属于知道读者语言的那一面（面板），不属于 worker。
+- 新增两条面板→worker 消息：`dsh-bridge-state`（问）与 `dsh-bridge-retry`（让它现在就连）。
+  **面板自己开不了这个 socket** —— socket 属于 worker，所以面板只能请求，不能重连。
+- `extension/sidepanel.js` 的 chip 变成**按钮**，写「没填令牌」或「未连接」，点一下就让 worker 重连；
+  `no-token` 时直接 `openOptionsPage()` —— 这是唯一一个**有真实去处**的分支。
+  chip 与站点 chip **并列出现**（「哪个页面在前」和「桥接通没通」是两件事），
+  **只在宿主可达时才显示**（宿主不可达已有整块的状态面 + 重试按钮，一个问题上两个重试按钮更糟）。
+
+**顺带修掉一个真的会卡死的分支**：`connect()` 在「没令牌」时**直接 `return`** ——
+它不仅不重连，还**不挂 keepalive 闹钟**，所以 worker 可能在用户去填令牌之前就被回收，
+**面板的重试按钮将没有任何东西可以应答它**。现在也走 `scheduleReconnect()`。
+
+**测试**：`npm test` **426 passed / 0 failed**；`check:extension` exit 0。
+- 面板新增 2 条（离线时 chip 说出原因、点击后确实发了 `dsh-bridge-retry` 且打开了设置页；
+  只是「唤醒中」时不谎报成令牌问题、连上后 chip 消失）。
+- 扩展侧新增 2 条静态断言（两条消息存在、`bridgeState()` 是唯一的裁决点、三个代码都在；
+  没令牌的分支必须 `scheduleReconnect()`）。
+- **夹具新增**：`host.bridgeConnected` / `host.bridgeState` / `host.runtimeMessages` / `host.openedOptions`。
+  **此前 `sendMessage` 恒返回 `{}`、`openOptionsPage` 是个空函数，所以这两条路径根本不可测**。
+  `bridgeConnected` 与 `bridgeState` **故意分开**：宿主只知道「是否连上」，worker 才知道「为什么」，
+  合成一个字段就表达不出「连着但 worker 说自己没令牌」这个状态。
+
+**证伪三次**：worker 不再应答 `dsh-bridge-state` → 1 红；
+没令牌时不挂重连 → 1 红；chip 退回只说「未连接」 → 2 红（含死键检查）。
+
+**交付要求**：只改 `extension/` → **重载 Chrome 扩展**即可，不需要重启 `dsh web`。
 
 #### v37：量了一遍 7000 行会话的性能 —— **没有找到缺陷**（无代码改动）
 
@@ -1716,7 +1762,7 @@ v13 我已经在 health 里放了 `approvalPending`，**但面板从来没读它
 
 | 项 | 结果 |
 |---|---|
-| `npm test` | **422 passing, 0 failing, 0 skipped** |
+| `npm test` | **426 passing, 0 failing, 0 skipped** |
 | `npm run check:extension` | exit 0 |
 | **把 `content-selection.js` 换回 `git show HEAD:` 的那一版，再跑新测试** | **3 条变红**（接管、死副本被替换、失败后重试），换回新版全绿 → 测试确实能抓住这两个缺陷 |
 | 旧版跑「死副本被替换」用例 | 直接把进程打崩：`Error: Extension context invalidated.` —— 无人接管的 rejection，正是线上那个缺陷的真身 |
@@ -2064,7 +2110,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 422 条，含真实 Chrome 端到端
+└─ test/                  # 426 条，含真实 Chrome 端到端
 
 extension/
 ├─ manifest.json

@@ -72,6 +72,9 @@ export const zh = Object.freeze({
   // harness, because in that state the chip would otherwise promise a context
   // the send cannot actually carry.
   'context.offline': '未连接',
+  'bridge.noToken': '没填令牌',
+  'bridge.fix': '点击让它重新连接',
+  'error.bridgeRefused': '连不上宿主：{reason}',
   // The `@` picker. `at.empty` and `at.none` are two different nothings: one
   // means the browser has no page this panel could read, the other means the
   // typing has not matched one yet. Saying the same thing for both would send
@@ -192,6 +195,9 @@ export const en = Object.freeze({
   'context.tab': 'this tab',
   'context.selection': 'the selection',
   'context.offline': 'Offline',
+  'bridge.noToken': 'No token',
+  'bridge.fix': 'Click to reconnect',
+  'error.bridgeRefused': 'Cannot reach the host: {reason}',
   'at.list': 'Tabs',
   'at.empty': 'No readable tabs',
   'at.none': 'No matching tabs',

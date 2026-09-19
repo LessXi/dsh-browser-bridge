@@ -686,6 +686,13 @@
          attachment cannot be made, and saying so on the chip is where it
          actually matters. */
       .chip[data-warn="true"] { color: var(--bad); }
+      /* The offline chip is a button, because the state has an action — but it
+         has to still read as a chip, not as the panel's primary button or as a
+         disabled control. */
+      button.chip { font: inherit; font-size: var(--text-xs); cursor: pointer; }
+      button.chip:hover { background: var(--hover); }
+      button.chip:disabled { cursor: default; opacity: .6; }
+      .chip[data-warn="true"]:hover { color: var(--bad); }
       /* Two rows, like the original: the editor on top, a control bar under it.
          The bar is where the model picker belongs — it is a property of how the
          next message is sent, not of the conversation being read. */

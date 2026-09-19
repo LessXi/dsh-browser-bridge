@@ -108,6 +108,18 @@ let tabs = []
 /** Whether the harness answered at all, and whether the extension is attached to it. */
 let hostReachable = false
 let bridgeConnected = false
+/**
+ * Why the extension is not attached, as a code from the worker.
+ *
+ * `''` while connected. `'no-token'` and `'connecting'` are the two the panel
+ * acts differently on: the first sends the reader to the options page, the
+ * second just needs a moment.
+ *
+ * @type {string}
+ */
+let bridgeReason = ''
+/** Whether a retry request is in flight, so the chip cannot be pressed twice. */
+let retryingBridge = false
 /** Whether a retry from the blocked surface is in flight. */
 let retrying = false
 /** Whether the host says older rows exist beyond the window on screen. */
@@ -863,10 +875,37 @@ function renderContexts() {
     chips.push(chip)
   }
 
+  if (!bridgeConnected && hostReachable) {
+    // Why it is offline, and a way to act on it — shown beside the site chip
+    // rather than instead of it, because "which page is in front" and "is the
+    // bridge attached" are two different facts and the reader may want either.
+    //
+    // The chip used to be the site chip, recoloured red and relabelled 「未连接」,
+    // which made three different problems identical: no token saved, a host that
+    // is not running, and a worker that has not woken up. The first is fixed in
+    // the options page, the second by starting dsh web, the third by waiting a
+    // second — so the panel asks the worker which one it is and offers the one
+    // action that applies.
+    //
+    // Only while the host is reachable: a host that is down already has its own
+    // blocked surface with a retry, and two retry buttons for one problem is
+    // worse than one.
+    const chip = document.createElement('button')
+    chip.type = 'button'
+    chip.className = 'chip'
+    chip.id = 'bridge-chip'
+    chip.dataset.warn = 'true'
+    chip.textContent = bridgeReason === 'no-token' ? t('bridge.noToken') : t('context.offline')
+    chip.title = t('bridge.fix')
+    chip.setAttribute('aria-label', chip.title)
+    chip.disabled = retryingBridge
+    chip.addEventListener('click', () => retryBridge())
+    chips.push(chip)
+  }
+
   if (currentTab.url.length > 0) {
     const chip = document.createElement('span')
     chip.className = 'chip'
-    if (!bridgeConnected) chip.dataset.warn = 'true'
     const title = currentTab.title || currentTab.url
     // The icon carries "this is the current tab", which is what the words
     // 「当前标签页 · 」 used to say. Measured at 392px: the label gets 360px and
@@ -875,7 +914,7 @@ function renderContexts() {
     // Large Language Mo…`, spending its space on a label and then truncating the
     // thing the reader came for. The official panel does the same: its compact
     // source renders an icon and hides the words.
-    if (bridgeConnected && currentTab.icon.length > 0) {
+    if (currentTab.icon.length > 0) {
       const icon = document.createElement('img')
       icon.className = 'site'
       icon.src = currentTab.icon
@@ -886,11 +925,10 @@ function renderContexts() {
     }
     const label = document.createElement('span')
     label.className = 'label'
-    label.textContent = bridgeConnected ? title : t('context.offline')
+    label.textContent = title
     // The chip is a fact, not a control, so its full name is carried here rather
-    // than spelled out on screen. It matters most in the offline case, where the
-    // icon is gone and 「未连接」 alone would not say what is offline.
-    chip.title = bridgeConnected ? `${t('context.tab')} · ${title}` : t('context.offline')
+    // than spelled out on screen.
+    chip.title = `${t('context.tab')} · ${title}`
     chip.setAttribute('aria-label', chip.title)
     chip.append(label)
     chips.push(chip)
@@ -1756,6 +1794,10 @@ async function refreshHealth() {
   const { payload, status } = await bridge('/browser-bridge/health')
   setHostReachable(status !== 0)
   bridgeConnected = hostReachable && payload?.connected === true
+  // The host can only say *whether* the extension is attached. Why it is not is
+  // knowledge the worker holds, so the panel asks it directly — one round trip
+  // through the extension's own message channel, no network.
+  bridgeReason = bridgeConnected ? '' : await askBridgeReason()
   // Kept, not just used: a question reported while the history was open has to
   // be adoptable the moment the conversation comes back, and the next poll can
   // be five seconds away.
@@ -1763,6 +1805,60 @@ async function refreshHealth() {
   adoptOpenApproval(payload)
   renderContexts()
   drawSend()
+}
+
+/**
+ * Ask the worker why the bridge is not up.
+ *
+ * Returns `''` when it cannot be asked at all, which is itself a state: with no
+ * service worker to answer, the chip falls back to the plain 「未连接」 rather
+ * than inventing a reason. `chrome.runtime.sendMessage` rejects when there is
+ * nothing listening, and a worker that is merely asleep is woken by the call —
+ * so this doubles as the cheapest possible reconnect attempt.
+ *
+ * @returns {Promise<string>} `'no-token'`, `'connecting'`, `'refused'`, or `''`.
+ */
+async function askBridgeReason() {
+  try {
+    const state = await chrome.runtime.sendMessage({ type: 'dsh-bridge-state' })
+    return typeof state?.state?.reason === 'string' ? state.state.reason : ''
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * Press the chip: ask the worker to connect now, and report what came back.
+ *
+ * Nothing here opens a socket — the panel cannot, because the socket belongs to
+ * the worker. So the button is a request and the honest answer is the state
+ * afterwards, which is what the chip redraws.
+ *
+ * @returns {Promise<void>} Resolves once the state has been re-read.
+ */
+async function retryBridge() {
+  if (retryingBridge) return
+  retryingBridge = true
+  renderContexts()
+  try {
+    const result = await chrome.runtime.sendMessage({ type: 'dsh-bridge-retry' })
+    const reason = typeof result?.state?.reason === 'string' ? result.state.reason : ''
+    if (reason === 'no-token') {
+      // The one case with a real destination: the token is pasted in the options
+      // page, so send them there rather than telling them to find it.
+      chrome.runtime.openOptionsPage()
+    } else if (result?.state?.open !== true) {
+      say(t('error.bridgeRefused', { reason: result?.state?.detail || t('context.offline') }))
+    }
+  } catch (error) {
+    say(t('error.bridgeRefused', { reason: error?.message ?? String(error) }))
+  } finally {
+    retryingBridge = false
+    // The host's own view is the authority on `connected`, so re-read it rather
+    // than trusting the worker's answer twice.
+    await refreshHealth().catch(() => {})
+    renderContexts()
+  }
 }
 
 /**
