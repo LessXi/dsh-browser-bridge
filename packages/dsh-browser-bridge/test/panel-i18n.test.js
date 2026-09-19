@@ -418,6 +418,20 @@ test('a short panel keeps both a conversation and a composer', (t) => {
   )
 })
 
+test('the composer fits a narrow panel instead of overflowing it', (t) => {
+  // Measured on a 240px panel: the footer's content came to 252px while the
+  // footer was 240px, and the 12px was `#model`'s intrinsic width. A flex item
+  // refuses to shrink below its content without `min-width: 0`, so the
+  // `max-width: 224px` on that button did nothing and the `text-overflow` on the
+  // label inside it never engaged — the overflow simply ran off the panel edge.
+  const html = readExtensionFile('sidepanel.html').replace(/\n\s*/g, ' ')
+  assert.match(html, /#model \{[^}]*min-width: 0/, '#model cannot shrink, so it overflows a narrow panel')
+  assert.match(html, /#model \{[^}]*flex: 0 1 auto/, '#model is not shrinkable in its bar')
+  // The text inside has to be the thing that gives, and it needs a basis to
+  // shrink against.
+  assert.match(html, /#model-text \{[^}]*text-overflow: ellipsis/, 'the model name has no ellipsis')
+})
+
 test('no dictionary entry is dead weight', () => {
   // A key nothing reads is either a leftover from a control that was removed
   // (the header's reload button) or a label that was meant to be wired and

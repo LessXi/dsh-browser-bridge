@@ -823,6 +823,14 @@
         display: inline-flex;
         align-items: center;
         gap: 4px;
+        /* `min-width: 0` is what makes the ellipsis work. Measured on a 240px
+           panel: the footer's content came to 252px while the footer itself was
+           240px, and the 12px was this button's intrinsic width — a flex item
+           refuses to shrink below its content without it, so `max-width` alone
+           did nothing and `#model-text`'s `text-overflow` never engaged. The
+           overflow landed 12px past the panel edge. */
+        min-width: 0;
+        flex: 0 1 auto;
         max-width: 224px;
         height: 28px;
         padding: 0 6px 0 8px;

@@ -249,7 +249,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 430 条
+npm test                          # 全部 431 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -275,7 +275,7 @@ npm run check:extension           # 扩展脚本语法检查（Chrome 加载前�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 430 条
+npm test                 # 431 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -288,7 +288,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 不会把 `@deepseek-ai/*` 拉下来。宿主库由 `lib/deps.js` 在运行时从
 `$DSH_HOME/profiles/node_modules` 解析。
 
-**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **430 passing, 0 failing, 0 skipped**，
+**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **431 passing, 0 failing, 0 skipped**，
 `npm run check:extension` exit 0。前提是这台机器上装过 DSH（宿主库要能解析到）。
 
 **验证环境**：Node **v24.15.0**。两个 `package.json` 里的 `engines.node: ">=20"` 是**保守下限**，
@@ -306,7 +306,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面四层测试，430 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
+**已自动化验证**：上面四层测试，431 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
 
 侧边栏那部分还有一组**静态**检查，防止语言和版式漂回去：两个字典的键必须完全一致、面板里每个
 `t('…')` 的键都必须存在、HTML 里不允许残留裸文案、旧版文案一个都不许出现、**字典里不允许出现整句
@@ -364,6 +364,55 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 「宿主聚合 → 走 `notify` → service worker 转给面板 → 面板逐字画出来」这一段由
 `test/stream.test.js`（真 socket 上的帧形状）+ `test/panel-stream.test.js`（真跑面板模块）分段覆盖，
 **中间那一跳（Chrome 的 `chrome.runtime.sendMessage`）只做了结构断言，没有在真 Chrome 里点过**。
+
+#### v43：面板拖窄到 240px 时，底部溢出 12px（本次修复）
+
+v42 量的是高度，这轮量**宽度谱** —— Chrome 侧栏最窄可以拖到约 240px。
+
+**怎么定位的（这次不是靠眼睛，是靠结构）**：外观上完全看不出来。给探针加了两件事：
+① 遍历所有节点，报告**右边缘超出面板**的元素；② 对每个 body 子节点报告 `宽度` 与 `scrollWidth`。
+
+第一次跑出来的「溢出」是**假警报**：`CODE w=405` 是代码块里的**行内 `<code>`**，
+它被外层 `<pre>`（`overflow-x: auto`）正常地滚动着 —— **`pageOverflowX=0` 始终成立**。
+给探针加「祖先里有没有滚动容器」的过滤之后，真正的元凶只剩一个：
+
+```
+BODYCHILD FOOTER w=240 scrollW=252      ← 内容比容器宽 12px
+OVERFLOW BUTTON#send w=28 right=252
+```
+
+**根因**：`#model`（模型选择按钮）是 flex 子项，而 flex 子项**默认不肯缩到内容宽度以下**。
+所以它身上那句 `max-width: 224px` **压根没生效**，里面 `#model-text` 的
+`text-overflow: ellipsis` **也永远没机会触发** —— 多出来的 12px 直接跑到面板外面。
+
+**修法**：`#model` 加 `min-width: 0` 与 `flex: 0 1 auto`。
+（两条缺一不可：`min-width: 0` 解除「不小于内容宽度」的限制，
+`flex: 0 1 auto` 让它有资格参与收缩。**这是 flex 收缩的经典陷阱，但只有量到才会发现。**）
+
+**实测**（`footer` 的宽度 vs 内容宽度）：
+
+| 面板宽度 | 修复前 | 修复后 |
+|---|---|---|
+| 240px | `w=240 scrollW=252` ❌ | `w=240 scrollW=240` ✅ |
+| 260px | — | `w=260 scrollW=260` ✅ |
+| 300px | — | `w=300 scrollW=300` ✅ |
+| 392px | — | `w=392 scrollW=392` ✅ |
+
+`bodyOverflowX` 在四个宽度上**全部为 0**。240px 下模型名正常截断为
+`DeepSeek-V41-Flas…`（**它是被省略号收掉的，不是被裁掉的**）。
+
+**测试**：`npm test` **431 passed / 0 failed**；`check:extension` exit 0。
+新增 1 条断言（`#model` 必须 `min-width: 0` 且 `flex: 0 1 auto`，`#model-text` 必须有省略号）。
+证伪：去掉那两行 → 1 红。
+
+**同轮踩到的两个坑（都值得记）**：
+- **pwsh 的 `Set-Content` 把我正在编辑的文件截断了**（`preview.mjs` 丢掉结尾的 `})`，
+  还在仓库目录里留下一个 0 字节的 `preview.mjs`），因为那一次 `Set-Location` 没有生效、
+  相对路径落到了工作区。**改文件一律用 edit 工具 + 绝对路径。**
+- 探针的第一版「溢出检测」**没有排除滚动容器内部的元素**，于是把
+  「一个正常滚动的代码块」报成了缺陷。**测量工具报出的第一个结果，先质疑工具本身。**
+
+**交付要求**：只改 `extension/` → **重载 Chrome 扩展**即可。
 
 #### v42：面板拖矮之后，对话整块消失（本次修复）
 
@@ -1971,7 +2020,7 @@ v13 我已经在 health 里放了 `approvalPending`，**但面板从来没读它
 
 | 项 | 结果 |
 |---|---|
-| `npm test` | **430 passing, 0 failing, 0 skipped** |
+| `npm test` | **431 passing, 0 failing, 0 skipped** |
 | `npm run check:extension` | exit 0 |
 | **把 `content-selection.js` 换回 `git show HEAD:` 的那一版，再跑新测试** | **3 条变红**（接管、死副本被替换、失败后重试），换回新版全绿 → 测试确实能抓住这两个缺陷 |
 | 旧版跑「死副本被替换」用例 | 直接把进程打崩：`Error: Extension context invalidated.` —— 无人接管的 rejection，正是线上那个缺陷的真身 |
@@ -2319,7 +2368,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 430 条，含真实 Chrome 端到端
+└─ test/                  # 431 条，含真实 Chrome 端到端
 
 extension/
 ├─ manifest.json
