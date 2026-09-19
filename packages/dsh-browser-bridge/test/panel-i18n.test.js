@@ -24,7 +24,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { assert, test } from './harness.js'
-import { DICTIONARIES, en, pickLocale, relativeTime, translator, zh } from '../../../extension/locales.js'
+import { DICTIONARIES, en, options, optionsTranslator, pickLocale, relativeTime, translator, zh } from '../../../extension/locales.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const extensionDir = join(here, '..', '..', '..', 'extension')
@@ -315,4 +315,43 @@ test('no dictionary entry is dead weight', () => {
   const used = new Set([...sources.matchAll(/\bt\(\s*'([^']+)'/g)].map((match) => match[1]))
   const dead = Object.keys(zh).filter((key) => !used.has(key))
   assert.deepEqual(dead, [], 'these keys are defined and never read')
+})
+
+test('the options page carries no copy of its own, and every key it names exists', () => {
+  // The options page is the gate someone passes to paste the token at all, so
+  // leaving it in one language while the panel speaks another was the largest
+  // remaining hole. It reads its copy from `data-i18n`, which means two things
+  // are worth holding: the markup holds no English, and every name in it is real.
+  const html = readExtensionFile('options.html')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<style>[\s\S]*?<\/style>/gi, '')
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<title>[\s\S]*?<\/title>/gi, '')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&[a-z]+;/gi, ' ')
+  const words = html.split(/\s+/).filter((word) => /[A-Za-z]{2,}/.test(word))
+  assert.deepEqual(words, [], 'the options markup still carries literal copy')
+
+  const named = [...readExtensionFile('options.html').matchAll(/data-i18n="([^"]+)"/g)].map((m) => m[1])
+  assert.ok(named.length >= 20, `expected a localized page, found ${named.length} named nodes`)
+  const missing = named.filter((key) => !(key in options.zh) || !(key in options.en))
+  assert.deepEqual(missing, [], 'the markup names keys the dictionary does not have')
+
+  // And the other direction: a key nothing draws is either a leftover or a
+  // string someone meant to wire and never did. Keys used at run time (the probe
+  // results, in `options.js`) are not in the markup, so the script counts too.
+  const script = readExtensionFile('options.js')
+  const drawn = new Set([...named, ...[...script.matchAll(/say\(\s*'([^']+)'/g)].map((m) => m[1])])
+  const dead = Object.keys(options.zh).filter((key) => !drawn.has(key))
+  assert.deepEqual(dead, [], 'these options keys are defined and never drawn')
+})
+
+test('the two options dictionaries carry the same keys', () => {
+  assert.deepEqual(Object.keys(options.zh).sort(), Object.keys(options.en).sort())
+  // The panel's rule is that an entry is a label, and it stays scoped to the
+  // panel: this page is read once, sitting still, and its warning is the point.
+  const t = optionsTranslator('zh')
+  assert.equal(t('save'), '保存并连接')
+  assert.equal(t('cannotConnect', { port: '3080' }), '连不上 3080 端口。')
+  assert.equal(optionsTranslator('en')('missing.key'), 'missing.key')
 })

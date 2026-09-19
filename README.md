@@ -249,7 +249,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 391 条
+npm test                          # 全部 393 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -275,7 +275,7 @@ npm run check:extension           # 扩展脚本语法检查（Chrome 加载前�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 391 条
+npm test                 # 393 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -288,7 +288,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 不会把 `@deepseek-ai/*` 拉下来。宿主库由 `lib/deps.js` 在运行时从
 `$DSH_HOME/profiles/node_modules` 解析。
 
-**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **391 passing, 0 failing, 0 skipped**，
+**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **393 passing, 0 failing, 0 skipped**，
 `npm run check:extension` exit 0。前提是这台机器上装过 DSH（宿主库要能解析到）。
 
 **验证环境**：Node **v24.15.0**。两个 `package.json` 里的 `engines.node: ">=20"` 是**保守下限**，
@@ -306,7 +306,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面四层测试，391 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
+**已自动化验证**：上面四层测试，393 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
 
 侧边栏那部分还有一组**静态**检查，防止语言和版式漂回去：两个字典的键必须完全一致、面板里每个
 `t('…')` 的键都必须存在、HTML 里不允许残留裸文案、旧版文案一个都不许出现、**字典里不允许出现整句
@@ -364,6 +364,34 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 「宿主聚合 → 走 `notify` → service worker 转给面板 → 面板逐字画出来」这一段由
 `test/stream.test.js`（真 socket 上的帧形状）+ `test/panel-stream.test.js`（真跑面板模块）分段覆盖，
 **中间那一跳（Chrome 的 `chrome.runtime.sendMessage`）只做了结构断言，没有在真 Chrome 里点过**。
+
+#### v30：设置页是纯英文，而面板是中文（本次修复）
+
+**症状**：侧边栏整个是中文，而**设置页 141 行 HTML + 126 行 JS 里没有一个中文字符**。
+设置页不是可有可无的角落 —— **它是用户粘贴桥接令牌的必经之门**，
+也是唯一讲清「`debugger` 权限等于什么」的地方，而这段话对中文用户是英文的。
+
+**为什么一直没被发现**：整套 i18n 纪律（字典键集一致、每个 `t()` 键存在、HTML 里不许有裸文案、
+字典条目不许是句子、不许有死键）**全部只扫 `sidepanel.*`**。
+`options.js` 只出现在「死键」那条的搜索名单里，而它一个 `t()` 都没有，所以**永远通过**。
+**一个文件被纳入检查名单，不等于被检查。**
+
+**修法：给设置页单独一本字典**（`locales.js` 的 `options` + `optionsTranslator`），
+而不是往面板字典里加键。理由是**两种界面的文案形状本来就不同**：
+面板的规则是「每条都是标签」（360px 宽，放不下解释）；
+设置页是**读一次、静止、全宽**的地方，那段安全警告不是噪声，它就是重点。
+把「不许是句子」这条规则扩到设置页，要么误报合法文案，要么把警告压成一句什么也没说的短语。
+
+**HTML 里不留任何文案**：22 个 `data-i18n` 节点在脚本运行前一次性填好，
+键缺失时回退英文而不是留空框 —— 漏掉的键是**看得见的**，不是静默的空洞。
+
+**新增两条测试**（`panel-i18n.test.js`）：标记里不许有 ≥2 个字母的裸单词、
+每个 `data-i18n` 名都要在字典里、以及**反方向**（字典里的键必须有人画 ——
+运行时才用的键从 `options.js` 的 `say('…')` 里搜）。
+
+**实测**：无头 Chrome 以 `zh-CN` 渲染设置页（`?s=path:options-probe.html`），
+整页中文，22 个节点全部填上、无空框。`npm test` **393 passed / 0 failed**。
+**证伪两次**：标记里留一个英文词 → 1 红；加一个没人画的键 → 2 红。
 
 #### v29：未分组的会话借用了上一个工作区的标题（本次修复）
 
@@ -1381,7 +1409,7 @@ v13 我已经在 health 里放了 `approvalPending`，**但面板从来没读它
 
 | 项 | 结果 |
 |---|---|
-| `npm test` | **391 passing, 0 failing, 0 skipped** |
+| `npm test` | **393 passing, 0 failing, 0 skipped** |
 | `npm run check:extension` | exit 0 |
 | **把 `content-selection.js` 换回 `git show HEAD:` 的那一版，再跑新测试** | **3 条变红**（接管、死副本被替换、失败后重试），换回新版全绿 → 测试确实能抓住这两个缺陷 |
 | 旧版跑「死副本被替换」用例 | 直接把进程打崩：`Error: Extension context invalidated.` —— 无人接管的 rejection，正是线上那个缺陷的真身 |
@@ -1720,7 +1748,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 391 条，含真实 Chrome 端到端
+└─ test/                  # 393 条，含真实 Chrome 端到端
 
 extension/
 ├─ manifest.json

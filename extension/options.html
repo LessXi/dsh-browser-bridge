@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh">
   <head>
     <meta charset="utf-8" />
     <title>DSH Browser Bridge — Options</title>
@@ -69,70 +69,59 @@
     </style>
   </head>
   <body>
-    <h1>DSH Browser Bridge</h1>
-    <p class="lede">
-      This extension lets a DeepSeek Harness session read and operate pages in your own Chrome —
-      including sites you are already signed in to.
-    </p>
+    <!--
+      Every visible string arrives from `locales.js` at load, located by
+      `data-i18n`. The page is the gate someone has to pass to paste the token
+      at all, so leaving it in one language while the panel speaks another was
+      the largest remaining hole in the localization.
+    -->
+    <h1 data-i18n="heading"></h1>
+    <p class="lede" data-i18n="lede"></p>
 
     <fieldset class="warn">
-      <legend>Before you connect</legend>
-      <p style="margin:0">
-        The <code>debugger</code> permission is equivalent to being able to read and change your data
-        on every site, including signed-in sessions. The harness asks you before it touches each new
-        site, and you can switch the bridge off entirely from DSH Settings → Plugins.
-      </p>
+      <legend data-i18n="warnTitle"></legend>
+      <p style="margin:0" data-i18n="warnBody"></p>
     </fieldset>
 
     <fieldset>
-      <legend>Connection</legend>
+      <legend data-i18n="connTitle"></legend>
       <div class="row">
-        <label for="port">Harness port</label>
+        <label for="port" data-i18n="portLabel"></label>
         <input id="port" type="number" min="1" max="65535" placeholder="3080" />
-        <p class="hint">The port shown in the harness URL, usually 3080.</p>
+        <p class="hint" data-i18n="portHint"></p>
       </div>
       <div class="row">
-        <label for="token">Bridge token</label>
-        <input id="token" type="password" spellcheck="false" placeholder="paste the token" />
-        <p class="hint">
-          Open DSH, go to <strong>Settings → Plugins → browser-bridge</strong>, and copy the token.
-          It is stored only in this browser profile.
-        </p>
+        <label for="token" data-i18n="tokenLabel"></label>
+        <input id="token" type="password" spellcheck="false" />
+        <p class="hint" data-i18n="tokenHint"></p>
       </div>
       <div class="row">
         <label for="autopush" style="font-weight:600">
           <input id="autopush" type="checkbox" style="width:auto;margin-right:6px" />
-          Sync every text selection into DSH context automatically
+          <span data-i18n="autoPushLabel"></span>
         </label>
-        <p class="hint">
-          Off by default. With it off, you choose what to send from the right-click menu, so merely
-          highlighting text to copy it never reaches the model.
-        </p>
+        <p class="hint" data-i18n="autoPushHint"></p>
       </div>
       <div class="actions">
-        <button id="save" class="primary">Save and connect</button>
-        <button id="test">Test connection</button>
+        <button id="save" class="primary" data-i18n="save"></button>
+        <button id="test" data-i18n="test"></button>
       </div>
       <div id="result" hidden></div>
     </fieldset>
 
     <fieldset>
-      <legend>File uploads</legend>
-      <p style="margin:0">
-        To let DSH upload a file through a page, Chrome needs one setting this extension cannot grant
-        for itself: open <code>chrome://extensions</code>, find this extension, choose
-        <strong>Details</strong>, and turn on <strong>Allow access to file URLs</strong>.
-      </p>
+      <legend data-i18n="filesTitle"></legend>
+      <p style="margin:0" data-i18n="filesBody"></p>
     </fieldset>
 
     <fieldset>
-      <legend>How this stays under your control</legend>
+      <legend data-i18n="controlTitle"></legend>
       <ol>
-        <li>The bridge listens on loopback only, and this extension proves itself with a token.</li>
-        <li>Every new site needs your approval before DSH may read or act on it.</li>
-        <li>Submitting forms, purchasing, and deleting ask a second time.</li>
-        <li>Browser history is never remembered as allowed — every read asks again.</li>
-        <li>No page content is ever sent anywhere except to your own harness.</li>
+        <li data-i18n="control1"></li>
+        <li data-i18n="control2"></li>
+        <li data-i18n="control3"></li>
+        <li data-i18n="control4"></li>
+        <li data-i18n="control5"></li>
       </ol>
     </fieldset>
 

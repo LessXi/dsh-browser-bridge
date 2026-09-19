@@ -230,6 +230,117 @@ export const en = Object.freeze({
 export const DICTIONARIES = Object.freeze({ zh, en })
 
 /**
+ * The options page, whose copy is a different shape on purpose.
+ *
+ * The panel's rule is that an entry is a *label* — a control says what it does,
+ * a state shows itself, and nothing explains itself in a paragraph, because a
+ * 360px column has no room for prose. An options page is the opposite kind of
+ * surface: it is read once, sitting still, at full width, and it is where
+ * someone decides whether to hand over the `debugger` permission at all. The
+ * security paragraph there is not noise, it is the point.
+ *
+ * So this is a second dictionary rather than more keys in the first, and the
+ * sentence-length test stays scoped to the panel's — widening that rule to cover
+ * this file would either fail on copy that belongs on screen or force the
+ * warning into a fragment that no longer explains anything.
+ *
+ * `zh` is still the key-set source of truth.
+ */
+export const options = Object.freeze({
+  zh: Object.freeze({
+    heading: 'DSH 浏览器桥接',
+    lede: '这个扩展让 DeepSeek Harness 的会话读取并操作你自己 Chrome 里的页面，包括你已经登录的站点。',
+    warnTitle: '连接之前',
+    warnBody: 'debugger 权限等同于可以在所有站点上读取和修改你的数据，包括已登录的会话。Harness 在接触每个新站点之前都会先问你，你也可以在 DSH 的「设置 → 插件」里彻底关掉这个桥接。',
+    connTitle: '连接',
+    portLabel: 'Harness 端口',
+    portHint: 'Harness 网址里的那个端口，通常是 3080。',
+    tokenLabel: '桥接令牌',
+    tokenHint: '打开 DSH，进入「设置 → 插件 → browser-bridge」，复制令牌。它只保存在这个浏览器配置文件里。',
+    autoPushLabel: '把每次划词自动同步进 DSH 上下文',
+    autoPushHint: '默认关闭。关闭时由你从右键菜单决定送什么，所以只是划词去复制一段文字，永远不会进模型。',
+    save: '保存并连接',
+    test: '测试连接',
+    filesTitle: '文件上传',
+    filesBody: '要让 DSH 通过页面上传文件，需要 Chrome 里一个本扩展自己无法授予的设置：打开 chrome://extensions，找到本扩展，点「详情」，打开「允许访问文件网址」。',
+    controlTitle: '它怎样始终由你掌控',
+    control1: '桥接只监听本机回环地址，扩展用令牌证明自己的身份。',
+    control2: '每个新站点都需要你批准，DSH 才能读取或操作它。',
+    control3: '提交表单、付款、删除会再问一次。',
+    control4: '浏览历史永远不会被记成「已允许」——每次读取都要重新问。',
+    control5: '页面内容除了送进你自己的 harness，不会发往任何地方。',
+    noToken: '还没有保存令牌。请从 DSH「设置 → 插件 → browser-bridge」复制。',
+    connected: '已连接到 {port} 端口上的 harness。',
+    cannotConnect: '连不上 {port} 端口。',
+    checkIntro: '请检查：',
+    check1: 'harness 在运行（dsh web），且端口与它的网址一致；',
+    check2: '令牌与 DSH「设置 → 插件 → browser-bridge」里的一致；',
+    check3: '没有别的程序占着这个端口。',
+    refused: 'harness 拒绝了连接——最常见的原因是令牌不对或已过期。',
+    timeout: 'harness 8 秒内没有回应。',
+    saved: '已保存，正在连接…',
+    testing: '正在测试…',
+    socketFailed: '打不开连接：{reason}',
+    loadFailed: '读不到已保存的设置：{reason}',
+  }),
+  en: Object.freeze({
+    heading: 'DSH Browser Bridge',
+    lede: 'This extension lets a DeepSeek Harness session read and operate pages in your own Chrome — including sites you are already signed in to.',
+    warnTitle: 'Before you connect',
+    warnBody: 'The debugger permission is equivalent to being able to read and change your data on every site, including signed-in sessions. The harness asks you before it touches each new site, and you can switch the bridge off entirely from DSH Settings → Plugins.',
+    connTitle: 'Connection',
+    portLabel: 'Harness port',
+    portHint: 'The port shown in the harness URL, usually 3080.',
+    tokenLabel: 'Bridge token',
+    tokenHint: 'Open DSH, go to Settings → Plugins → browser-bridge, and copy the token. It is stored only in this browser profile.',
+    autoPushLabel: 'Sync every text selection into DSH context automatically',
+    autoPushHint: 'Off by default. With it off, you choose what to send from the right-click menu, so merely highlighting text to copy it never reaches the model.',
+    save: 'Save and connect',
+    test: 'Test connection',
+    filesTitle: 'File uploads',
+    filesBody: 'To let DSH upload a file through a page, Chrome needs one setting this extension cannot grant for itself: open chrome://extensions, find this extension, choose Details, and turn on Allow access to file URLs.',
+    controlTitle: 'How this stays under your control',
+    control1: 'The bridge listens on loopback only, and this extension proves itself with a token.',
+    control2: 'Every new site needs your approval before DSH may read or act on it.',
+    control3: 'Submitting forms, purchasing, and deleting ask a second time.',
+    control4: 'Browser history is never remembered as allowed — every read asks again.',
+    control5: 'No page content is ever sent anywhere except to your own harness.',
+    noToken: 'No token saved. Copy it from DSH Settings → Plugins → browser-bridge.',
+    connected: 'Connected to the harness on port {port}.',
+    cannotConnect: 'Could not connect on port {port}.',
+    checkIntro: 'Check that:',
+    check1: 'the harness is running (dsh web) and the port matches its URL;',
+    check2: 'the token matches DSH Settings → Plugins → browser-bridge;',
+    check3: 'nothing else on this machine is holding that port.',
+    refused: 'The harness refused the connection — most often a wrong or stale token.',
+    timeout: 'The harness did not answer within 8 seconds.',
+    saved: 'Saved. Connecting…',
+    testing: 'Testing…',
+    socketFailed: 'Could not open the socket: {reason}',
+    loadFailed: 'Could not read saved settings: {reason}',
+  }),
+})
+
+/**
+ * The translator for the options page.
+ *
+ * Same `locale → en → key` fallback as {@link translator}, over the options
+ * dictionary instead of the panel's.
+ *
+ * @param {'zh' | 'en'} locale - Which dictionary to prefer.
+ * @returns {(key: string, params?: Record<string, unknown>) => string} The translator.
+ */
+export function optionsTranslator(locale) {
+  const primary = options[locale] ?? options.en
+  return (key, params = {}) => {
+    const template = primary[key] ?? options.en[key] ?? key
+    return template.replace(/\{(\w+)\}/g, (whole, name) => (
+      params[name] === undefined ? whole : String(params[name])
+    ))
+  }
+}
+
+/**
  * Which dictionary a UI language should use.
  *
  * @param {string} [language] - A BCP-47 tag, e.g. `chrome.i18n.getUILanguage()`.
