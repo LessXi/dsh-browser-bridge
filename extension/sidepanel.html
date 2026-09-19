@@ -52,6 +52,12 @@
         --ok: #2f9e63;
         --bad: #d1453b;
         --elevation: 0 0 0 1px #0000000a, 0 2px 8px 0 #0000000a, 0 4px 40px 8px #00000006;
+
+        /* How wide a line of prose may get. The official panel declares this as
+           `--thread-content-max-width: none` at the root and then sets `48rem` on
+           the desktop thread, which is the value that matters here — 768px, the
+           width past which a paragraph is harder to read, not easier. */
+        --thread-content-max-width: 48rem;
       }
       * { box-sizing: border-box; }
       html, body { height: 100%; }
@@ -130,6 +136,28 @@
         flex-direction: column;
         gap: 14px;
         font-size: var(--text-base);
+      }
+      /* The reading column.
+         A Chrome side panel can be dragged very wide, and without a cap a line of
+         prose runs the full width of it: measured at 1000px, one paragraph box was
+         832px, which is far past the point where the eye loses the start of the
+         next line. The official panel caps this at `--thread-content-max-width`,
+         whose desktop default is `48rem` = 768px, and it centres the column as the
+         panel grows rather than letting it hug the left edge.
+         Applied to the rows rather than to #transcript so the scrollbar stays at
+         the panel's edge and the transcript remains the full-height scroller.
+         The header, the chips and the composer deliberately stay full width: they
+         are the panel's chrome, and the official layout insets only the thread.
+         Known difference: the official computes its column as
+         `max(--thread-content-max-width, --markdown-wide-block-max-width + 8rem)`,
+         so a table or a wide code block may outgrow the paragraph measure. Here one
+         column covers both. That only differs above ~1150px of panel width, and a
+         side panel at that size is already unusual, so the extra rule would be
+         complexity that never runs. `README.md` records it. */
+      #transcript > * {
+        width: 100%;
+        max-width: var(--thread-content-max-width);
+        margin-inline: auto;
       }
       #history { padding: 4px 6px 12px; }
 

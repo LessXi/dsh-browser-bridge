@@ -314,6 +314,25 @@ test('the copy affordance is wired on both sides of the DOM', () => {
   assert.match(html, /^\s*\.copy \{/m, 'the delegated target has to be styled under exactly that name')
 })
 
+test('the reading column is capped, so a wide panel does not stretch prose', (t) => {
+  // Measured before this: at a 1000px panel one paragraph box was 832px wide,
+  // which is past the point where the eye loses the start of the next line. The
+  // official panel caps the same thing at `--thread-content-max-width`, whose
+  // desktop value is `48rem`.
+  const html = readExtensionFile('sidepanel.html')
+  assert.match(html, /--thread-content-max-width:\s*48rem/, 'the column has no width cap')
+  assert.ok(
+    /#transcript > \* \{[^}]*max-width: var\(--thread-content-max-width\)/.test(html.replace(/\n\s*/g, ' ')),
+    'the cap is declared but never applied to the rows',
+  )
+  // Centred rather than left-aligned: a column pinned to the left of a very wide
+  // panel leaves the empty space all on one side and reads as a rendering fault.
+  assert.ok(
+    /#transcript > \* \{[^}]*margin-inline: auto/.test(html.replace(/\n\s*/g, ' ')),
+    'the column hugs the left edge instead of centring',
+  )
+})
+
 test('no dictionary entry is dead weight', () => {
   // A key nothing reads is either a leftover from a control that was removed
   // (the header's reload button) or a label that was meant to be wired and

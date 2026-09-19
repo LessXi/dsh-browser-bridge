@@ -249,7 +249,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 426 条
+npm test                          # 全部 427 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -275,7 +275,7 @@ npm run check:extension           # 扩展脚本语法检查（Chrome 加载前�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 426 条
+npm test                 # 427 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -288,7 +288,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 不会把 `@deepseek-ai/*` 拉下来。宿主库由 `lib/deps.js` 在运行时从
 `$DSH_HOME/profiles/node_modules` 解析。
 
-**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **426 passing, 0 failing, 0 skipped**，
+**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **427 passing, 0 failing, 0 skipped**，
 `npm run check:extension` exit 0。前提是这台机器上装过 DSH（宿主库要能解析到）。
 
 **验证环境**：Node **v24.15.0**。两个 `package.json` 里的 `engines.node: ">=20"` 是**保守下限**，
@@ -306,7 +306,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面四层测试，426 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
+**已自动化验证**：上面四层测试，427 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
 
 侧边栏那部分还有一组**静态**检查，防止语言和版式漂回去：两个字典的键必须完全一致、面板里每个
 `t('…')` 的键都必须存在、HTML 里不允许残留裸文案、旧版文案一个都不许出现、**字典里不允许出现整句
@@ -364,6 +364,61 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 「宿主聚合 → 走 `notify` → service worker 转给面板 → 面板逐字画出来」这一段由
 `test/stream.test.js`（真 socket 上的帧形状）+ `test/panel-stream.test.js`（真跑面板模块）分段覆盖，
 **中间那一跳（Chrome 的 `chrome.runtime.sendMessage`）只做了结构断言，没有在真 Chrome 里点过**。
+
+#### v39：面板拖宽之后，一段话横跨整个屏（本次修复）
+
+**怎么发现的**：Chrome 侧栏的宽度是**可以拖的**，而我从第 1 轮到现在所有截图都在 392px 左右。
+把预览宿主拖到 1000px 量了一次：
+
+| 面板宽度 | 一个段落盒子的实测宽度 |
+|---|---|
+| 392px | 344px |
+| 760px | 706px |
+| **1000px** | **832px** |
+
+**832px 的一行**：眼睛读完一行回到下一行的行首会**找不到位置** —— 这不是审美问题，是读不了。
+
+**一手依据（官方原版）**：官方产物里有专门的 `--thread-content-max-width`，
+桌面端默认值是 **`48rem` = 768px**：
+
+```css
+/* chrome-extension-sidepanel-aQf-8vya.css */
+--thread-content-max-width: none;      /* 根上先置空 */
+.--thread-content-max-width\:48rem{--thread-content-max-width:48rem}  /* 原子类 */
+--padding-panel-base:calc(var(--spacing) * 5);
+--thread-content-max-width: 48rem;     /* 桌面 thread 真正的值 */
+```
+
+它还用一条 `_Probe_` 元素来量这个列宽，并把**宽块**（表格、宽代码块）放在比正文更宽的一列里：
+`max-width: calc(max(var(--thread-content-max-width), var(--markdown-wide-block-max-width) + 8rem) + ...)`。
+
+**修法**：新增 token `--thread-content-max-width: 48rem`，并把它加在**行**上而不是 `#transcript` 上：
+
+```css
+#transcript > * { width: 100%; max-width: var(--thread-content-max-width); margin-inline: auto; }
+```
+
+- 加在**行**上：滚动条仍然贴着面板边缘，`#transcript` 仍是整高的滚动容器。
+- **居中**而不是左对齐：把一列钉在很宽面板的左边，空白全堆在一侧，看起来像渲染故障。
+- **表头、chip 行、输入区不跟着收窄** —— 它们是面板的 chrome，官方也只给 thread 收窄。
+
+**实测（同一组场景，改后重测）**：
+
+| 面板宽度 | 行宽 | 段落盒 |
+|---|---|---|
+| 392px | 372 | 344px（不变） |
+| 760px | 740 | 706px（不变） |
+| 1000px | **768px** | **733px**（原本 832px） |
+
+**已知差异（如实记录）**：官方把正文列与宽块列**分成两列**，所以表格和宽代码块可以比正文更宽。
+本实现**一列覆盖两者**。这个差异只在**面板宽于约 1150px** 时才看得出来，
+而侧栏到这个宽度已经很不常见 —— 所以那条额外规则会是**永远不执行的复杂度**。
+选择不写，并记在这里。
+
+**测试**：`npm test` **427 passed / 0 failed**；`check:extension` exit 0。
+新增 1 条静态断言（token 存在、真的用在行上、且是 `margin-inline: auto` 居中而不是左贴）。
+
+**交付要求**：只改 `extension/` → **重载 Chrome 扩展**即可。
 
 #### v38：三个不同的问题，长得一模一样（本次修复）
 
@@ -1762,7 +1817,7 @@ v13 我已经在 health 里放了 `approvalPending`，**但面板从来没读它
 
 | 项 | 结果 |
 |---|---|
-| `npm test` | **426 passing, 0 failing, 0 skipped** |
+| `npm test` | **427 passing, 0 failing, 0 skipped** |
 | `npm run check:extension` | exit 0 |
 | **把 `content-selection.js` 换回 `git show HEAD:` 的那一版，再跑新测试** | **3 条变红**（接管、死副本被替换、失败后重试），换回新版全绿 → 测试确实能抓住这两个缺陷 |
 | 旧版跑「死副本被替换」用例 | 直接把进程打崩：`Error: Extension context invalidated.` —— 无人接管的 rejection，正是线上那个缺陷的真身 |
@@ -2110,7 +2165,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 426 条，含真实 Chrome 端到端
+└─ test/                  # 427 条，含真实 Chrome 端到端
 
 extension/
 ├─ manifest.json
