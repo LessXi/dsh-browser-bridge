@@ -249,7 +249,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 394 条
+npm test                          # 全部 396 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -275,7 +275,7 @@ npm run check:extension           # 扩展脚本语法检查（Chrome 加载前�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 394 条
+npm test                 # 396 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -288,7 +288,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 不会把 `@deepseek-ai/*` 拉下来。宿主库由 `lib/deps.js` 在运行时从
 `$DSH_HOME/profiles/node_modules` 解析。
 
-**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **394 passing, 0 failing, 0 skipped**，
+**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **396 passing, 0 failing, 0 skipped**，
 `npm run check:extension` exit 0。前提是这台机器上装过 DSH（宿主库要能解析到）。
 
 **验证环境**：Node **v24.15.0**。两个 `package.json` 里的 `engines.node: ">=20"` 是**保守下限**，
@@ -306,7 +306,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面四层测试，394 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
+**已自动化验证**：上面四层测试，396 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
 
 侧边栏那部分还有一组**静态**检查，防止语言和版式漂回去：两个字典的键必须完全一致、面板里每个
 `t('…')` 的键都必须存在、HTML 里不允许残留裸文案、旧版文案一个都不许出现、**字典里不允许出现整句
@@ -364,6 +364,52 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 「宿主聚合 → 走 `notify` → service worker 转给面板 → 面板逐字画出来」这一段由
 `test/stream.test.js`（真 socket 上的帧形状）+ `test/panel-stream.test.js`（真跑面板模块）分段覆盖，
 **中间那一跳（Chrome 的 `chrome.runtime.sendMessage`）只做了结构断言，没有在真 Chrome 里点过**。
+
+#### v32：连不上宿主时，面板把最大的一块区域留成了空白（本次修复）
+
+**症状**（本轮用无头 Chrome 造出「第一次安装、还没启动 `dsh web`」这个状态才看见）：
+屏幕最大的一块是**空白的消息区**，而唯一的解释是一行 11px 的灰字「连不上 dsh web」，
+贴在输入框上方 —— **那是一个脚注的位置，不是「为什么什么都用不了」的位置**。
+同时**页头写着「还没有会话」**，而真相是「问不到」—— 用户的数据好好的，
+只是没人应答。第三处：输入框旁还有一行「模型列表不可用」，
+于是**一个原因被说成三件坏掉的事**。
+
+**一手依据（官方产物）**：Codex 为一个用不了的扩展准备了专门的 status surface，
+它全是「标题 + 一句话 + 按钮」的结构，文案按状态分支。它的字符串表就是这个形状：
+
+```
+Install the app to use ChatGPT in {browser}
+ChatGPT may take a few moments to connect once opened
+Open ChatGPT to finish installation
+Try again
+```
+
+**修法**
+1. **新增 `#blocked` 状态面**（`sidepanel.html`）：标题 + 一句话 + 一个按钮，
+   居中占据 `#stage`，背景 `Canvas` 盖住下面的空消息区。
+2. **页头不再谎报**：`renderTitle()` 在宿主不可达时显示产品名 `DSH`，
+   **不再显示「还没有会话」** —— 那是对用户自己数据的断言，而面板根本无法核实。
+   本来先写成显示同一句错误，截图后立刻发现**同一屏把一句话说了两遍**，改成产品名。
+3. **一个原因只说一次**：`renderContexts()` 在不可达时整行隐藏（不再显示「未连接」chip），
+   `drawModel()` 显示中性的「选择模型」并禁用（不再显示「模型列表不可用」）。
+4. **`start` 拆出 `loadEverything()`**：重试按钮走的是**和首次加载完全相同**的代码路径 ——
+   给重试单写一条更薄的路径，正是最会在无人使用时漂移的那份拷贝，
+   而重试恰恰发生在「面板已经确定是错的」那一刻。
+
+**顺带删掉**：`error.hostDown` 键与 `#offline` 元素（被状态面取代）——
+死键检查会强制这一步。
+
+**测试**：**新增两条**（`panel-stream.test.js`）—— 不可达时状态面出现、标题不谎报、
+chip 行与模型按钮不重复报错；宿主恢复后点「重试」状态面消失且**确实重新请求了宿主**。
+夹具新增 `host.down`（让 `fetch` 抛错），此前**桩永远有应答，所以「宿主挂了」是不可测的**。
+
+**`no dictionary entry is a sentence` 加了一处具名豁免**：`blocked.hostTitle` / `blocked.hostBody`。
+面板的规则是「每条都是标签」，但**状态面里的那句话就是内容本身** ——
+官方同样如此。豁免写成具名数组并**断言长度是 2**，所以它无法悄悄扩张。
+
+**实测**：无头 Chrome 渲染 → `[chat] blocked hidden` / `[firstRun] blocked 显示且 contexts hidden`；
+`firstRun` 在 392px 与 320px 下都正常。`npm test` **396 passed / 0 failed**；`check:extension` exit 0。
+**证伪三次**（各自命中不同断言）：状态面永不出现 → 5 红；页头改回谎报 → 1 红；模型行改回重复报错 → 1 红。
 
 #### v31：右键菜单在中文浏览器里是英文（本次修复）
 
@@ -1438,7 +1484,7 @@ v13 我已经在 health 里放了 `approvalPending`，**但面板从来没读它
 
 | 项 | 结果 |
 |---|---|
-| `npm test` | **394 passing, 0 failing, 0 skipped** |
+| `npm test` | **396 passing, 0 failing, 0 skipped** |
 | `npm run check:extension` | exit 0 |
 | **把 `content-selection.js` 换回 `git show HEAD:` 的那一版，再跑新测试** | **3 条变红**（接管、死副本被替换、失败后重试），换回新版全绿 → 测试确实能抓住这两个缺陷 |
 | 旧版跑「死副本被替换」用例 | 直接把进程打崩：`Error: Extension context invalidated.` —— 无人接管的 rejection，正是线上那个缺陷的真身 |
@@ -1777,7 +1823,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 394 条，含真实 Chrome 端到端
+└─ test/                  # 396 条，含真实 Chrome 端到端
 
 extension/
 ├─ manifest.json

@@ -107,6 +107,11 @@ export const zh = Object.freeze({
   // disagree, every route answers a shape the panel does not understand, which
   // would otherwise read as "no sessions" and a bare 400.
   'error.restartHost': '请重启 dsh web（宿主是旧版本）',
+  // The blocked surface: a title, what to do, and the button that does it.
+  'blocked.hostTitle': '连不上 dsh web',
+  'blocked.hostBody': '先启动 dsh web，再重试。',
+  'blocked.retry': '重试',
+  'blocked.retrying': '重试中…',
   // The host answers every send with what it staged and what it refused. A
   // refusal used to be invisible: the chip promised an attachment, the message
   // went out without it, and nothing said so.
@@ -116,7 +121,6 @@ export const zh = Object.freeze({
   // opposite answers in the two cases. Reloading installs a fresh reporter.
   'error.reportStale': '请刷新页面',
   'error.notCopied': '复制失败',
-  'error.hostDown': '连不上 dsh web',
   'error.notAnswered': '没能作答：{reason}',
   'error.turnFailed': '这一轮没能跑起来',
   // Why the turn failed, said in the reader's language. The provider's own
@@ -202,10 +206,13 @@ export const en = Object.freeze({
   'error.startedFailed': 'Panel failed to start: {error}',
   'error.noSession': 'Pick a chat first',
   'error.restartHost': 'Restart dsh web (host is older)',
+  'blocked.hostTitle': 'dsh web is not running',
+  'blocked.hostBody': 'Start dsh web, then retry.',
+  'blocked.retry': 'Retry',
+  'blocked.retrying': 'Retrying…',
   'error.attachmentRefused': 'Attachment refused: {reason}',
   'error.reportStale': 'Reload the page',
   'error.notCopied': 'Could not copy',
-  'error.hostDown': 'dsh web is not running',
   'error.notAnswered': 'Could not answer: {reason}',
   'error.turnFailed': 'The turn did not run',
   'error.code.credential': 'No model key is set',

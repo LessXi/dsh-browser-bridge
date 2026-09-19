@@ -66,6 +66,8 @@ const host = {
   holdCreate: null,
   /** Set while a held `create` is waiting; calling it answers. */
   releaseCreate: null,
+  /** When true, every request is refused, as if nothing were listening. */
+  down: false,
   /** The active tab the panel sees. `icon` is swapped per test. */
   tab: {
     id: 7,
@@ -184,6 +186,11 @@ const realFetch = globalThis.fetch
 globalThis.fetch = async (url, options = {}) => {
   const address = String(url)
   host.requests.push({ url: address, method: options.method ?? 'GET' })
+  // A refused connection is what the panel actually gets when nothing is
+  // listening on the harness port, and it is the one state the stub could not
+  // reach before: every route here used to answer, so "the host is down" was
+  // untestable and the surface written for it had no coverage at all.
+  if (host.down === true) throw new TypeError('Failed to fetch')
   if (address.includes('/browser-bridge/chat')) {
     if ((options.method ?? 'GET') === 'GET') return respond(groupsPayload())
     const body = options.body === undefined ? {} : JSON.parse(options.body)
@@ -503,6 +510,52 @@ assert.ok(
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
+
+test('with nothing listening, the panel says so once, and offers a way out', async () => {
+  // The first-run state: the harness is not running. The panel used to show a
+  // blank content area with one eleven-pixel grey line under it, which is where
+  // a footnote goes rather than an explanation of why nothing works.
+  await settleToIdle()
+  host.down = true
+  // The groups poll is what notices: every request now refuses, exactly as a
+  // closed port does.
+  await clocks[0]()
+  await settle()
+
+  const surface = registry.get('blocked')
+  assert.ok(surface, 'the panel has no blocked surface at all')
+  assert.equal(surface.hidden, false, 'nothing listening, and the panel said nothing')
+  assert.equal(registry.get('blocked-title').textContent, '连不上 dsh web')
+  assert.equal(registry.get('blocked-action').textContent, '重试')
+
+  // One cause, said once. The chip row and the model picker each used to add
+  // their own version of this (「未连接」, 「模型列表不可用」), which reads as three
+  // broken things rather than as one.
+  assert.equal(registry.get('contexts').hidden, true, 'the chip row repeated the error')
+  assert.equal(registry.get('model-text').textContent, '选择模型', 'the picker repeated the error')
+  // And the header must not claim the account is empty: the sessions are all
+  // still there, on a port nothing is answering.
+  assert.equal(registry.get('title-text').textContent, 'DSH', 'the header claimed there were no sessions')
+})
+
+test('the blocked surface clears itself the moment the host answers', async () => {
+  host.down = true
+  await clocks[0]()
+  await settle()
+  assert.equal(registry.get('blocked').hidden, false)
+
+  // Retry, with the host back up.
+  host.down = false
+  host.requests.length = 0
+  registry.get('blocked-action').emit('click')
+  await settle()
+
+  assert.equal(registry.get('blocked').hidden, true, 'the surface outlived the outage')
+  assert.ok(
+    host.requests.some((request) => request.url.includes('/browser-bridge/chat')),
+    'the retry never asked the host anything',
+  )
+})
 
 test('a start frame shows the waiting line and no empty live block', async () => {
   await idle()

@@ -1,11 +1,43 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v31 已交付。** 下一节就是最新的一轮改动；下面标 v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v31 那一段为止即可。
+> **当前状态：v32 已交付。** 下一节就是最新的一轮改动；下面标 v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v32 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（394 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（396 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
+>
+> **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
+> 换成你自己克隆它的目录即可（例：`cd <repo>`）。
+
+> ### v32：连不上宿主时，面板把最大的一块区域留成了空白（扩展侧，本次修复）
+>
+> **症状**（**造出「刚装好扩展、还没启动 `dsh web`」这个状态**才看见）：屏幕最大的
+> 那块消息区是空的，唯一的解释是一行 11px 灰字「连不上 dsh web」贴在输入框上方；
+> 页头还写着**「还没有会话」**（对用户数据的谎报 —— 会话都在，只是没人应答）；
+> 输入框旁又有「模型列表不可用」。**一个原因被说成三件坏掉的事。**
+>
+> **一手依据**：Codex 有专门的 status surface，一律是「标题 + 一句话 + 按钮」，
+> 例如 `Install the app to use ChatGPT in {browser}` / `Try again`。
+>
+> **修法**：新增 `#blocked` 状态面（标题+一句话+按钮，居中占 `#stage`）；
+> `renderTitle()` 不可达时显示产品名而**不再谎报「还没有会话」**；
+> `renderContexts()` 整行隐藏、`drawModel()` 显示中性「选择模型」——
+> **一个原因只说一次**；`start` 拆出 `loadEverything()` 让重试走**完全相同**的路径。
+> 删掉 `error.hostDown` 键与 `#offline` 元素。
+>
+> **注意**：`no dictionary entry is a sentence` 有**一处具名豁免**（`blocked.hostTitle`/`blocked.hostBody`），
+> 因为状态面里那句话就是内容本身；豁免写成数组并断言长度为 2，不会悄悄扩张。
+>
+> **实测**：无头 Chrome → `[chat] blocked hidden` / `[firstRun] blocked 显示、contexts hidden`；
+> `npm test` **396 passed / 0 failed**；`check:extension` exit 0。
+> **证伪三次**：状态面永不出现 → 5 红；页头改回谎报 → 1 红；模型行改回重复报错 → 1 红。
+>
+> **交付：只改 `extension/` → 重载 Chrome 扩展即可。**
+>
+> **可复用的能力（本轮新增）**：预览宿主支持 `hostDown` / `bridgeConnected: false` 两个场景开关
+> （`?s=firstRun`、`?s=noBridge`），**首次运行与「宿主在但扩展没连上」这两个状态现在可截图**。
+
 >
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。

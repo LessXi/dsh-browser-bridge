@@ -66,7 +66,10 @@ const transcript = document.getElementById('transcript')
 const history = document.getElementById('history')
 const toBottom = document.getElementById('to-bottom')
 const toast = document.getElementById('toast')
-const offline = document.getElementById('offline')
+const surface = document.getElementById('blocked')
+const blockedTitle = document.getElementById('blocked-title')
+const blockedBody = document.getElementById('blocked-body')
+const blockedAction = document.getElementById('blocked-action')
 const contexts = document.getElementById('contexts')
 const input = document.getElementById('input')
 const sendButton = document.getElementById('send')
@@ -94,6 +97,8 @@ let tabs = []
 /** Whether the harness answered at all, and whether the extension is attached to it. */
 let hostReachable = false
 let bridgeConnected = false
+/** Whether a retry from the blocked surface is in flight. */
+let retrying = false
 /** Whether the host answered, but with a shape this panel does not understand. */
 let hostStale = false
 /** Whether the shown selection should travel with the next send. */
@@ -284,21 +289,35 @@ function paintStaticCopy() {
   drawNew()
   modelButton.setAttribute('aria-label', t('model.select'))
   document.title = t('panel.title')
-  offline.textContent = t('error.hostDown')
+  blockedTitle.textContent = t('blocked.hostTitle')
+  blockedBody.textContent = t('blocked.hostBody')
+  blockedAction.textContent = t('blocked.retry')
 }
 
 /**
- * Say whether anything is answering on the harness port.
+ * Show or hide the surface for a panel that cannot work at all.
  *
- * With no host there is nothing to read, nothing to send and no error to
- * report, so the panel simply looks broken: an empty transcript, a dead send
- * button. This is the one line that turns that into a state. It clears itself
- * on the next successful request, so it is a status, never a warning to dismiss.
+ * With no host there is nothing to read, nothing to send and no error to report,
+ * so the panel looked broken: a blank transcript and a dead send button. The one
+ * line that said so used to be an eleven-pixel grey footnote under the content,
+ * which is where a footnote belongs rather than an explanation of why nothing
+ * works — the empty region above it is the largest thing on screen and said
+ * nothing at all. This is the shape the original uses for the same moment: a
+ * title, the sentence that says what to do, and the button that does it.
+ *
+ * It clears itself on the next successful request, so it is a state and never a
+ * warning to dismiss.
  *
  * @returns {void}
  */
 function renderOffline() {
-  offline.hidden = hostReachable
+  const blocked = !hostReachable
+  surface.hidden = !blocked
+  if (!blocked) return
+  // The retry is the panel's whole startup, so it is the same work the first
+  // load did rather than a second, thinner path that could drift from it.
+  blockedAction.disabled = retrying
+  blockedAction.textContent = retrying ? t('blocked.retrying') : t('blocked.retry')
 }
 
 /**
@@ -333,11 +352,20 @@ function currentGroup() {
 /** Repaint the header title from the current session. */
 function renderTitle() {
   const session = currentSession()
-  const label = currentSessionId.length === 0
-    ? t('history.empty')
-    : currentSessionBlank && session === undefined
-      ? t('session.new')
-      : session?.title || (session?.blank === true ? t('session.new') : t('session.untitled'))
+  // An unreachable host is not an empty account. Saying 「还没有会话」 there is a
+  // claim about the person's own data that this panel has no way to check —
+  // their sessions are all still there, on a port nothing is answering.
+  //
+  // The header falls back to the product's own name rather than to the error
+  // sentence: the blocked surface below already says it, and said twice in one
+  // screen it reads as a stutter rather than as emphasis.
+  const label = !hostReachable
+    ? t('panel.title')
+    : currentSessionId.length === 0
+      ? t('history.empty')
+      : currentSessionBlank && session === undefined
+        ? t('session.new')
+        : session?.title || (session?.blank === true ? t('session.new') : t('session.untitled'))
   titleText.textContent = label
   titleButton.title = label
   titleButton.setAttribute('aria-expanded', String(view === 'history'))
@@ -390,10 +418,13 @@ function currentModel() {
  */
 function drawModel() {
   const label = modelLabel(catalog, currentModel())
-  const shown = label.length > 0 ? label : t('model.unavailable')
+  // With no host there is no catalog to read, so the picker's "no models" line
+  // would state a second failure beside the blocked surface's first one — two
+  // different-sounding errors for one cause, which reads as two broken things.
+  const shown = !hostReachable ? t('model.select') : label.length > 0 ? label : t('model.unavailable')
   modelText.textContent = shown
   modelButton.title = shown
-  modelButton.disabled = currentSessionId.length === 0
+  modelButton.disabled = currentSessionId.length === 0 || !hostReachable
   modelButton.setAttribute('aria-label', label.length > 0 ? `${t('model.select')} · ${label}` : t('model.select'))
   modelButton.setAttribute('aria-expanded', String(menuOpen))
   if (menuOpen) drawModelMenu()
@@ -766,6 +797,13 @@ function faviconOf(tab) {
  */
 function renderContexts() {
   contexts.replaceChildren()
+  // Nothing can be attached while nothing is reachable, so the row would only
+  // repeat the blocked surface's error in a second voice — 「未连接」 beside
+  // 「连不上 dsh web」 is one cause told twice, which reads as two faults.
+  if (!hostReachable) {
+    contexts.hidden = true
+    return
+  }
   const chips = []
 
   if (mentionAddsSomething()) {
@@ -2287,9 +2325,17 @@ chrome.runtime.onMessage.addListener((message) => {
   return false
 })
 
-/** Start the panel and keep the slow-moving parts fresh. */
-async function start() {
-  paintStaticCopy()
+/**
+ * Read everything the panel shows, in one place.
+ *
+ * Split out of `start` so the blocked surface's retry runs the same work as the
+ * first load. A second, thinner path written for the retry would be the one that
+ * drifts — it is the copy nobody exercises, and the retry is exactly the moment
+ * the panel is already known to be wrong.
+ *
+ * @returns {Promise<void>} Resolves once every read has been attempted.
+ */
+async function loadEverything() {
   try {
     await refreshGroups()
     await refreshHealth()
@@ -2305,10 +2351,30 @@ async function start() {
   // Not awaited into the failure path above: a missing catalog is a state the
   // picker reports on its own, not a reason to tell the person the panel broke.
   await refreshCatalog().catch(() => {})
+}
 
-  // Ask the page for the selection it already holds, so the panel is not blank
-  // until the user happens to highlight something again.
+/** Try the whole load again, from the blocked surface. */
+async function retry() {
+  if (retrying) return
+  retrying = true
+  renderOffline()
+  try {
+    await loadEverything()
+    await requestSelectionFromPage().catch(() => {})
+  } finally {
+    retrying = false
+    renderOffline()
+  }
+}
+
+/** Start the panel and keep the slow-moving parts fresh. */
+async function start() {
+  paintStaticCopy()
+  await loadEverything()
   await requestSelectionFromPage().catch(() => {})
+  blockedAction.addEventListener('click', () => {
+    retry().catch(() => {})
+  })
 
   // Switching tabs is a new page, and with it a new selection — or none. Without
   // this the chip keeps describing the tab the panel was opened on.

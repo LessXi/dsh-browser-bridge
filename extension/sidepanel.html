@@ -440,8 +440,7 @@
       /* Waiting feedback: the text itself sweeps, the way the original does,
          but as one gradient-clipped element instead of two stacked copies with
          `!important` colour overrides. */
-      .working {
-        font-size: var(--text-xs);
+      .working {        font-size: var(--text-xs);
         background: linear-gradient(90deg, var(--tertiary) 0%, CanvasText 45% 55%, var(--tertiary) 100%);
         background-size: 220% 100%;
         background-clip: text;
@@ -457,6 +456,43 @@
       @media (prefers-reduced-motion: reduce) {
         .working { animation: none; color: var(--tertiary); background: none; -webkit-background-clip: initial; }
       }
+
+      /* ---- what the panel says when it cannot work at all ---- */
+      /* The original's status surface is a title, a sentence and a button,
+         centred in the content area. This panel used to say the same thing in an
+         eleven-pixel grey line below the content — which is where a footnote
+         goes, not an explanation of why nothing works. */
+      #blocked {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        padding: 24px 28px 64px;
+        text-align: center;
+        background: Canvas;
+      }
+      #blocked-title { margin: 0; font-size: var(--text-base); font-weight: 600; }
+      #blocked-body {
+        margin: 0;
+        max-width: 30ch;
+        font-size: var(--text-xs);
+        line-height: 1.5;
+        color: var(--muted);
+      }
+      #blocked-action {
+        margin-top: 6px;
+        height: 32px;
+        padding: 0 16px;
+        border-radius: var(--radius-xl);
+        background: CanvasText;
+        color: Canvas;
+        font-size: var(--text-sm);
+        font-weight: 500;
+      }
+      #blocked-action:hover { opacity: .88; }
 
       /* Live model output. Deliberately plain text and not markdown: a
          half-finished table or code fence parses into something different on
@@ -581,17 +617,9 @@
         color: var(--bad);
         overflow-wrap: anywhere;
       }
-      /* The one state that has nowhere else to be said. With no host on the port
-         there is nothing to read, nothing to send, and no error to report — the
-         panel just looks broken. Quiet, because it is a status: it clears itself
-         on the next request that is answered. */
-      #offline {
-        flex: none;
-        margin: 0;
-        padding: 0 12px 6px;
-        font-size: var(--text-xs);
-        color: var(--faint);
-      }
+      /* The unreachable-host state lives in #blocked, above. It used to be one
+         quiet line here, which put the explanation of why nothing works in the
+         smallest type on screen while the content area stayed empty. */
       footer { flex: none; padding: 0 10px 10px; }
       #contexts { display: flex; flex-wrap: wrap; gap: 5px; padding-bottom: 7px; }
       .chip {
@@ -770,12 +798,21 @@
       <main id="transcript" class="scroll"></main>
       <section id="history" class="scroll" hidden></section>
       <button id="to-bottom" type="button" hidden></button>
+      <!--
+        What the panel says when it cannot work at all. The original's status
+        surface is a title, a sentence and a button, centred in the content area;
+        this panel used to say the same thing in an eleven-pixel grey line below
+        the content, which is where a footnote goes rather than an explanation of
+        why nothing works.
+      -->
+      <div id="blocked" hidden>
+        <p id="blocked-title"></p>
+        <p id="blocked-body"></p>
+        <button id="blocked-action" type="button"></button>
+      </div>
     </div>
 
-    <p id="offline" hidden></p>
-
     <p id="toast" hidden></p>
-
     <footer>
       <div id="contexts" hidden></div>
       <div id="composer">

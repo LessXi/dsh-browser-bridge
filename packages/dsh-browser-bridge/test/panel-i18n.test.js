@@ -63,9 +63,22 @@ test('no dictionary entry is a sentence', (t) => {
   // explanatory copy this rewrite removed, and it is the reason a 360px panel
   // read as a help page. The original Codex side panel has no hint/description/
   // helper style class at all, which is the same rule from the other direction.
+  //
+  // One surface is exempt, and it is named here rather than inferred so the rule
+  // keeps its teeth everywhere else: the blocked pane. When the panel cannot work
+  // at all, the sentence *is* the content — the original does the same thing in
+  // its status surface ("Install the app to use ChatGPT in {browser}"), and a
+  // label there would say nothing. The list is counted so it cannot grow quietly.
+  const ALLOWED = [
+    'blocked.hostTitle',
+    'blocked.hostBody',
+  ]
+  assert.equal(ALLOWED.length, 2, 'the exempt list grew; was that intentional?')
+
   const offenders = []
   for (const [locale, dictionary] of Object.entries(DICTIONARIES)) {
     for (const [key, value] of Object.entries(dictionary)) {
+      if (ALLOWED.includes(key)) continue
       const words = value.replace(/\{[^}]*\}/g, ' ').trim().split(/\s+/).filter(Boolean)
       if (words.length > 6) offenders.push(`${locale}:${key} has ${words.length} words`)
       if (/\.\s|\u3002/.test(value) || /\.$/.test(value)) offenders.push(`${locale}:${key} is punctuated as a sentence`)
