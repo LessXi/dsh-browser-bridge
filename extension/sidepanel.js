@@ -212,6 +212,17 @@ let catalogReason = ''
 /** Whether the picker is open. */
 let menuOpen = false
 /**
+ * Which option the arrow keys are on, or -1 for none.
+ *
+ * The options themselves carry the highlight rather than DOM focus, so this is
+ * the only record of where the keyboard is. Reset every time the menu closes, so
+ * reopening always starts from nothing rather than from a stale position in a
+ * list that may have been rebuilt.
+ *
+ * @type {number}
+ */
+let menuFocus = -1
+/**
  * The open `@` picker, or null.
  *
  * `start` is where the `@` sits in the composer, so accepting a candidate can
@@ -480,6 +491,9 @@ function drawModel() {
 function drawModelMenu() {
   modelMenu.replaceChildren()
   const { error, efforts, groups: modelGroups } = modelMenuModel(catalog, currentModel())
+  // The menu is rebuilt from scratch, so any highlight from a previous open now
+  // points at a node that is gone.
+  menuFocus = -1
 
   if (error.length > 0) {
     const note = document.createElement('p')
@@ -578,10 +592,62 @@ function setMenu(next) {
   menuOpen = open
   modelButton.setAttribute('aria-expanded', String(open))
   modelMenu.hidden = !open
-  if (!open) return
+  if (!open) {
+    menuFocus = -1
+    // The pointer into the menu has to go with it. Leaving it set means the
+    // trigger names an option id that is no longer in the DOM, which a screen
+    // reader reports as a broken relationship.
+    modelButton.removeAttribute('aria-activedescendant')
+    return
+  }
   if (catalog === null) refreshCatalog().catch(() => {})
   drawModelMenu()
   positionMenu()
+}
+
+/**
+ * The options the picker is currently offering, in the order they are drawn.
+ *
+ * The effort chips and the models are one flat list, because that is how the
+ * arrow keys should walk it: the panel draws a single popover rather than the
+ * two-pane drill-down the harness's own selector uses, so up/down has to cross
+ * both sections in the order they appear on screen.
+ *
+ * @returns {HTMLButtonElement[]} The focusable options.
+ */
+function menuOptions() {
+  return [...modelMenu.querySelectorAll('button')]
+}
+
+/**
+ * Paint the highlight without moving DOM focus.
+ *
+ * Focus stays on the trigger: moving it into the menu would fight the document's
+ * click-away handler and, in a side panel, would scroll the conversation. The
+ * options are marked with `aria-selected` and a class instead, which is what the
+ * `@` menu does for the same reason.
+ *
+ * @param {number} index - Which option to mark, or -1 for none.
+ * @returns {void}
+ */
+function paintMenuFocus(index) {
+  const options = menuOptions()
+  menuFocus = index >= 0 && index < options.length ? index : -1
+  for (const [at, node] of options.entries()) {
+    node.setAttribute('aria-selected', String(at === menuFocus))
+    node.dataset.focused = at === menuFocus ? 'true' : 'false'
+  }
+  // Focus never leaves the trigger, so the option the keyboard is on has to be
+  // announced through the trigger: without this a screen reader reads the button
+  // and never learns that the arrow keys moved anything.
+  const active = options[menuFocus]
+  if (active !== undefined) {
+    if (active.id === '') active.id = `model-option-${menuFocus}`
+    modelButton.setAttribute('aria-activedescendant', active.id)
+    active.scrollIntoView({ block: 'nearest' })
+  } else {
+    modelButton.removeAttribute('aria-activedescendant')
+  }
 }
 
 /**
@@ -2320,6 +2386,66 @@ modelButton.addEventListener('click', (event) => {
   // it. Clicks inside the menu stop at the menu for the same reason.
   event.stopPropagation()
   setMenu()
+})
+
+/**
+ * Walk the picker with the keyboard.
+ *
+ * The options have always declared `role="menuitemradio"` and `role="radio"`,
+ * which is a promise that the arrow keys work — a screen reader announces a radio
+ * group and then no key moves within it. Only Escape was handled, so the roles
+ * described a menu that the keyboard could not actually use.
+ *
+ * The trigger keeps DOM focus and the highlight is painted onto the options.
+ * Moving real focus into the menu would hand it to the document's click-away
+ * handler and, in a side panel, would scroll the conversation out from under the
+ * reader.
+ *
+ * @param {KeyboardEvent} event - The key.
+ * @returns {void}
+ */
+modelButton.addEventListener('keydown', (event) => {
+  const options = menuOpen ? menuOptions() : []
+  if (event.key === 'Escape' && menuOpen) {
+    event.preventDefault()
+    setMenu(false)
+    return
+  }
+  // Alt+ArrowDown opens, matching the ARIA menu-button pattern; ArrowDown alone
+  // does it too, because in a one-control composer there is nothing else the key
+  // could mean.
+  if (event.key === 'ArrowDown' && !menuOpen) {
+    event.preventDefault()
+    setMenu(true)
+    paintMenuFocus(0)
+    return
+  }
+  if (event.key === 'ArrowUp' && !menuOpen) {
+    event.preventDefault()
+    setMenu(true)
+    paintMenuFocus(options.length - 1)
+    return
+  }
+  if (!menuOpen || options.length === 0) return
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault()
+    const step = event.key === 'ArrowDown' ? 1 : -1
+    // From "nothing chosen", either direction enters the list at its own end.
+    const from = menuFocus === -1 ? (step === 1 ? -1 : 0) : menuFocus
+    paintMenuFocus((from + step + options.length) % options.length)
+    return
+  }
+  if (event.key === 'Home' || event.key === 'End') {
+    event.preventDefault()
+    paintMenuFocus(event.key === 'Home' ? 0 : options.length - 1)
+    return
+  }
+  if (event.key === 'Enter' || event.key === ' ') {
+    const chosen = options[menuFocus]
+    if (chosen === undefined) return
+    event.preventDefault()
+    chosen.click()
+  }
 })
 
 modelMenu.addEventListener('click', (event) => {

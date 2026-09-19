@@ -432,6 +432,29 @@ test('the composer fits a narrow panel instead of overflowing it', (t) => {
   assert.match(html, /#model-text \{[^}]*text-overflow: ellipsis/, 'the model name has no ellipsis')
 })
 
+test('the model picker is a real menu, and the keyboard can walk it', (t) => {
+  // The options declared `role="menuitemradio"` and `role="radio"` from the
+  // start, which is a promise that arrow keys work — and only Escape was
+  // handled. The container also needs a role of its own, or
+  // `aria-activedescendant` on the trigger has nothing to belong to.
+  //
+  // The runtime suite cannot check this: the DOM shim builds elements in JS and
+  // never parses sidepanel.html, so a role written in the markup is invisible to
+  // it. That is why this assertion lives here.
+  const html = readExtensionFile('sidepanel.html')
+  const script = readExtensionFile('sidepanel.js')
+  assert.match(html, /id="model-menu" role="menu"/, 'the picker container is not a menu')
+  assert.ok(script.includes('aria-activedescendant'), 'the keyboard position is never announced')
+  assert.ok(script.includes('modelButton.addEventListener(\'keydown\''), 'the picker has no key handler')
+  for (const key of ['ArrowDown', 'ArrowUp', 'Home', 'End']) {
+    assert.ok(script.includes(`'${key}'`), `the picker ignores ${key}`)
+  }
+  assert.ok(
+    html.includes('.menu-option[data-focused="true"]'),
+    'there is no visible highlight, so the keyboard position cannot be seen',
+  )
+})
+
 test('no dictionary entry is dead weight', () => {
   // A key nothing reads is either a leftover from a control that was removed
   // (the header's reload button) or a label that was meant to be wired and

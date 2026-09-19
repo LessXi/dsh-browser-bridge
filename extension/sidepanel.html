@@ -912,6 +912,17 @@
         color: CanvasText;
         box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--accent) 45%, transparent);
       }
+      /* Where the arrow keys are. Painted on the option rather than moved with
+         real focus, which is what the `@` menu does for the same reason: focus
+         would be handed to the document's click-away handler, and in a side panel
+         it would scroll the conversation out from under the reader.
+         The ring is drawn whether or not the option is the checked one, so
+         "where the keyboard is" and "what is chosen" stay two different readings. */
+      .menu-effort[data-focused="true"],
+      .menu-option[data-focused="true"] {
+        background: var(--hover);
+        box-shadow: inset 0 0 0 1px var(--accent);
+      }
       .menu-option {
         display: flex;
         align-items: center;
@@ -973,7 +984,7 @@
           <button id="send" type="button"></button>
         </div>
       </div>
-      <div id="model-menu" hidden></div>
+      <div id="model-menu" role="menu" hidden></div>
   <div id="at-menu" hidden></div>
     </footer>
 

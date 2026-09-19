@@ -1,14 +1,55 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v43 已交付。** 下一节就是最新的一轮改动；下面标 v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v43 那一段为止即可。
+> **当前状态：v44 已交付。** 下一节就是最新的一轮改动；下面标 v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v44 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（431 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（436 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 >
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
+
+> ### v44：模型选择器声明了「可以用方向键」，但方向键没接（扩展侧，本次修复）
+>
+> **怎么发现的**：换了一条从没测过的轴 —— **纯键盘操作**。`@` 提及菜单支持方向键，
+> 照着它去查模型选择器，发现**声明与实现不一致**：
+>
+> ```
+> drawModelMenu sets role:  true                                        ← 声明了 menuitemradio / radio
+> document keydown handler: if (event.key === 'Escape') setMenu(false)  ← 只有 Escape
+> ```
+>
+> 每个选项都带 `role="menuitemradio"`，屏幕阅读器会念成可导航的单选组 ——
+> 键盘用户于是去按方向键，**什么都不会发生**，然后以为面板坏了。
+> **这类缺陷比「没做」更糟：要么真的接上，要么别声明。**
+>
+> **修法**：触发按钮接管键盘（`ArrowDown`/`ArrowUp` 进出与循环、`Home`/`End`、
+> `Enter`/空格选择、`Escape` 关闭）；**DOM 焦点留在触发按钮上**，高亮画在选项上
+> （`.menu-option[data-focused="true"]` + `--accent` 内描边）—— 理由与 `@` 菜单相同：
+> 焦点进菜单会交给 document 的「点外部关闭」，在侧栏里还会把对话滚走。
+> 焦点不在选项上，位置就必须由触发按钮宣告：`aria-activedescendant`；
+> 菜单容器原先**没有 `role`**，补 `role="menu"`（否则 activedescendant 无所依附）；
+> 关闭时**一并清掉**该属性（否则指向已不存在的节点）。
+>
+> **实测（真实浏览器）**：无头 Chrome 打开选择器按三次 `ArrowDown`，页内探针回报
+> `labels=["Off","Light","High","Max","DeepSeek-V41-Flash","DeepSeek-V4-Pro"]`、
+> `focused=2`、`activedescendant=model-option-2` —— **索引与绘制顺序一致**。
+>
+> **测试 436 条**（431→436）。行为测试 4 条在 `panel-stream.test.js`；
+> **静态断言 1 条必须放 `panel-i18n.test.js`** —— DOM shim **在 JS 里造元素、
+> 不解析 `sidepanel.html`**，写在标签里的 `role="menu"` 运行时根本看不见。
+>
+> **证伪四次，第四次抓出一个假测试**：只把「关闭时清 `menuFocus`」与
+> 「重建菜单时清 `menuFocus`」**分别**改坏，测试**全绿** —— 两者互相兜底。
+> 真正可观测的是那个**指针**，于是改断言 `aria-activedescendant`，
+> **两处一起改坏才变红**。**能互相兜底的实现，必须用它们共同的可见结果来测。**
+>
+> **夹具**：会话原先**没有 `model` 字段** ⇒ `chooseModel` 以 `model.unavailable`
+> 提前返回（**正确行为**），所以选择器测试必须先给会话一个模型。
+> 新增 `host.sessionModel` 与 `host.catalog`（默认 `null`，让多数用例仍走「不可用」分支）。
+>
+> **交付要求**：只改 `extension/` → **重载 Chrome 扩展**。
 
 > ### v43：面板拖窄到 240px 时，底部溢出 12px（扩展侧，本次修复）
 >

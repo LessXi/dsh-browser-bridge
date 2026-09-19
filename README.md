@@ -249,7 +249,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 431 条
+npm test                          # 全部 436 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -275,7 +275,7 @@ npm run check:extension           # 扩展脚本语法检查（Chrome 加载前�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 431 条
+npm test                 # 436 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -288,7 +288,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 不会把 `@deepseek-ai/*` 拉下来。宿主库由 `lib/deps.js` 在运行时从
 `$DSH_HOME/profiles/node_modules` 解析。
 
-**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **431 passing, 0 failing, 0 skipped**，
+**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **436 passing, 0 failing, 0 skipped**，
 `npm run check:extension` exit 0。前提是这台机器上装过 DSH（宿主库要能解析到）。
 
 **验证环境**：Node **v24.15.0**。两个 `package.json` 里的 `engines.node: ">=20"` 是**保守下限**，
@@ -306,7 +306,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面四层测试，431 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
+**已自动化验证**：上面四层测试，436 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
 
 侧边栏那部分还有一组**静态**检查，防止语言和版式漂回去：两个字典的键必须完全一致、面板里每个
 `t('…')` 的键都必须存在、HTML 里不允许残留裸文案、旧版文案一个都不许出现、**字典里不允许出现整句
@@ -364,6 +364,71 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 「宿主聚合 → 走 `notify` → service worker 转给面板 → 面板逐字画出来」这一段由
 `test/stream.test.js`（真 socket 上的帧形状）+ `test/panel-stream.test.js`（真跑面板模块）分段覆盖，
 **中间那一跳（Chrome 的 `chrome.runtime.sendMessage`）只做了结构断言，没有在真 Chrome 里点过**。
+
+#### v44：模型选择器声明了「可以用方向键」，但方向键没接（本次修复）
+
+**怎么发现的**：换了一条从没测过的轴 —— **纯键盘操作**。
+`@` 提及菜单是支持的（`ArrowDown`/`ArrowUp` 带 `aria-selected`），于是照着它去查模型选择器。
+
+**这是一个真实的缺陷，而且是一类特别的缺陷：声明与实现不一致**
+
+`extension/sidepanel.js` 的 `drawModelMenu()` 给每个选项都设了
+`role="menuitemradio"` 与 `role="radio"` —— **这是一个承诺**：屏幕阅读器会念出
+「单选组」，然后用户按方向键，**什么都不会发生**。静态确认：
+
+```
+drawModelMenu mentions keydown: false
+drawModelMenu sets tabIndex: false
+drawModelMenu sets role:      true      ← 声明了
+document keydown handler:     if (event.key === 'Escape') setMenu(false)   ← 只有 Escape
+```
+
+**这类缺陷比「没做」更糟**：屏幕阅读器把选项念成可导航的单选组，
+键盘用户就会去按方向键，然后以为面板坏了。**要么真的接上，要么别声明。**
+
+**修法：接上键盘，并让位置可被感知**
+- `modelButton` 的 `keydown`：`ArrowDown`/`ArrowUp` 在没有高亮时进入列表（分别从头/尾），
+  在列表内**循环**移动；`Home`/`End` 跳到首尾；`Enter`/空格选择当前项；`Escape` 关闭。
+- **DOM 焦点留在触发按钮上**，高亮画在选项上（`.menu-option[data-focused="true"]`
+  加 `--accent` 内描边）。理由和 `@` 菜单一样：把焦点移进菜单会交给 document 的
+  「点外部关闭」处理器，而在侧栏里还会把对话滚走。
+- 既然焦点不在选项上，位置就必须通过触发按钮宣告：
+  `aria-activedescendant` 指向当前选项的 id。**菜单容器原先没有 `role`**，
+  所以补上 `role="menu"` —— 否则 `aria-activedescendant` 无所依附。
+- 关闭时**一并清掉** `aria-activedescendant`：留着它等于让触发按钮指向一个已经不存在的节点。
+
+**实测（真实浏览器，不是断言）**：无头 Chrome 打开选择器并按三次 `ArrowDown`，
+页内探针回报：
+
+```
+labels = ["Off","Light","High","Max","DeepSeek-V41-Flash","DeepSeek-V4-Pro"]
+focused index              = 2
+aria-activedescendant      = model-option-2
+```
+
+**索引与绘制顺序一致**（努力档位在前，模型在后）。
+
+**测试**：`npm test` **436 passed / 0 failed**（431 → 436）；`check:extension` exit 0。
+- `panel-stream.test.js` 新增 4 条**行为**测试（走列表与循环、`Home`/`End`、
+  `aria-activedescendant` 与 `aria-selected`、`Enter` 只在有高亮时才发选择、
+  关闭后位置被遗忘）。
+- `panel-i18n.test.js` 新增 1 条**静态**断言：菜单容器必须是 `role="menu"`、
+  脚本必须有 `keydown` 且认四个方向键、样式里必须有可见高亮。
+  **为什么拆成两处**：DOM shim **在 JS 里造元素、不解析 `sidepanel.html`**，
+  所以写在标签里的 `role="menu"` 在运行时测试里根本看不见 —— 这条只能静态查。
+
+**证伪四次**：方向键不移动高亮 → 3 红；不设 `aria-activedescendant` → 1 红；
+高度…… **第四次暴露了一个假测试**：只把「关闭时清 `menuFocus`」和
+「重建菜单时清 `menuFocus`」**分别**改坏，测试**依然全绿** —— 因为两者互相兜底。
+真正可观测的是那个**指针**，于是断言改成看 `aria-activedescendant`，
+**两处一起改坏才变红**（1 红）。**能互相兜底的实现，就必须用它们共同的可见结果来测。**
+
+**顺带**：夹具的会话**没有 `model` 字段**，所以 `chooseModel` 会以
+`model.unavailable` 提前返回 —— 这是**正确行为**，但它意味着选择器的测试
+必须先给会话一个模型。夹具新增 `host.sessionModel` 与 `host.catalog`（默认 `null`，
+让绝大多数用例仍走「模型列表不可用」那条路）。
+
+**交付要求**：只改 `extension/` → **重载 Chrome 扩展**即可。
 
 #### v43：面板拖窄到 240px 时，底部溢出 12px（本次修复）
 
@@ -2020,7 +2085,7 @@ v13 我已经在 health 里放了 `approvalPending`，**但面板从来没读它
 
 | 项 | 结果 |
 |---|---|
-| `npm test` | **431 passing, 0 failing, 0 skipped** |
+| `npm test` | **436 passing, 0 failing, 0 skipped** |
 | `npm run check:extension` | exit 0 |
 | **把 `content-selection.js` 换回 `git show HEAD:` 的那一版，再跑新测试** | **3 条变红**（接管、死副本被替换、失败后重试），换回新版全绿 → 测试确实能抓住这两个缺陷 |
 | 旧版跑「死副本被替换」用例 | 直接把进程打崩：`Error: Extension context invalidated.` —— 无人接管的 rejection，正是线上那个缺陷的真身 |
@@ -2368,7 +2433,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 431 条，含真实 Chrome 端到端
+└─ test/                  # 436 条，含真实 Chrome 端到端
 
 extension/
 ├─ manifest.json

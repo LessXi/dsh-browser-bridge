@@ -83,6 +83,25 @@ const host = {
   bridgeConnected: true,
   /** What the worker answers to `dsh-bridge-state` / `dsh-bridge-retry`. */
   bridgeState: { open: true, connecting: false, reason: '', detail: '', version: '0.4.0' },
+  /**
+   * The model catalog the host reports, or null for "no catalog".
+   *
+   * Null by default because most tests want the picker's unavailable line; the
+   * keyboard tests set it so the menu has options to walk.
+   */
+  catalog: null,
+  /**
+   * The model this session is on, as the listing reports it.
+   *
+   * Null by default: `chooseModel` needs a provider and a model to fall back on
+   * when a patch carries only an effort, and it refuses without them. That is
+   * correct behaviour, and it means the picker tests have to supply one.
+   */
+  sessionModel: null,
+  /** Every `POST {action:'select-model'}` body, in order. */
+  models: [],
+  /** The answer a model selection gets, mutated per test. */
+  selectModel: { status: 200, payload: { selected: { provider: 'deepseek-official', model: 'deepseek-flash' } } },
   /** Every message the panel sent to the service worker, in order. */
   runtimeMessages: [],
   /** How many times the panel opened the options page. */
@@ -136,7 +155,7 @@ const groupsPayload = () => ({
       // directory is not a registered workspace, which is common.
       title: host.groupTitle,
       sessions: [
-        { id: SESSION, title: 'A session', updatedAt: 0, running: host.running, blank: false },
+        { id: SESSION, title: 'A session', updatedAt: 0, running: host.running, blank: false, model: host.sessionModel },
         // Listed, so a test can switch to it by clicking the row. Without a
         // second session in the list, "switching" is not reachable at all and
         // every renderer's assumption that its state belongs to the session on
@@ -234,10 +253,21 @@ globalThis.fetch = async (url, options = {}) => {
         more: host.more === true,
       })
     }
-    if (body.action === 'models') return respond({ error: 'empty-catalog' })
+    // A catalog is opt-in, because most tests want the picker's "no models" line
+    // and only the keyboard ones need options to walk. `host.catalog` is null
+    // until a test sets it.
+    if (body.action === 'models') {
+      if (host.catalog === null) return respond({ error: 'empty-catalog' })
+      return respond({ catalog: host.catalog, reason: '' })
+    }
     if (body.action === 'send') {
       host.sent.push(body)
       return respond({ accepted: true })
+    }
+    // Model selection, which the picker's keyboard tests drive.
+    if (body.action === 'select-model') {
+      host.models.push(body)
+      return respond(host.selectModel.payload, host.selectModel.status)
     }
     if (body.action === 'cancel') {
       host.cancelled.push(body)
@@ -940,6 +970,28 @@ async function settleToIdle() {
   host.running = false
   host.cancel = { status: 200, payload: { cancelled: true } }
   await press()
+}
+
+/**
+ * Load the catalog into the panel, and give the session a model to be on.
+ *
+ * The fixture's session carries no `model`, so `currentModel()` is null and
+ * `chooseModel` refuses before it ever reaches the wire — it needs a provider and
+ * a model to fall back to when the patch carries only an effort. That refusal is
+ * correct behaviour, and it is also why this helper has to set one.
+ *
+ * @returns {Promise<void>} Resolves once the picker holds the catalog.
+ */
+async function refreshCatalogForTest() {
+  host.sessionModel = { provider: 'deepseek-official', model: 'deepseek-flash', reasoningEffort: 'max' }
+  // The panel reads the session's model from the listing, so the list has to be
+  // re-read before the picker knows what it is on.
+  await clockOf('groups')
+  const trigger = registry.get('model')
+  trigger.emit('click', { stopPropagation() {} })
+  await settle()
+  trigger.emit('click', { stopPropagation() {} })
+  await settle()
 }
 
 /**
@@ -2319,5 +2371,193 @@ test('the ungrouped bucket is named, instead of borrowing the heading above it',
       registry.get('title').click()
       await settle()
     }
+  })
+})
+
+/** A catalog with two models, one of which carries effort levels. */
+function twoModelCatalog() {
+  return {
+    default: { provider: 'deepseek-official', model: 'deepseek-flash', reasoningEffort: 'max' },
+    groups: [
+      {
+        id: 'deepseek-official',
+        name: 'DeepSeek',
+        models: [
+          {
+            id: 'deepseek-flash',
+            name: 'DeepSeek-V41-Flash',
+            reasoning: { efforts: [{ id: 'max', name: 'Max' }, { id: 'high', name: 'High' }] },
+          },
+          { id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro' },
+        ],
+      },
+    ],
+  }
+}
+
+/** Open the picker and wait for it to be drawn with options. */
+async function openPicker() {
+  const trigger = registry.get('model')
+  trigger.emit('click', { stopPropagation() {} })
+  await settle()
+  return trigger
+}
+
+/** The picker's options, in drawn order. */
+const pickerOptions = () => registry.get('model-menu').querySelectorAll('button')
+
+/** Which option index carries the keyboard highlight, or -1. */
+function focusedOption() {
+  const options = pickerOptions()
+  return options.findIndex((node) => node.dataset.focused === 'true')
+}
+
+/**
+ * Press a key on the trigger.
+ *
+ * The handler calls `preventDefault`, which the shim records rather than
+ * implements, so the object passed here only has to carry the key.
+ */
+function pressOnTrigger(key, extra = {}) {
+  registry.get('model').emit('keydown', { key, preventDefault() {}, ...extra })
+}
+
+test('the picker can be walked with the arrow keys', async () => {
+  // The options have always declared `role="menuitemradio"` and `role="radio"`,
+  // which promises that arrow keys work. Only Escape was handled, so the roles
+  // described a menu the keyboard could not use.
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    host.catalog = twoModelCatalog()
+    await refreshCatalogForTest()
+    const trigger = await openPicker()
+
+    assert.ok(pickerOptions().length > 0, 'the picker drew no options to walk')
+    assert.equal(focusedOption(), -1, 'the picker opened with something already highlighted')
+    assert.equal(trigger.getAttribute('role') === 'menu' ? 'menu' : 'button', 'button')
+
+    pressOnTrigger('ArrowDown')
+    assert.equal(focusedOption(), 0, 'ArrowDown did not enter the list')
+
+    pressOnTrigger('ArrowDown')
+    assert.equal(focusedOption(), 1, 'ArrowDown did not advance')
+
+    pressOnTrigger('ArrowUp')
+    assert.equal(focusedOption(), 0, 'ArrowUp did not go back')
+
+    // Wrapping, both ways, because a menu that stops dead at the end reads as a
+    // key that did nothing.
+    pressOnTrigger('ArrowUp')
+    assert.equal(focusedOption(), pickerOptions().length - 1, 'ArrowUp did not wrap to the end')
+    pressOnTrigger('ArrowDown')
+    assert.equal(focusedOption(), 0, 'ArrowDown did not wrap to the start')
+
+    pressOnTrigger('End')
+    assert.equal(focusedOption(), pickerOptions().length - 1, 'End did not jump to the last option')
+    pressOnTrigger('Home')
+    assert.equal(focusedOption(), 0, 'Home did not jump to the first option')
+  })
+})
+
+test('the keyboard says where it is, without taking focus', async () => {
+  // Focus stays on the trigger: moving it into the menu would hand it to the
+  // document's click-away handler and, in a side panel, would scroll the
+  // conversation out from under the reader. So the position has to be announced
+  // through the trigger instead.
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    host.catalog = twoModelCatalog()
+    await refreshCatalogForTest()
+    await openPicker()
+
+    pressOnTrigger('ArrowDown')
+    const options = pickerOptions()
+    assert.equal(options[0].getAttribute('aria-selected'), 'true')
+    assert.equal(options[1].getAttribute('aria-selected'), 'false')
+    assert.ok(options[0].id.length > 0, 'the highlighted option has no id to point at')
+    assert.equal(
+      registry.get('model').getAttribute('aria-activedescendant'),
+      options[0].id,
+      'a screen reader is never told which option the arrow keys reached',
+    )
+  })
+})
+
+test('Enter chooses the highlighted option, and only then', async () => {
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    host.catalog = twoModelCatalog()
+    await refreshCatalogForTest()
+    host.selectModel = { status: 200, payload: { selected: { provider: 'deepseek-official', model: 'deepseek-v4-pro' } } }
+    host.models.length = 0
+    await openPicker()
+
+    // Nothing highlighted: Enter must not pick something at random.
+    pressOnTrigger('Enter')
+    await settle()
+    assert.deepEqual(host.models, [], 'Enter chose an option before the keyboard was on one')
+
+    // Walk onto the second option and take it. The order is the drawn order:
+    // the effort chips come first, then each group's models — so index 1 is the
+    // `high` effort, not a model. Asserting the body rather than the count is
+    // what keeps this honest about which option was actually chosen.
+    pressOnTrigger('ArrowDown')
+    pressOnTrigger('ArrowDown')
+    const highlighted = pickerOptions()[focusedOption()]
+    assert.equal(highlighted.className, 'menu-effort', 'the walk did not land on an effort chip')
+    pressOnTrigger('Enter')
+    await settle()
+    assert.equal(host.models.length, 1, 'Enter did not send a selection')
+    // The effort travels with the model it belongs to: an effort chip alone would
+    // let a level be set for a model that does not offer it.
+    assert.deepEqual(host.models[0], {
+      action: 'select-model',
+      sessionId: SESSION,
+      provider: 'deepseek-official',
+      model: 'deepseek-flash',
+      reasoningEffort: 'high',
+    })
+  })
+})
+
+test('closing the picker forgets where the keyboard was', async () => {
+  // Reopening onto a stale position would highlight an option in a list that may
+  // have been rebuilt underneath it.
+  //
+  // Two things clear the position — closing, and the rebuild inside
+  // `drawModelMenu` — so falsifying either alone leaves the other to cover for it
+  // and the test stays green. What is actually observable is the *pointer*: the
+  // trigger names an option id, and a closed picker must stop naming one, because
+  // the node is gone and a screen reader reports a broken relationship.
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    host.catalog = twoModelCatalog()
+    await refreshCatalogForTest()
+    await openPicker()
+    pressOnTrigger('ArrowDown')
+    pressOnTrigger('ArrowDown')
+    assert.equal(focusedOption(), 1)
+    assert.ok(
+      registry.get('model').getAttribute('aria-activedescendant') !== null,
+      'the trigger never pointed at an option, so this test proves nothing',
+    )
+
+    pressOnTrigger('Escape')
+    await settle()
+    assert.equal(registry.get('model-menu').hidden, true, 'Escape did not close the picker')
+    assert.equal(
+      registry.get('model').getAttribute('aria-activedescendant'),
+      null,
+      'the trigger still points at an option that is gone',
+    )
+
+    // And reopening starts from nothing rather than from where it left off.
+    await openPicker()
+    assert.equal(focusedOption(), -1, 'the picker reopened on a stale highlight')
+    assert.equal(
+      registry.get('model').getAttribute('aria-activedescendant'),
+      null,
+      'reopening pointed at an option before the keyboard chose one',
+    )
   })
 })
