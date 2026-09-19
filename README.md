@@ -249,7 +249,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 427 条
+npm test                          # 全部 428 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -275,7 +275,7 @@ npm run check:extension           # 扩展脚本语法检查（Chrome 加载前�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 427 条
+npm test                 # 428 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -288,7 +288,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 不会把 `@deepseek-ai/*` 拉下来。宿主库由 `lib/deps.js` 在运行时从
 `$DSH_HOME/profiles/node_modules` 解析。
 
-**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **427 passing, 0 failing, 0 skipped**，
+**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **428 passing, 0 failing, 0 skipped**，
 `npm run check:extension` exit 0。前提是这台机器上装过 DSH（宿主库要能解析到）。
 
 **验证环境**：Node **v24.15.0**。两个 `package.json` 里的 `engines.node: ">=20"` 是**保守下限**，
@@ -306,7 +306,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面四层测试，427 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
+**已自动化验证**：上面四层测试，428 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
 
 侧边栏那部分还有一组**静态**检查，防止语言和版式漂回去：两个字典的键必须完全一致、面板里每个
 `t('…')` 的键都必须存在、HTML 里不允许残留裸文案、旧版文案一个都不许出现、**字典里不允许出现整句
@@ -364,6 +364,57 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 「宿主聚合 → 走 `notify` → service worker 转给面板 → 面板逐字画出来」这一段由
 `test/stream.test.js`（真 socket 上的帧形状）+ `test/panel-stream.test.js`（真跑面板模块）分段覆盖，
 **中间那一跳（Chrome 的 `chrome.runtime.sendMessage`）只做了结构断言，没有在真 Chrome 里点过**。
+
+#### v40：暗色模式下，红色的字太淡（本次修复）
+
+**怎么发现的**：面板声明了 `color-scheme: light dark`，除三个颜色外**全部**是
+`color-mix(… CanvasText …)`，所以它们**自动跟着方案翻转**。剩下那三个是硬编码的，
+于是**只有它们会在其中一个方案里失守**。按 WCAG 算了一遍对比度：
+
+| 颜色 | 在浅色 Canvas(#fff) 上 | 在深色 Canvas(#1b1b1d) 上 |
+|---|---|---|
+| `--bad #d1453b`（失败行文字，12–13px） | 4.54 ✅ | **3.79 ❌** |
+| `--accent #4d6bfe`（链接、选中态） | 4.33 ⚠️ | **3.97 ❌** |
+| `--ok #2f9e63` | 3.39 ⚠️ | 5.07 ✅ |
+| `#fff` 放在 accent 填充上（发送键 / 允许按钮） | 4.33 ⚠️ | — |
+
+**一个值不可能同时过两个方案的 AA** —— 这是算术，不是取舍。
+官方原版的做法印证了这一点：它用**按主题解析的 `var(--red-500)`**，
+而不是一个固定的十六进制值。
+
+**修法**：用 `light-dark()`。面板**已经**声明了 `color-scheme: light dark`，
+所以浏览器自己按方案解析，不需要我们再写一份重复的媒体查询
+（Chrome 116 起支持，`manifest.json` 的 `minimum_chrome_version` 正好是 116）。
+
+数值是**量出来的**，不是挑出来的：
+
+| token | 浅色 | 深色 |
+|---|---|---|
+| `--bad` | `#d1453b`（4.54，不变） | `#fa423e`（4.84） |
+| `--accent` | `#4a63e7`（4.96） | `#3a83f7`（4.72） |
+| `--ok` | `#2f7d52`（5.03） | `#3fae74`（6.16） |
+| `--on-accent`（新增） | `#ffffff`（4.96） | `#10101a`（5.19） |
+
+**新增 `--on-accent` 的理由**：白字放在深色 accent 上只有 **3.64**，
+而「本会话允许」按钮的字只有 12px —— 换方案之后需要翻转的不只是前景色，
+**「放在填充色上的字」是独立的一个 token**。原先两处写死 `#fff`
+（`#send`、`.approval-allow`）都改用它。
+
+**像素级验证**（不是推断）：把浅色与深色的 `failed` 场景各截一张，
+解码 PNG 取出失败文字的**实际渲染颜色**：
+浅色是 `209,69,59`（= `#d1453b`），深色是 `250,66,62`（= `#fa423e`）—— 与预期逐字节一致。
+
+**顺带记下一个陷阱**：用无头 Chrome 的 `--force-dark-mode` 截图**不能**验证这件事 ——
+它产出的是浅色图（面板用的是系统色 `Canvas`/`CanvasText`，不是 `prefers-color-scheme` 强制反转）。
+正确做法是在预览宿主里用 `?dark=1` 声明 `color-scheme: dark` 并给出 Canvas 的深色值，
+再用**像素直方图**判定（浅色 mean=239 / 92% 亮像素，深色 mean=41 / 4%）。
+
+**测试**：`npm test` **428 passed / 0 failed**；`check:extension` exit 0。
+新增 1 条断言：四个 token 必须都是 `light-dark()`，且**每种方案都 ≥ 4.5**。
+**证伪两次**：退回硬编码 `#d1453b` → 1 红（「不是 scheme-aware」）；
+写成 `light-dark(#d1453b, #d1453b)` → 1 红（「dark 只有 3.79」）。
+
+**交付要求**：只改 `extension/` → **重载 Chrome 扩展**即可。
 
 #### v39：面板拖宽之后，一段话横跨整个屏（本次修复）
 
@@ -1817,7 +1868,7 @@ v13 我已经在 health 里放了 `approvalPending`，**但面板从来没读它
 
 | 项 | 结果 |
 |---|---|
-| `npm test` | **427 passing, 0 failing, 0 skipped** |
+| `npm test` | **428 passing, 0 failing, 0 skipped** |
 | `npm run check:extension` | exit 0 |
 | **把 `content-selection.js` 换回 `git show HEAD:` 的那一版，再跑新测试** | **3 条变红**（接管、死副本被替换、失败后重试），换回新版全绿 → 测试确实能抓住这两个缺陷 |
 | 旧版跑「死副本被替换」用例 | 直接把进程打崩：`Error: Extension context invalidated.` —— 无人接管的 rejection，正是线上那个缺陷的真身 |
@@ -2165,7 +2216,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 427 条，含真实 Chrome 端到端
+└─ test/                  # 428 条，含真实 Chrome 端到端
 
 extension/
 ├─ manifest.json

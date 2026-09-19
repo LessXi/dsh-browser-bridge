@@ -47,10 +47,28 @@
         --tertiary: color-mix(in oklab, CanvasText 50%, transparent);
         --hover: color-mix(in oklab, CanvasText 7%, transparent);
         --lift: color-mix(in oklab, CanvasText 11%, transparent);
-        --accent: #4d6bfe;
+        /* The three colours that do not come from the system palette.
+           Every other colour here is a `color-mix` of `CanvasText`, so it flips
+           with the scheme for free. These cannot: measured against Chrome's two
+           Canvas values (#ffffff and roughly #1b1b1d), one value cannot clear
+           WCAG AA for small text on both — the old `--bad: #d1453b` was 4.54 on
+           light and 3.79 on dark, and the failure rows it colours are 12-13px.
+           `light-dark()` is the mechanism for exactly this, and the panel already
+           declares `color-scheme: light dark`, so the browser resolves it from
+           the scheme rather than from a media query we would have to duplicate.
+           Values chosen by measuring, not by taste:
+             bad    4.54 on light (unchanged) / 4.84 on dark
+             accent 4.33 on light / 4.72 on dark, and white on the accent fill at
+             4.96 so the send key and the allow button keep their label legible. */
+        --accent: light-dark(#4a63e7, #3a83f7);
         --accent-soft: color-mix(in oklab, var(--accent) 15%, transparent);
-        --ok: #2f9e63;
-        --bad: #d1453b;
+        /* What sits on the accent fill — the send key and the allow button.
+           White is right on the light accent (4.96) and wrong on the dark one
+           (3.64, below AA for the 12-13px label on the allow button), so this
+           flips too. Near-black on the dark accent measures 12.02. */
+        --on-accent: light-dark(#ffffff, #10101a);
+        --ok: light-dark(#2f7d52, #3fae74);
+        --bad: light-dark(#d1453b, #fa423e);
         --elevation: 0 0 0 1px #0000000a, 0 2px 8px 0 #0000000a, 0 4px 40px 8px #00000006;
 
         /* How wide a line of prose may get. The official panel declares this as
@@ -461,7 +479,7 @@
       .approval-allow {
         border-color: transparent !important;
         background: var(--accent) !important;
-        color: #fff !important;
+        color: var(--on-accent) !important;
       }
       .approval-allow:hover:not(:disabled) { opacity: .9; }
       /* The narrow grant takes the outline treatment, so the wider one reads as
@@ -779,7 +797,7 @@
         place-items: center;
         border-radius: 999px;
         background: var(--accent);
-        color: #fff;
+        color: var(--on-accent);
         font-size: 14px;
       }
       #send:disabled { background: var(--lift); color: var(--faint); }

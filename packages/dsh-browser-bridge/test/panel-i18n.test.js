@@ -333,6 +333,40 @@ test('the reading column is capped, so a wide panel does not stretch prose', (t)
   )
 })
 
+test('the palette colours clear AA in both schemes, not just the light one', (t) => {
+  // The panel flips with `color-scheme: light dark`, and every colour except
+  // these three is a `color-mix` of `CanvasText`, so it flips for free. A single
+  // hardcoded value cannot clear WCAG AA for small text on both a white and a
+  // near-black Canvas: `--bad: #d1453b` measured 4.54 on light and 3.79 on dark,
+  // and the failure rows it colours are 12-13px.
+  const html = readExtensionFile('sidepanel.html')
+  const token = (name) => {
+    const found = new RegExp(`--${name}:\\s*light-dark\\(([^)]+)\\)`).exec(html)
+    assert.ok(found, `--${name} is not scheme-aware`)
+    return found[1].split(',').map((part) => part.trim())
+  }
+  const srgb = (v) => { const c = v / 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4 }
+  const lum = ([r, g, b]) => 0.2126 * srgb(r) + 0.7152 * srgb(g) + 0.0722 * srgb(b)
+  const hex = (value) => [1, 3, 5].map((at) => parseInt(value.slice(at, at + 2), 16))
+  const ratio = (a, b) => {
+    const [hi, lo] = lum(a) > lum(b) ? [lum(a), lum(b)] : [lum(b), lum(a)]
+    return (hi + 0.05) / (lo + 0.05)
+  }
+  // Chrome's two Canvas values, which the panel draws on.
+  const CANVAS = { light: hex('#ffffff'), dark: hex('#1b1b1d') }
+  for (const name of ['accent', 'ok', 'bad', 'on-accent']) {
+    const [light, dark] = token(name)
+    // `on-accent` is drawn ON the accent fill, so it is measured against that.
+    const against = name === 'on-accent'
+      ? { light: hex(token('accent')[0]), dark: hex(token('accent')[1]) }
+      : CANVAS
+    for (const scheme of ['light', 'dark']) {
+      const got = ratio(hex(scheme === 'light' ? light : dark), against[scheme])
+      assert.ok(got >= 4.5, `--${name} in ${scheme} is ${got.toFixed(2)}, below AA for small text`)
+    }
+  }
+})
+
 test('no dictionary entry is dead weight', () => {
   // A key nothing reads is either a leftover from a control that was removed
   // (the header's reload button) or a label that was meant to be wired and
