@@ -2612,3 +2612,50 @@ test('closing the picker forgets where the keyboard was', async () => {
     )
   })
 })
+
+test('a screen reader is told when a turn stops to ask something', async () => {
+  // Everything this panel says goes into the transcript, and the transcript is
+  // not a live region — so an approval question, which blocks a turn until it is
+  // answered, was silent to anyone not looking at the screen. There was no
+  // `aria-live`, no `role="status"` and no `role="alert"` anywhere in the
+  // extension; that absence is what this test exists to keep closed.
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    clearApproval()
+    // A previous test leaves this stub answering 409, and the shared fixture means
+    // this one inherits it — which surfaced as an unrelated toast rather than as a
+    // failure of the thing under test.
+    host.approval = { status: 200, payload: { answered: true } }
+    // The shared fixture leaks several stub statuses between tests — this one had
+    // create answering 400 ("unknown action") from the stale-host test, which
+    // surfaced as an unrelated toast. Reset what this test depends on.
+    host.create = { status: 200, payload: { created: true, sessionId: SESSION } }
+    const urgent = registry.get('announce-urgent')
+    const polite = registry.get('announce')
+    urgent.textContent = ''
+    polite.textContent = ''
+
+    // `inbox` holds listeners, not messages — `post` is the delivery helper.
+    // Pushing a message object into it does nothing at all, which is how this test
+    // first "failed": the question was never delivered to the panel.
+    post('dsh-approval-asked', {
+      // `origin`, not `site`: the host calls it `origin` on the wire and the card
+      // renames it, so sending `site` here would be dropped by `approvalQuestion`
+      // and the sentence would fall back to the site-less form.
+      id: 'q-announce',
+      sessionId: SESSION,
+      toolName: 'browser_click',
+      origin: 'https://example.com',
+    })
+    await settle()
+    await settle()
+
+
+    assert.ok(
+      urgent.textContent.includes('browser_click'),
+      `an approval question was never announced: ${JSON.stringify(urgent.textContent)}`,
+    )
+    assert.equal(polite.textContent, '', 'a blocking question waited its turn in the polite queue')
+    clearApproval()
+  })
+})

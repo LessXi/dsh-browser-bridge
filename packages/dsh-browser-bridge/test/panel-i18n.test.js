@@ -455,6 +455,26 @@ test('the model picker is a real menu, and the keyboard can walk it', (t) => {
   )
 })
 
+test('the panel has somewhere to announce what it says', (t) => {
+  // Everything this panel reports arrives asynchronously and lands in the
+  // transcript, which is not a live region. Before this there was no `aria-live`,
+  // no `role="status"` and no `role="alert"` anywhere in the extension, so an
+  // approval question — which stops a turn until it is answered — was silent to
+  // anyone using a screen reader.
+  const html = readExtensionFile('sidepanel.html')
+  assert.match(html, /id="announce-urgent"[^>]*aria-live="assertive"/, 'a blocking question has nowhere to be announced')
+  assert.match(html, /id="announce"[^>]*aria-live="polite"/, 'an ordinary message has nowhere to be announced')
+  // `display:none` and `visibility:hidden` both remove the node from the
+  // accessibility tree, which would defeat the point of the element.
+  assert.match(html, /\.sr-only \{[^}]*clip-path/, 'the live regions are not hidden the way a screen reader still reads')
+  const script = readExtensionFile('sidepanel.js')
+  assert.ok(script.includes('function announce('), 'nothing writes to the live regions')
+  assert.ok(
+    script.includes("announce(`${t('approval.asking')}"),
+    'an approval question is never announced',
+  )
+})
+
 test('no dictionary entry is dead weight', () => {
   // A key nothing reads is either a leftover from a control that was removed
   // (the header's reload button) or a label that was meant to be wired and

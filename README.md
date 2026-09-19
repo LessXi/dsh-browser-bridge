@@ -249,7 +249,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 438 条
+npm test                          # 全部 440 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -275,7 +275,7 @@ npm run check:extension           # 扩展脚本语法检查（Chrome 加载前�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 438 条
+npm test                 # 440 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -288,7 +288,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 不会把 `@deepseek-ai/*` 拉下来。宿主库由 `lib/deps.js` 在运行时从
 `$DSH_HOME/profiles/node_modules` 解析。
 
-**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **438 passing, 0 failing, 0 skipped**，
+**实测**：全新 `git clone`（零 `node_modules`）→ `npm test` **440 passing, 0 failing, 0 skipped**，
 `npm run check:extension` exit 0。前提是这台机器上装过 DSH（宿主库要能解析到）。
 
 **验证环境**：Node **v24.15.0**。两个 `package.json` 里的 `engines.node: ">=20"` 是**保守下限**，
@@ -306,7 +306,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面四层测试，438 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
+**已自动化验证**：上面四层测试，440 条。包括真实 Chrome 驱动的快照、点击、输入、截图。
 
 侧边栏那部分还有一组**静态**检查，防止语言和版式漂回去：两个字典的键必须完全一致、面板里每个
 `t('…')` 的键都必须存在、HTML 里不允许残留裸文案、旧版文案一个都不许出现、**字典里不允许出现整句
@@ -364,6 +364,50 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 「宿主聚合 → 走 `notify` → service worker 转给面板 → 面板逐字画出来」这一段由
 `test/stream.test.js`（真 socket 上的帧形状）+ `test/panel-stream.test.js`（真跑面板模块）分段覆盖，
 **中间那一跳（Chrome 的 `chrome.runtime.sendMessage`）只做了结构断言，没有在真 Chrome 里点过**。
+
+#### v46：审批问题对屏幕阅读器是完全静默的（本次修复）
+
+v44 接方向键、v45 修焦点，顺着这条轴走到「**屏幕阅读器能不能知道发生了什么**」。
+全仓库搜索：**`aria-live` / `role="status"` / `role="alert"` 零命中**。
+
+面板把所有信息都放进 `#transcript`，而**它不是 live region** —— 于是：
+**一个让回合停住的审批问题、一条失败信息、一次拒绝，对不看屏幕的人是完全静默的。**
+
+**修法：两个 live region，按紧急程度分开**
+
+| 区域 | 属性 | 用途 |
+|---|---|---|
+| `#announce-urgent` | `role="alert" aria-live="assertive"` | **打断**：审批问题正在阻塞一个回合，不能排队等 |
+| `#announce` | `role="status" aria-live="polite"` | **等停顿**：失败信息、toast |
+
+CSS 用 `.sr-only`：`position:absolute; width:1px; height:1px; clip-path: inset(50%)` ——
+**不是 `display:none` 也不是 `visibility:hidden`**（两者都会把节点从无障碍树里移掉，
+那正是这个元素存在的意义）。
+
+**接入点三处**：审批问题（`assertive`）、`say()` 的 toast（`polite`）、以及拒绝/失败路径。
+
+**顺带修掉一个我自己引入的顺序错误**：`announce` 最初写在 `renderApproval` 的
+**重绘早退守卫之后**。守卫的判据是「卡片内容键没变就 return」，而**健康轮询与通知在赛跑**，
+同一张卡片被更完整的字段重绘是最常走的路径 —— 写在守卫之后，**最常发生的那一次反而静默**。
+移到守卫之前。
+
+**测试**：`npm test` **440 passed / 0 failed**（438 → 440）；`check:extension` exit 0。
+- 行为测试：审批问题必须走 `assertive`、不许走 `polite`。
+- 静态断言：两个 region 的 role/aria-live、`.sr-only` 必须是 `clip-path` 而非 `display:none`、
+  脚本必须有 `announce(` 且审批处确实调用了它。
+
+**证伪**：把审批的 `announce` 调用短路 → 1 红。
+
+**本轮最大的教训是两条「工具比产品先出错」**：
+1. 我先用**合成 `KeyboardEvent`** 测「键盘能不能滚动对话」，得到 `false`，差点当成缺陷。
+   换成**CDP 真实按键事件**（`Input.dispatchKeyEvent`，从 `~/.dsh/profiles/node_modules/ws` 连）
+   才发现**真值是 `true`** —— Chrome 让可滚动容器本来就可聚焦、可 `Tab` 到、
+   可用 PageDown/方向键滚动（实测 `scrollTop: 0 → 81 → 115`，`tab stops=["title","new","transcript"]`）。
+   **合成事件不会触发原生滚动。这是本会话第三次「工具报出的第一个结果是错的」。**
+2. 新测试一开始「失败」，查到最后是**我自己写错了交付方式**：`inbox` 存的是**监听器数组**，
+   而我把**消息对象** push 了进去 —— 消息从未被投递。正确的助手是 `post()`。
+
+**交付要求**：只改 `extension/` → **重载 Chrome 扩展**即可。
 
 #### v45：用键盘切一次视图，焦点就掉到 body（本次修复）
 
@@ -2128,7 +2172,7 @@ v13 我已经在 health 里放了 `approvalPending`，**但面板从来没读它
 
 | 项 | 结果 |
 |---|---|
-| `npm test` | **438 passing, 0 failing, 0 skipped** |
+| `npm test` | **440 passing, 0 failing, 0 skipped** |
 | `npm run check:extension` | exit 0 |
 | **把 `content-selection.js` 换回 `git show HEAD:` 的那一版，再跑新测试** | **3 条变红**（接管、死副本被替换、失败后重试），换回新版全绿 → 测试确实能抓住这两个缺陷 |
 | 旧版跑「死副本被替换」用例 | 直接把进程打崩：`Error: Extension context invalidated.` —— 无人接管的 rejection，正是线上那个缺陷的真身 |
@@ -2476,7 +2520,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 438 条，含真实 Chrome 端到端
+└─ test/                  # 440 条，含真实 Chrome 端到端
 
 extension/
 ├─ manifest.json

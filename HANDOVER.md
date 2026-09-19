@@ -1,14 +1,49 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v45 已交付。** 下一节就是最新的一轮改动；下面标 v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v45 那一段为止即可。
+> **当前状态：v46 已交付。** 下一节就是最新的一轮改动；下面标 v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v46 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（438 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（440 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 >
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
+
+> ### v46：审批问题对屏幕阅读器是完全静默的（扩展侧，本次修复）
+>
+> 顺着 v44/v45 的键盘轴走到「**屏幕阅读器能不能知道发生了什么**」。
+> 全仓库搜索：**`aria-live` / `role="status"` / `role="alert"` 零命中**。
+> 面板把所有信息放进 `#transcript`，而它**不是 live region** ⇒
+> **让回合停住的审批问题、失败信息、拒绝，对不看屏幕的人完全静默。**
+>
+> **修法**：两个 region，按紧急程度分开 ——
+> `#announce-urgent`（`role="alert" aria-live="assertive"`，**打断**：审批正在阻塞回合，不能排队）
+> 与 `#announce`（`role="status" aria-live="polite"`，**等停顿**：失败与 toast）。
+> CSS `.sr-only` 用 `clip-path: inset(50%)` —— **不是 `display:none` 也不是 `visibility:hidden`**
+> （两者都会把节点从无障碍树移掉，而那正是它存在的意义）。
+>
+> **顺带修掉自己引入的顺序错误**：`announce` 最初写在 `renderApproval` 的**重绘早退守卫之后**。
+> 守卫按「卡片内容键未变就 return」，而**健康轮询与通知在赛跑**，同一张卡被更完整字段重绘
+> 是最常走的路径 ⇒ 写在守卫之后，**最常发生的那次反而静默**。已移到守卫之前。
+>
+> **测试 440 条**（438→440）：行为测试（审批必须走 assertive、不许走 polite）
+> + 静态断言（两个 region 的 role/aria-live、`.sr-only` 必须是 `clip-path`、审批处确实调 `announce`）。
+> **证伪**：短路审批的 `announce` → 1 红。
+>
+> **本轮两条「工具比产品先出错」的教训（务必记住）**：
+> ① 我先用**合成 `KeyboardEvent`** 测「键盘能否滚动对话」，得到 `false`，差点当缺陷报出去。
+> 换成 **CDP 真实按键**（`Input.dispatchKeyEvent`，用 `~/.dsh/profiles/node_modules/ws` 连
+> `--remote-debugging-port`）才发现**真值是 `true`** —— Chrome 让可滚动容器本就
+> 可聚焦、可 `Tab` 到、可用 PageDown/方向键滚动
+> （实测 `scrollTop 0→81→115`，`tab stops=["title","new","transcript"]`）。
+> **合成事件不会触发原生滚动。这是本会话第三次「工具报出的第一个结果是错的」。**
+> ② 新测试「失败」查到最后是**我自己写错了投递方式**：`inbox` 存的是**监听器数组**，
+> 我把**消息对象** push 了进去 ⇒ 消息从未投递。正确助手是 `post()`。
+> ③ 共享夹具会**泄漏 stub 状态**（`host.create` 被上一个用例钉在 400），
+> 新用例要显式重置自己依赖的桩，否则看到的是别人的遗留。
+>
+> **交付要求**：只改 `extension/` → **重载 Chrome 扩展**。
 
 > ### v45：用键盘切一次视图，焦点就掉到 body（扩展侧，本次修复）
 >

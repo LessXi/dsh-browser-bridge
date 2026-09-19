@@ -78,6 +78,20 @@
         --thread-content-max-width: 48rem;
       }
       * { box-sizing: border-box; }
+      /* Visible to a screen reader, invisible on screen. Not `display:none` and
+         not `visibility:hidden`: both remove the node from the accessibility tree,
+         which is the entire point of the element. */
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        margin: -1px;
+        padding: 0;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+        border: 0;
+      }
       html, body { height: 100%; }
       html { overflow: hidden; }
       body {
@@ -952,6 +966,20 @@
     </header>
 
     <div id="stage">
+      <!--
+        Announcements for a screen reader, and the only ones in the panel.
+
+        Everything this panel says arrives asynchronously — an approval question
+        that blocks a turn, a failure, a refusal — and it all appeared in the
+        transcript, which is not a live region. Someone using a screen reader was
+        told nothing at all when a turn stopped to ask them something.
+
+        Two regions because the urgency differs. `assertive` interrupts: an
+        approval question is blocking a turn and cannot wait its turn in a queue.
+        `polite` waits for a pause: a failure message can.
+      -->
+      <p id="announce-urgent" role="alert" aria-live="assertive" class="sr-only"></p>
+      <p id="announce" role="status" aria-live="polite" class="sr-only"></p>
       <main id="transcript" class="scroll"></main>
       <section id="history" class="scroll" hidden></section>
       <button id="earlier" type="button" hidden></button>

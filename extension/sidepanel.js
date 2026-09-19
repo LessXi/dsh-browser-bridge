@@ -77,6 +77,8 @@ const history = document.getElementById('history')
 const toBottom = document.getElementById('to-bottom')
 const earlierButton = document.getElementById('earlier')
 const toast = document.getElementById('toast')
+const announceUrgent = document.getElementById('announce-urgent')
+const announcePolite = document.getElementById('announce')
 const surface = document.getElementById('blocked')
 const blockedTitle = document.getElementById('blocked-title')
 const blockedBody = document.getElementById('blocked-body')
@@ -278,12 +280,41 @@ function say(text) {
   toast.textContent = text
   toast.hidden = text.length === 0
   if (text.length === 0) return
+  // The toast is a visual flash at the bottom of the panel; a screen reader gets
+  // the same sentence through the polite region.
+  announce(text)
   setTimeout(() => {
     if (toast.textContent === text) {
       toast.textContent = ''
       toast.hidden = true
     }
   }, 6000)
+}
+
+/**
+ * Say something to a screen reader, which cannot see the transcript.
+ *
+ * The panel puts everything in the transcript, and the transcript is not a live
+ * region — so a question that stops a turn, or a failure, or a refusal, was
+ * silent to anyone not looking at the screen. This is the announcement path.
+ *
+ * Re-announcing identical text is deliberate: a second approval question carrying
+ * the same wording as the first is a second event, and a live region only speaks
+ * when its content changes. Clearing first is what makes the repeat audible.
+ *
+ * @param {string} text - What to announce. Empty strings are ignored.
+ * @param {{ urgent?: boolean }} [options] - `urgent` interrupts; otherwise it waits for a pause.
+ * @returns {void}
+ */
+function announce(text, options = {}) {
+  if (typeof text !== 'string' || text.length === 0) return
+  const region = options.urgent === true ? announceUrgent : announcePolite
+  // Write synchronously. A deferred write is not merely harder to test — a live
+  // region announces on mutation, and the same sentence twice in a row is a
+  // second event that a timer would let a reader miss. The clear-then-set below
+  // happens in one tick and still produces the mutation that fires it.
+  if (region.textContent === text) region.textContent = ''
+  region.textContent = text
 }
 
 /**
@@ -1354,6 +1385,22 @@ function renderApproval() {
   // notification, or the same id redelivered with more fields — kept the card
   // drawn from the earlier, poorer payload, and the redraw was skipped.
   const key = `${pendingApproval.id}:${answering}:${pendingApproval.site ?? ''}:${pendingApproval.sensitive === true}:${pendingApproval.sensitiveReason ?? ''}:${pendingApproval.rememberable === false}:${pendingApproval.reason ?? ''}`
+
+  // Announced before the redraw guard below, which returns early when the card is
+  // already drawn. Placing this after that guard meant the question was announced
+  // only on the draw that happened to win: a question redrawn with more facts, or
+  // re-delivered by the health poll, stayed silent — and the guard is exactly the
+  // case that fires most often, because the poll and the notification race.
+  const site = typeof pendingApproval.site === 'string' ? pendingApproval.site : ''
+  const tool = pendingApproval.toolName === 'a tool' ? t('approval.aTool') : pendingApproval.toolName
+  const sentence = site.length > 0
+    ? t('approval.wantsSite', { tool, site })
+    : t('approval.wants', { tool })
+  // A turn is blocked until this is answered, so it interrupts rather than
+  // waiting for a pause. Without this the panel said nothing at all: the card
+  // appears in the transcript, which is not a live region.
+  announce(`${t('approval.asking')}：${sentence}`, { urgent: true })
+
   if (existing !== null && drawnApproval === key) return
   existing?.remove()
   drawnApproval = key
@@ -1375,11 +1422,7 @@ function renderApproval() {
   // the failure row had and reads just as wrong in a Chinese panel. The facts
   // come from the asking tool (`lib/approval.js` `factsFor`), so the sentence is
   // in the reader's language and names the site on its own terms.
-  const site = typeof pendingApproval.site === 'string' ? pendingApproval.site : ''
-  const tool = pendingApproval.toolName === 'a tool' ? t('approval.aTool') : pendingApproval.toolName
-  what.textContent = site.length > 0
-    ? t('approval.wantsSite', { tool, site })
-    : t('approval.wants', { tool })
+  what.textContent = sentence
   card.append(what)
 
   // Its own row rather than a line inside the sentence: nesting it would make
