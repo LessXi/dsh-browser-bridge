@@ -52,6 +52,16 @@ function galleryScenarios(source) {
   return [...source.matchAll(/^\s*scenario: '([^']+)',$/gm)].map((match) => match[1])
 }
 
+/** The `file:` names the poster tool declares. */
+function posterFiles(source) {
+  return [...source.matchAll(/^\s*file: '([^']+)',$/gm)].map((match) => match[1])
+}
+
+/** The `shot:` names the poster tool draws from, which must be gallery output. */
+function posterShots(source) {
+  return [...source.matchAll(/^\s*shot: '([^']+)',$/gm)].map((match) => match[1])
+}
+
 test('every screenshot the README shows is a real file', () => {
   const readme = readFileSync(join(root, 'README.md'), 'utf8')
   const images = readmeImages(readme)
@@ -105,4 +115,32 @@ test('every scenario the gallery names still exists in the preview tool', () => 
 
   const unknown = [...scenarios].filter((name) => !new RegExp(`^\\s{2}${name}: \\{`, 'm').test(preview))
   assert.deepEqual(unknown, [], `the gallery renders scenarios the preview tool does not define: ${unknown.join(', ')}`)
+})
+
+test('every poster the front page shows has been generated', () => {
+  // The posters are the images a reader meets first, and they are the ones with
+  // the furthest to fall: they are rendered by a second tool, from the gallery's
+  // output, into a second directory. A missing one leaves a broken-image box at
+  // the top of the README while every other test stays green.
+  const posters = readFileSync(join(root, 'tools', 'poster.mjs'), 'utf8')
+  const declared = posterFiles(posters)
+  assert.ok(declared.length >= 3, `the poster tool declares ${declared.length} posters; expected the front-page set`)
+
+  const missing = declared.filter((name) => !existsSync(join(root, 'docs', 'posters', name)))
+  assert.deepEqual(missing, [], `these posters are declared but not generated: ${missing.join(', ')}; run \`node tools/poster.mjs\``)
+})
+
+test('every poster is drawn from a screenshot the gallery actually produces', () => {
+  // A poster places a gallery PNG on a stage. Point it at a file the gallery no
+  // longer writes and the tool fails at render time — but only for whoever next
+  // runs it. This says so at test time, and names the file.
+  const gallery = readFileSync(join(root, 'tools', 'gallery.mjs'), 'utf8')
+  const posters = readFileSync(join(root, 'tools', 'poster.mjs'), 'utf8')
+
+  const produced = new Set(galleryFiles(gallery))
+  const used = posterShots(posters)
+  assert.ok(used.length >= 3, `the poster tool draws from ${used.length} screenshots; expected the front-page set`)
+
+  const unknown = used.filter((name) => !produced.has(name))
+  assert.deepEqual(unknown, [], `the posters are drawn from files the gallery does not produce: ${unknown.join(', ')}`)
 })

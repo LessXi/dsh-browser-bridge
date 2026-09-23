@@ -328,6 +328,33 @@
         gap: 14px;
         font-size: var(--text-base);
       }
+      /* A short conversation sits on the composer, not at the top of an empty
+         panel.
+         Every chat surface the reader already uses stacks from the bottom —
+         iMessage, WhatsApp, Telegram, Slack — because the message they just
+         sent belongs directly above the box they typed it in. Anchored to the
+         top instead, four rows leave 246px of empty panel between the last one
+         and the composer, and the reader has to travel to the top of the window
+         to re-read what they just said. Measured on the `normal` scene: the last
+         row sat 234px above the composer; it now sits 16px above it, which is
+         the padding.
+         The obvious spelling of this is `justify-content: flex-end`, and it is
+         the wrong one — measured, not feared. A flex container that overflows
+         with `flex-end` pushes its first rows into a region that cannot be
+         scrolled to, because alignment is applied after the overflow. With 60
+         rows in the panel the transcript reported `overflows: false`: the layout
+         had swallowed the rows above the fold, and scrolling up to the start of
+         the conversation was impossible. `margin-top: auto` on the first row
+         gives the same 16px on a short conversation and leaves a full one
+         scrollable — `overflows: true`, first row reachable at `scrollTop: 0`.
+         An automatic margin collapses to zero exactly when there is no free
+         space, so the two states do not fight.
+         It has to be `> :first-child` rather than a `:first-child` descendant:
+         the pill's reservation below is a margin on this element, and matching
+         a nested first child would tie the two together. */
+      #transcript > :first-child {
+        margin-top: auto;
+      }
       /* Room for the floating pill, so it covers empty air instead of the row
          that happens to be at the top. Only while the pill is actually up: an
          unconditional reserved strip would be a visible gap at the top of every

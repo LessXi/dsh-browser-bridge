@@ -1,21 +1,22 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v82 已交付并入库。** 下一节就是最新的一轮改动；下面标 v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v82 那一段为止即可。
+> **当前状态：v83 已交付并入库。** 下一节就是最新的一轮改动；下面标 v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v83 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（609 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（612 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 > （真浏览器 e2e 那 4 条需要机器上有 Playwright Chromium 或 Chrome for Testing；
 > 没有时会**跳过并说明**，不会失败。）
 >
-> **要看界面**：`README.md` 的「界面」一节有 11 张实拍图，`node tools/gallery.mjs`
-> 可重新渲染（需要 Chrome），`node tools/preview.mjs --list` 列出全部场景。
+> **要看界面**：`README.md` 的「界面」一节有 3 张主视觉海报（`docs/posters/`）与
+> 11 张界面状态（`docs/screenshots/`）。`node tools/poster.mjs` 重渲海报，
+> `node tools/gallery.mjs` 重渲界面状态，`node tools/preview.mjs --list` 列出全部场景。
 >
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
 >
-> **已入库**：v3→v82 的全部改动已提交并推送到 `origin/main`。工作区干净。
+> **已入库**：v3→v83 的全部改动已提交并推送到 `origin/main`。工作区干净。
 > （v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
 
 > ## ⚠️ 两条并行版本线（2026-09-23 处理，后续轮次务必先读这段）
@@ -183,7 +184,120 @@
 > - `earlier.png` 与 `hostDown.png` **sha256 相同**：那张图画的是阻塞屏，
 >   「更早的内容」胶囊根本没出现在交付的图里。成因未定位。
 
-> ### v82：把界面放进仓库，让别人看得见（本轮）
+> ### v83：界面按产品介绍，不按功能罗列（本轮）
+>
+> **用户的批评**（原文）：「readme里面的图片放的像功能罗列，不像产品展示和介绍。
+> 能不能学学苹果发布会风格？」
+>
+> 这个批评是准确的，而且指出的是**两类问题**：一类是展示方式（v82 的 6 组、每组两张
+> 330px 小图配技术论证），另一类是它掩盖掉的一个**真实 UI 缺陷**。
+>
+> #### 一、真实缺陷：内容少时消息浮在顶部，输入框上方留一大片空白
+>
+> 归因先做了（`.tmp-run/probe-void.js`）：`normal` 场景 4 行，末行到输入框之间
+> **233px 空白（占对话区 41.7%）**。但 `suspiciousRows: []`、`overflows: false`、
+> `scrollHeight === clientHeight`——**没有行在占高度不画字**，就是内容本来就少。
+>
+> 于是这不是「缺陷」而是「产品判断」：内容少时消息该贴**顶部**（当时的做法）还是
+> 贴**底部**（输入框）？
+>
+> 证据是主流聊天界面：iMessage、WhatsApp、Telegram、Slack 的会话都是内容从底部往上
+> 堆——你刚说完的那句话就在输入框正上方，视线不用移动。顶部对齐时，读者发完消息要
+> 跑到窗口顶端去找自己刚打的那句。
+>
+> | 场景 | 修复前末行距 composer | 修复后 |
+> |---|---|---|
+> | `normal` | **234px** | **16px**（就是 padding） |
+> | `approval` | 132px 富余 | 16px |
+> | `working` | 214px 富余 | 16px |
+> | `toolFailure` | **388px 富余** | 16px |
+>
+> #### 二、★ 修法只有一个是对的，另一个会静默毁掉长会话
+>
+> 直觉写法是 `justify-content: flex-end`。**它是错的**，而且错得看不出来：
+> CSS 的对齐在溢出**之后**应用，所以一个溢出的 flex 容器会把最上面几行推进
+> **滚不到的区域**。60 行时实测：
+>
+> | 做法 | `overflows`（60 行） | 滚到顶时第一行可见 |
+> |---|---|---|
+> | 现状 | true | false |
+> | **`justify-content: flex-end`** | **false** ← 布局把整屏以上吞了 | n/a |
+> | **首行 `margin-top: auto`** | **true** | **true** |
+>
+> `flex-end` 下 `overflows: false` 意味着**会话的开头永久看不到了**，而短会话里两种
+> 写法效果完全一样——这个缺陷只在长会话出现，正是本仓库反复记录的那类陷阱。
+>
+> 自动外边距（`auto`）在没有富余空间时**恰好收缩为零**，所以两种状态不打架。
+>
+> **最终代码形态**（`extension/sidepanel.html`，紧跟 `#transcript` 基础规则）：
+>
+> ```css
+> #transcript > :first-child { margin-top: auto; }
+> ```
+>
+> 必须是 `> :first-child` 而不是 `#transcript :first-child`：胶囊让位用的是
+> **这个元素自己**的 `margin-top`，后代选择器会连带匹配嵌套的首个子元素，把两件事
+> 缠在一起（已固化成变异 `margin-on-descendant`）。
+>
+> #### 三、展示方式：主视觉用 HTML 排版，不引入图像库
+>
+> 新增 `tools/poster.mjs`：把画廊产出的真实 PNG 放进一个真实 Chrome 渲染的 HTML
+> 舞台，输出 `docs/posters/` 的 3 张主视觉。
+>
+> **为什么用 HTML 而不是图像合成**：本仓库零依赖且不需要依赖。截图本来就要浏览器，
+> 而浏览器比任何为了旋转 PNG 而引入的库都更会排版，`--force-device-scale-factor=2`
+> 还是白送的。
+>
+> 四条设计纪律写在 `stage()` 的注释里：径向渐变背景（纯色会让产品边缘贴在页面上）、
+> 三层投影（一层读起来是「贴上去的矩形」）、强调用颜色不用加粗（行内加粗会把字距
+> 挤坏）、画布固定 1000×1180 而产品在剩余空间里自适应。
+>
+> #### 四、★ 实测出的两条浏览器事实
+>
+> 1. **Chrome 的 `--screenshot` 只截窗口，不截整页。** 900px 内容 + 300px 窗口 =
+>    出图 400×300（不是 400×900）。所以画布必须**先定尺寸**，让产品去适应剩余空间，
+>    而不是让页面高度跟着内容长。
+> 2. **`--dump-dom` 在本机不输出任何东西**（实测长度 0），所以「先用 title 报高度、
+>    再按高度截图」这条路走不通——它也是上一条的替代方案，两条一起被排除了。
+>
+> #### 五、★ 我自己的两次判断错误（都已纠正）
+>
+> 1. **`conversation.png` 里那 600px 黑色空洞，我一开始当成排版缺陷**，后来归因证明是
+>    「内容本来就少」（见上）。所以我没有去"修"一个不是缺陷的东西，而是改了对齐规则
+>    ——那才是真问题所在。
+> 2. **主视觉草稿里写过「0 需要的权限」，是假声明。** 查 `extension/manifest.json`：
+>    `permissions` = `debugger`、`tabs`、`tabGroups`、`storage`、`alarms`、`scripting`，
+>    `host_permissions` 含 `http://*/*` 与 `https://*/*`。**发布会风格不是可以吹牛的
+>    许可**，安全声明尤其不能。改成可核对的数字（6969 行 / 60 行 / 2.4ms）。
+> 3. 搜索海报标题原写「在一万行里」，而作者最长会话是 **6969 行**——同一天里犯的
+>    第二次夸大，也已改成准确数字。
+>
+> 海报里每个数字的出处都核过：6969 行（`extension/locales.js:73`、
+> `packages/dsh-browser-bridge/lib/chat.js:540`）、60 行（`extension/sidepanel.js:69`
+> 的 `PAGE_ROWS`）、2.4ms（`HANDOVER.md:586`）、`SEARCH_MAX = 30`（`chat.js:73`）、
+> 按站点授权（`lib/grants.js:34`）。
+>
+> #### 六、验证读数
+>
+> - `npm test` → **612 passed, 0 failed, 0 skipped**（609 → 612）
+> - `npm run check:extension` → exit 0
+> - 对齐修复的变异 `.tmp-run/mutate-align.mjs`：**3/3 命中**、`falsePositives: []`、
+>   `restoredExactly: true`（`drop-margin-auto`、`use-flex-end`、`margin-on-descendant`）
+> - 海报守卫的变异 `.tmp-run/mutate-posters.mjs`：**3/3 命中**、`restoredExactly: true`
+> - README 图片引用 **14 个，0 缺失**（3 张海报 + 11 张界面状态）
+> - 十二个场景对齐复测：稀疏场景 `sitsOnComposer: true`（16px），
+>   `long`/`findJumped` `overflows: true` 且 `topReachable: true`
+>
+> #### 七、★ 一条被否掉的怀疑（别重复挖）
+>
+> 我一度以为「更早的内容」胶囊压住了正文——`search.png` 里第一行气泡的文字看起来被
+> 切掉一半。用**逐字符**判据实测（`.tmp-run/probe-earlier-overlap.js`）：
+> **`coveredCount: 0`**。那是正常的滚动裁切：那一行正好被滚到对话区上边缘之外。
+>
+> `earlier.png` 与 `hostDown.png` 的 sha256 相同这件事，成因仍未定位（v82 遗留），
+> 本轮未处理。
+>
+> ### v82：把界面放进仓库，让别人看得见
 >
 > **这不是一个缺陷修复，是一个交付缺口。** 用户问「我们做了这么多 UI 优化，
 > 项目上能不能展示呢」——查证的结果是**不能**：
@@ -193,6 +307,7 @@
 > | 仓库里被跟踪的图片 | **8 个，全是扩展图标**（`extension/icons/icon{16,32,48,128}`） |
 > | `README.md`（2743 行）里的图片引用 | **0** |
 > | 本机 `.tmp-run/` 里的截图 | **255 张**，全被 `.gitignore` 的 `.tmp-*` 挡住 |
+>
 >
 > 二十几轮的界面工作——搜索跳转、命中小标、审批卡、模型菜单、会话列表、焦点环、
 > 高对比度适配——在 GitHub 上打开仓库**一张也看不到**。README 是别人决定要不要

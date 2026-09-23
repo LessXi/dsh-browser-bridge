@@ -320,6 +320,57 @@ test('the editor keeps a focus ring under forced colours', (t) => {
   )
 })
 
+/**
+ * A short conversation rests on the composer instead of floating at the top of
+ * an empty panel.
+ *
+ * Measured on the `normal` scene before the fix: four rows, and 234px of empty
+ * panel between the last one and the composer. Every chat surface the reader
+ * already uses stacks from the bottom, because the message they just sent
+ * belongs directly above the box they typed it in.
+ *
+ * The interesting half of this test is what it *forbids*. The obvious way to
+ * bottom-align a flex column is `justify-content: flex-end`, and it is wrong:
+ * alignment is applied after overflow, so a container taller than its scroller
+ * pushes its first rows somewhere scrolling cannot reach. Measured with 60 rows
+ * in the panel, `flex-end` reported `overflows: false` — the layout had
+ * swallowed everything above the fold, and the start of the conversation became
+ * unreachable. That failure is invisible in a short conversation, which is
+ * exactly why it is asserted here rather than left to the next person's
+ * judgement.
+ */
+test('a short conversation sits on the composer, and a long one still scrolls', (t) => {
+  const base = ruleBody('#transcript')
+  assert.ok(base !== null, '#transcript must have a base rule')
+
+  // The mechanism. An automatic top margin on the first row collapses to zero
+  // when there is no free space, so the two states do not fight.
+  const firstRow = declarationOf('#transcript > :first-child', 'margin-top')
+  assert.ok(
+    firstRow !== null && firstRow.trim() === 'auto',
+    `the first row must take the slack above it, found ${JSON.stringify(firstRow)}`,
+  )
+
+  // The trap. `flex-end` reads as the tidier spelling of the same intent and
+  // silently makes a long conversation's start unreachable.
+  assert.ok(
+    !/justify-content\s*:\s*(flex-end|end)\b/.test(base),
+    'the transcript must not bottom-align with justify-content: alignment is applied '
+    + 'after overflow, so the rows above the fold become unreachable',
+  )
+
+  // And the choice of margin over padding is the same one the pill's reservation
+  // makes, for the same reason: padding belongs to the content and scrolls,
+  // while an automatic margin is space the first row only holds while there is
+  // slack. A padding-top large enough to push a short conversation down would
+  // indent every long one permanently.
+  const padding = declarationOf('#transcript', 'padding')
+  assert.ok(
+    padding !== null && !/\bauto\b/.test(padding),
+    `the transcript's padding must stay a fixed value, found ${JSON.stringify(padding)}`,
+  )
+})
+
 test('the earlier-content pill states its height once', (t) => {
   // The transcript reserves room for the pill, so the reservation and the pill
   // are two places that must agree about one number. Written twice they drift;

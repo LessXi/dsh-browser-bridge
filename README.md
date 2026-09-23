@@ -42,9 +42,50 @@
 
 ## 界面
 
+<p align="center">
+  <img src="docs/posters/hero.png" width="720" alt="DSH Browser Bridge：Chrome 侧栏面板，正在读一个页面并解释保存按钮为什么点不动">
+</p>
+
+一个 Chrome 侧栏面板。会话能读你正在看的页面，能点它，并且**每次都先问你**。
+
+下面的每一张都是真实 Chrome 渲染真实的 `extension/sidepanel.html` 得到的，不是设计稿——
+图上能看到的状态，装上去就是这些。
+
+---
+
+### 会话很长的时候，你还找得回来
+
+<p align="center">
+  <img src="docs/posters/search.png" width="720" alt="在 6969 行的会话里搜索 zebra：计数 1/3，命中行被描边，匹配的字本身被高亮">
+</p>
+
+面板只拿**最新的 60 行**——作者自己最长的一个会话有 6969 行，全渲染要 294ms 和四万个 DOM
+节点，那是读者等不起的。所以搜索**不在屏幕上做，在宿主里做**：面板回答不了「我的对话里
+有没有这个词」，宿主可以。
+
+于是无论会话多长，答案都是一次输入。命中那一行会被描边，而**匹配的字本身**被高亮——
+因为「跳到那一行」在 6969 行里等于什么都没告诉你。
+
+---
+
+### 它替你点之前，先问你一次
+
+<p align="center">
+  <img src="docs/posters/approval.png" width="720" alt="审批卡：三个等权按钮，没有默认项">
+</p>
+
+授权是**按站点、按能力**记的，不是一次全开。三个按钮**等权、没有默认项**——给同意界面的
+一侧加权重是记录在案的暗黑模式，Chrome 自己的权限界面也是扁平三按钮。所以这里不替你选。
+
+---
+
+<details>
+<summary><b>全部界面状态</b>（12 张，含浅色与高对比度）</summary>
+
+<br>
+
 侧栏面板是这个产品**全部可见的表面**，所以这里把它逐张放出来。每一张都由
-`node tools/gallery.mjs` 在真实 Chrome 里渲染真实的 `extension/sidepanel.html` 得到，
-不是设计稿——图上能看到的状态，装上去就是这些。
+`node tools/gallery.mjs` 在真实 Chrome 里渲染得到。
 
 <p align="center">
   <img src="docs/screenshots/conversation.png" width="330" alt="对话：正文、代码块、工具行">
@@ -52,18 +93,15 @@
 </p>
 
 **左：日常对话。** 用户气泡、正文、带语言标签与「复制」的代码块、带 ✓ 的工具行、可折叠的
-「思考」。**右：跨越整段会话的搜索。** 计数 `1/3`，命中的那一行被描边，而**匹配的字本身**被
-高亮——因为「跳到那一行」在 600 行里等于什么都没告诉你。
+「思考」。**右：跨越整段会话的搜索。** 计数 `1/3`。
 
 <p align="center">
   <img src="docs/screenshots/approval.png" width="330" alt="审批卡：三个等权按钮，没有默认项">
   <img src="docs/screenshots/model-menu.png" width="330" alt="模型菜单：推理等级与模型列表">
 </p>
 
-**左：唯一一处「提问」而不是「汇报」的地方。** 三个按钮**等权、没有默认项**——给同意界面
-的一侧加权重是记录在案的暗黑模式，Chrome 自己的权限界面也是扁平三按钮。
-**右：推理等级与模型。** 焦点环画在 `Low` 上、选中的 ✓ 在 `High` 上——**焦点和选中是两种
-不同的东西**，它们用两种不同的视觉语言表达。
+**左：唯一一处「提问」而不是「汇报」的地方。** **右：推理等级与模型。** 焦点环画在 `Low`
+上、选中的 ✓ 在 `High` 上——**焦点和选中是两种不同的东西**，它们用两种不同的视觉语言表达。
 
 <p align="center">
   <img src="docs/screenshots/sessions.png" width="330" alt="会话列表：按工作区分组，带相对时间与运行指示">
@@ -99,16 +137,22 @@
 **浅色方案。** 两种配色都被支持，所以两种都展示——一个在实际使用里通不过对比度的调色板，
 往往在另一种里是通的。
 
+</details>
+
 <details>
-<summary>重新生成这些截图</summary>
+<summary>重新生成这些图</summary>
 
 ```powershell
-node tools/gallery.mjs          # 重新渲染 docs/screenshots/
+node tools/gallery.mjs          # 重新渲染 docs/screenshots/（12 张界面状态）
 node tools/gallery.mjs --check  # 只检查是否齐全（CI 友好）
+node tools/poster.mjs           # 重新渲染 docs/posters/（主视觉）
+node tools/poster.mjs --check   # 同上，只检查
 ```
 
-`tools/gallery.mjs` 里每张图都写着**为什么它在画廊里**。`tools/preview.mjs` 可以把任意
-场景渲染成 PNG，也可以只回答一个问题：
+`tools/gallery.mjs` 里每张图都写着**为什么它在画廊里**；`tools/poster.mjs` 里每张海报都写着
+它的主张与论据，**数字改动必须改那个文件**，所以在正文里漂移不了。
+
+`tools/preview.mjs` 可以把任意场景渲染成 PNG，也可以只回答一个问题：
 
 ```powershell
 node tools/preview.mjs --list                                  # 有哪些场景
@@ -119,6 +163,8 @@ node tools/preview.mjs normal out.png --keys "Tab,PageDown"    # 发真实按键
 ```
 
 </details>
+
+---
 
 ---
 
@@ -340,7 +386,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 609 条
+npm test                          # 全部 612 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -430,7 +476,7 @@ Chrome for Testing 都装进带版本号的目录，写死路径会在一台机�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 609 条
+npm test                 # 612 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
