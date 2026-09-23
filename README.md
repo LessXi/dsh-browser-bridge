@@ -2678,6 +2678,10 @@ VS Code fuzzy scorer）。**我抄的是它的判据，不是它的算法**—�
   两个都能挂，chip 行分开显示；**发送后清空**（不提的话它会把同一页静默挂到下一条上）。
 - `extension/sidepanel.html`：`#at-menu` 及 `.at-*`（分组标签、行、14px 图标、
   标题一行 + URL 一行）。菜单**在 composer 之上**展开。
+  （v75 起容器圆角由 `--radius-xl` 改为 `--radius-2xl`、行圆角由 `--radius-md`
+  改为 `--radius-xl`，与 `#model-menu` 及上面 v7 表里的官方值一致；
+  容器自身的 `border` 也已移除——`--elevation` 的首段 `0 0 0 1px` 就是它的边，
+  两者并存会把同一条线画两遍。详见 `HANDOVER.md` 的 v75 段。）
 - `extension/locales.js`：zh/en 各 3 键 —— `at.list`（标签页）、`at.empty`、`at.none`。
 
 **实测（无头 Chrome 截图 + `--dump-dom`，三条设计逐一验证）**

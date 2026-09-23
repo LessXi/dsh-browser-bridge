@@ -142,6 +142,24 @@
          the card is not drawn as a rounded accent shape either. */
       @media (forced-colors: active) {
         textarea:focus-visible { outline: 2px solid Highlight; outline-offset: 1px; }
+        /* The same mode also takes the edge off every surface that floats over
+           the transcript. `--elevation` opens with `0 0 0 1px #0000000a` — a
+           hairline drawn as a shadow — and this mode discards `box-shadow`
+           outright while repainting every background as `Canvas`. Measured with
+           the feature emulated, `#earlier`, `#to-bottom`, `#model-menu` and
+           `#composer` each came out with no separator at all: no border, no
+           outline, no shadow, over a backdrop of their own colour. The model
+           picker was the worst of them, its rows reading as part of the
+           conversation behind it.
+           `#at-menu` came through that measurement on the `border` it used to
+           carry alone — and the fix is this rule rather than keeping that one
+           exception, because an edge that exists in one mode and not the other is
+           exactly the drift being removed. Its border is gone from the ordinary
+           render, where `--elevation` already draws the same line, so the mode is
+           now where all five get theirs. */
+        #earlier, #to-bottom, #model-menu, #at-menu, #composer {
+          border: 1px solid CanvasText;
+        }
       }
       [hidden] { display: none !important; }
 
@@ -521,8 +539,18 @@
         max-height: min(280px, 50vh);
         overflow-y: auto;
         padding: 4px;
-        border: 1px solid var(--line-soft);
-        border-radius: var(--radius-xl);
+        /* No `border`: `--elevation` opens with `0 0 0 1px`, which *is* this
+           menu's edge, so a border here drew the same line twice — measured, the
+           only floating surface in the panel doing that. It is also why this menu
+           was the one that came through Windows High Contrast untouched, and
+           giving that up is the point: the mode now hands every floating surface
+           a real border, so none of them depends on which decoration happened to
+           be stacked on top of it.
+           The radius matches `#model-menu`, `#composer` and `.bubble` — the
+           panel's floating cards are 16px, and this was the one at 12. Its rows
+           move with it, because an inner radius is the outer one less the 4px of
+           padding. */
+        border-radius: var(--radius-2xl);
         background: Canvas;
         box-shadow: var(--elevation);
       }
@@ -540,7 +568,11 @@
         width: 100%;
         min-height: 34px;
         padding: 5px 8px;
-        border-radius: var(--radius-md);
+        /* The container's radius less its 4px of padding, which is what
+           `.menu-option` in the model picker already uses. Two lists of the same
+           kind had 8px and 12px here, so the highlight on a row curved
+           differently depending on which picker you had open. */
+        border-radius: var(--radius-xl);
         text-align: left;
       }
       .at-option:hover,

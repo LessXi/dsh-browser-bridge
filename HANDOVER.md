@@ -1,9 +1,9 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v74 已交付并入库。** 下一节就是最新的一轮改动；下面标 v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v74 那一段为止即可。
+> **当前状态：v75 已交付并入库。** 下一节就是最新的一轮改动；下面标 v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v75 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（559 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（560 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 > （真浏览器 e2e 那 4 条需要机器上有 Playwright Chromium 或 Chrome for Testing；
@@ -12,7 +12,7 @@
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
 >
-> **已入库**：HEAD = `92be533`（2026-09-23），v3→v74 的全部改动已提交并推送到
+> **已入库**：HEAD = `92be533`（2026-09-23），v3→v75 的全部改动已提交并推送到
 > `origin/main`。工作区干净。（此前 `dae44ed` 是 v73，`82497f9` 是 v72。）
 
 > ## ⚠️ 两条并行版本线（2026-09-23 处理，后续轮次务必先读这段）
@@ -180,7 +180,105 @@
 > - `earlier.png` 与 `hostDown.png` **sha256 相同**：那张图画的是阻塞屏，
 >   「更早的内容」胶囊根本没出现在交付的图里。成因未定位。
 
-> ### v74：浮层压住正文——把「胶囊」这个实例，改成「浮层」这一类（本轮）
+> ### v75：Windows 高对比度下，浮层没有任何边界（本轮）
+>
+> **缺陷**：`--elevation`（`sidepanel.html` L92）的第一段是 `0 0 0 1px #0000000a`——
+> **一条用阴影画的发丝边**。Windows 高对比度（`forced-colors: active`）
+> **丢弃 `box-shadow`**，并把每个 `background` 重绘为 `Canvas`。于是靠它分界的表面
+> 与背后的页面**同色、无边**，看起来是同一层。
+>
+> **实测**（`.tmp-run/probe-overlay-edges.js`，模拟该特性）：
+>
+> | 表面 | 普通模式 | 高对比度 | 分界手段 |
+> | --- | --- | --- | --- |
+> | `#at-menu` | 描边 + 阴影 | 描边 | `[border]` ✓ |
+> | `#model-menu` | 只有阴影 | —— | `[]` ✗ |
+> | `#earlier` | 只有阴影 | —— | `[]` ✗ |
+> | `#to-bottom` | 只有阴影 | —— | `[]` ✗ |
+> | `#composer` | 只有阴影 | —— | `[]` ✗ |
+>
+> 修复前 `noSeparatorCount: 3`（另两个当时不可见），修复后 **0**。
+> 最严重的是 `#model-menu`：菜单的行读起来就是背后对话的一部分。
+>
+> **修法**：在该模式的块里给这五个表面加 `border: 1px solid CanvasText`。
+> 判据来自读数本身——`#at-menu` 是唯一幸存者，靠的正是它已有的 `border`，
+> 而**描边是这个模式唯一保留的分界手段**。按**属性**枚举表面
+> （「有阴影、无描边」）而不是按 id，新加的表面自动进入范围。
+>
+> **第二个发现：两个弹层的边框语言已经漂移。** `#model-menu` 用 `--radius-2xl`(16px)
+> 且无描边，`#at-menu` 用 `--radius-xl`(12px) 且有描边——两者在样式表里相隔约 500 行、
+> 各自重复写了 9 条声明，而 `#model-menu` 的注释写着「The same … as `#at-menu`」。
+> 实测 `menusDisagree: true`，且 `#at-menu` 的描边与 `--elevation` 的发丝边
+> **把同一条线画了两遍**（`doubledEdges: ['#at-menu']`），行圆角也一个 8px 一个 12px。
+>
+> **统一**：两个弹层都是 16px、都无 `border`（边由 `--elevation` 提供）、
+> 行圆角都取「容器圆角 − 4px padding」= `--radius-xl`(12px)。
+> 与 README L3496 记录的官方 Codex 面板一致（容器 `rounded-2xl` 16px、行 `--radius-xl` 12px）。
+> 高对比度下五个表面**全部**由通用规则拿到描边，`#at-menu` 不再有「只在一种模式里存在」的边。
+>
+> **顺带修好测试助手的一个真实缺口**：`panel-geometry.test.js` 的
+> `ruleBody(selector)` 用 `(?:^|[},])\s*SEL\s*\{` 搜索，**分不清「规则就是 `#composer`」
+> 与「规则的选择器列表里含 `#composer`」**。加了一条分组规则后，两条 composer 测试失败
+> 并说「`#composer` 必须有 radius / padding，found null」，而两条声明都还在文件里。
+> 现改为**按选择器列表逐项比较**，并排除 `@media` 块（条件规则不该遮蔽基础规则）。
+> 另有一处调用传的是整个选择器列表 `'button:focus-visible, a:focus-visible'`，
+> 在旧实现下靠巧合命中，现已改为按其中一项查找。
+>
+> **验证读数（已绿）**：
+>
+> - `npm test` → **560 passed, 0 failed, 0 skipped**
+> - `npm run check:extension` → exit 0
+> - 高对比度下 `noSeparatorCount` 3 → **0**；普通模式**完全未变**（四个表面 `border: null`）
+> - 两个弹层 `menusDisagree` true → **false**、`doubledEdges` `['#at-menu']` → **`[]`**
+> - 变异 4 种坏法全部命中且红的正是新断言、`restoredExactly: true`：
+>   `remove-rule`、`drop-one-surface`、`use-shadow`、`at-menu-left-out`
+> - 视觉：`.tmp-run/r10-modelmenu-fc-fixed.png`（修好）、`r10-light-light.png`（浅色）、
+>   `r10-at-check.png`（@ 弹层统一后）
+>
+> **一个被推翻的假设（别重复挖）**：变异脚本最初把「描边色由 `CanvasText` 换成
+> `var(--line-soft)`」当成一种坏法，结果**没有任何测试抓到**。追下去发现原因不在测试：
+> **该模式会把任何描边重绘为系统色**。证据是 `#at-menu` 源码写 `var(--line-soft)`
+> 而计算色同样是 `rgb(255, 255, 255)`，与分组规则里的 `CanvasText` 完全一致
+> （`.tmp-run/probe-border-color-override.js`）。所以那不是缺陷，是判据——
+> 写 `CanvasText` 是**说明意图**，不是可见性的来源。
+>
+> **探针自身的两个错误（判据错会读没了缺陷）**：
+>
+> 1. 第一版 `probe-edge-survival.js` 单跑一种模式，而 forced-colors 下阴影**已经被丢弃**，
+>    于是「只靠阴影分界的表面」读数恒为 0——**缺陷自己在读数里消失了**。
+>    判据必须在缺陷仍然可见的维度过测量：改为一次报两种模式，按元素身份配对比较。
+> 2. `probe-menu-language.js` 按 `hidden` 过滤要比较的表面，而两个弹层**从不同屏**
+>    （一个模型选择、一个 `@` 提及），过滤后每次只剩一个，比较永远不发生，
+>    `menusDisagree` 假读为 false。计算样式对隐藏元素同样有效，要比较的是作者写的规则。
+>    同一次还发现：Chrome 的计算 `box-shadow` 把颜色写在偏移**前面**
+>    （`rgba(0,0,0,.04) 0px 0px 0px 1px`），照源码顺序写的正则抓不到那条发丝边。
+>
+> **本轮核实过、判定不是缺陷的三项**（上一轮视觉审查的结论，逐条量过）：
+>
+> - 「两个弹层用两套选中语言」——**不成立**。`#at-menu` 的 `aria-selected` 跟的是
+>   **键盘光标**（瞬态高亮），`#model-menu` 的 `aria-checked` 是**持久选择**；
+>   语义不同，渲染不同才是对的。
+> - 「两行『思考』同屏」——**夹具产物**，不是产品缺陷。`working` 场景的
+>   `DEFAULT_MESSAGES` 末行是一条**历史** reasoning 行，而 `renderWorking()`
+>   （`sidepanel.js` L1628）有明确守卫：live 有内容时不画 `.working`。
+> - 「22px chip 塞 24px 按钮」——**不成立**。逐对父子盒子比较
+>   （`.tmp-run/probe-chip-overflow.js`）只找到一处溢出：推理行的开关按钮
+>   上下各外扩 3px（`symmetric: true`），是**有意的可点面积**，不是错位。
+>
+> **本轮核实确认、但尚未修的**：`noCatalog` 状态在界面上几乎不可辨。
+> 实测（`.tmp-run/probe-nocatalog-shown.js`）触发器显示 `deepseek-v4-pro · high`，
+> 与正常态 `deepseek-v4-pro · High` **只差一个首字母大小写**，
+> `.menu-note` 为空、按钮未禁用。读者无法从这个界面知道「模型目录没读到」。
+> 下一轮从这里开始。
+>
+> **新增探针**（`.tmp-run/`，被 gitignore）：`probe-floating-surfaces.js`（按属性枚举浮层）、
+> `probe-edge-survival.js`（两种模式配对比较分界手段）、`probe-overlay-edges.js`
+> （五个具名表面的分界读数）、`probe-menu-language.js`（两个弹层的边框语言）、
+> `probe-border-color-override.js`（作者描边色是否作数）、
+> `probe-nocatalog-shown.js`、`probe-chip-overflow.js`、`probe-two-thinking-rows.js`、
+> `why-composer-fails.mjs`（定位 `ruleBody` 误配）、`mutate-hc-edges.mjs`。
+
+> ### v74：浮层压住正文——把「胶囊」这个实例，改成「浮层」这一类
 >
 > **缺陷**：`#earlier`（「更早的内容」胶囊）是 `position: absolute; top: 8px`，相对
 > `#stage` 固定在视口顶部；而给它让位的规则写的是

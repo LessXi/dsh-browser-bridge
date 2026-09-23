@@ -52,12 +52,62 @@ const css = readExtensionFile('sidepanel.html')
   .replace(/<!--[\s\S]*?-->/g, '')
   .replace(/\/\*[\s\S]*?\*\//g, '')
 
-/** The declaration block of one rule, by exact selector text. */
+/**
+ * The stylesheet with its `@media` blocks removed.
+ *
+ * Rules inside a media query describe a *conditional* render, so a lookup of
+ * what a property is in the ordinary one has to skip them. Removing the blocks
+ * by bracket matching rather than by a regular expression, because the block
+ * contains braces of its own and any greedy-or-lazy pattern cuts in the wrong
+ * place.
+ *
+ * @param {string} source - CSS text, comments already stripped.
+ * @returns {string} The same text without its `@media` blocks.
+ */
+function withoutMediaQueries(source) {
+  let out = ''
+  let index = 0
+  for (;;) {
+    const at = source.indexOf('@media', index)
+    if (at < 0) return out + source.slice(index)
+    out += source.slice(index, at)
+    const open = source.indexOf('{', at)
+    if (open < 0) return out
+    let depth = 1
+    let cursor = open + 1
+    while (cursor < source.length && depth > 0) {
+      if (source[cursor] === '{') depth += 1
+      else if (source[cursor] === '}') depth -= 1
+      cursor += 1
+    }
+    index = cursor
+  }
+}
+
+/**
+ * The declaration block of one rule, by exact selector text.
+ *
+ * The selector is matched as a whole item in the rule's selector list, not as a
+ * substring of the stylesheet. The earlier version searched for the selector
+ * followed by `{`, which cannot tell a rule that *is* `#composer` from a rule
+ * that merely *lists* it — so the moment a group rule named it, every lookup for
+ * `#composer` returned that group's declarations instead, and two tests about
+ * the composer's radius and padding failed while both declarations were intact
+ * on disk. Splitting the list is what makes the two cases different.
+ *
+ * Media queries are excluded so that a conditional override cannot shadow the
+ * base rule; the forced-colours tests read that block directly.
+ *
+ * @param {string} selector - One exact selector, e.g. `#composer`.
+ * @returns {string|null} The declarations inside, or null when no such rule.
+ */
 function ruleBody(selector) {
-  // Escaped, because selectors here contain `.`, `#`, `:`, `(` and `)`.
-  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const match = css.match(new RegExp(`(?:^|[},])\\s*${escaped}\\s*\\{([^}]*)\\}`))
-  return match === null ? null : match[1]
+  const base = withoutMediaQueries(css)
+  for (const match of base.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    const selectors = match[1].split(',').map((part) => part.trim())
+    if (selectors.includes(selector)) return match[2]
+  }
+  return null
 }
 
 /** One property's value inside one rule, or null when either is absent. */
@@ -152,7 +202,13 @@ test('the editor draws no focus ring of its own', (t) => {
   // radius, and stripping the ring everywhere would trade a visual bug for a
   // keyboard-accessibility one. Asserted by selector rather than by scanning the
   // whole sheet for `solid`, which would fail on the rule that must stay.
-  const shared = ruleBody('button:focus-visible, a:focus-visible')
+  //
+  // Looked up by one selector the rule lists, not by the whole list: `ruleBody`
+  // matches a selector *item*, so asking for `button:focus-visible, a:focus-visible`
+  // asks for a rule whose list is that single string — which no rule is. Reading
+  // it through the first item also keeps the assertion honest if a third control
+  // joins the rule.
+  const shared = ruleBody('button:focus-visible')
   assert.ok(
     shared !== null && /outline\s*:\s*2px solid var\(--accent\)/.test(shared),
     'buttons and links must keep a visible focus ring',
@@ -458,4 +514,111 @@ test('the pill reservation is conditional, not permanent', (t) => {
     base !== null && !base.includes('--pill-height'),
     'the transcript must not reserve room for a pill that is not on screen',
   )
+})
+
+/**
+ * Every surface that floats over the conversation keeps an edge under Windows
+ * High Contrast.
+ *
+ * `--elevation` opens with `0 0 0 1px #0000000a` — a hairline drawn *as a
+ * shadow* — and that mode discards `box-shadow` while repainting every
+ * background as `Canvas`. A surface that separates itself with nothing else
+ * therefore ends up the same colour as what is behind it, with no boundary:
+ * measured with the feature emulated, `#earlier`, `#to-bottom`, `#model-menu`
+ * and `#composer` each reported no separator at all, and the model picker's rows
+ * read as part of the conversation behind them.
+ *
+ * `#at-menu` came through that measurement untouched, on the `border` it already
+ * had — which is the whole finding, since a border is the one separator this
+ * mode keeps. The fix is therefore a border, applied to every floating surface
+ * in the mode rather than to the four that failed, so that the next one added
+ * inherits it.
+ *
+ * The surfaces are found by *property* — a drawn box that separates itself with
+ * a shadow and no border — rather than by their `id`s, the same way the overlay
+ * test above finds its own, so a surface added later is covered without anyone
+ * remembering to extend this list. Read from the markup because these are real
+ * elements in the document; asserted on the stylesheet because that is where the
+ * mode's rules live.
+ */
+/**
+ * Whether a bordered selector in the mode's block covers this element.
+ *
+ * `#composer:has(textarea:focus-visible)` and `#composer` are the same element
+ * seen in two states, so a border declared for either one reaches it. Comparing
+ * the selector strings alone reads those as two different things and reports the
+ * composer as unprotected — which is how the first version of this test failed.
+ * The comparison is therefore on the element part of the selector, up to the
+ * first `:` or `[`, so state and attribute qualifiers do not hide a match.
+ *
+ * @param {Set<string>} bordered - Selectors the mode gives a border to.
+ * @param {string} selector - The surface being checked.
+ * @returns {boolean} True when one of the bordered selectors names this element.
+ */
+function borderedUnder(bordered, selector) {
+  /** The element a selector names, with its state qualifiers dropped. */
+  const elementOf = (text) => text.split(/[:\[]/)[0].trim()
+  const wanted = elementOf(selector)
+  for (const candidate of bordered) {
+    if (elementOf(candidate) === wanted) return true
+  }
+  return false
+}
+
+test('every surface that floats over the page keeps an edge in High Contrast', (t) => {
+  // The mode's own block, brace-matched rather than pattern-matched: it holds
+  // nested rules, and a lazy `[\s\S]*?` stops at the first `}` it meets.
+  const forcedStart = css.indexOf('@media (forced-colors: active)')
+  assert.ok(
+    forcedStart >= 0,
+    'the stylesheet needs a `@media (forced-colors: active)` block; this test reads it to know what the mode keeps',
+  )
+  const open = css.indexOf('{', forcedStart)
+  let depth = 1
+  let cursor = open + 1
+  while (cursor < css.length && depth > 0) {
+    if (css[cursor] === '{') depth += 1
+    else if (css[cursor] === '}') depth -= 1
+    cursor += 1
+  }
+  const forced = css.slice(open + 1, cursor - 1)
+  /** Selectors the mode's block gives a border to. */
+  const bordered = new Set()
+  for (const match of forced.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    if (!/(?:^|;)\s*border\s*:/.test(match[2])) continue
+    for (const part of match[1].split(',')) bordered.add(part.trim())
+  }
+
+  // A drawn box that separates itself with the elevation shadow. These are the
+  // surfaces this mode can strip an edge from, so they are what has to be
+  // checked.
+  //
+  // This scan does not care whether a rule sits inside a media query: it selects
+  // rules by their declarations, and the mode's own rules carry none of this
+  // shadow. `bordered` below is where the mode's borders are read, so the two
+  // halves cannot be confused for one another.
+  const shadowed = []
+  for (const match of css.matchAll(/([^{}@]+)\{([^{}]*)\}/g)) {
+    const body = match[2]
+    if (!/(?:^|;)\s*box-shadow\s*:\s*[^;]*var\(--elevation\)/.test(body)) continue
+    for (const part of match[1].split(',')) {
+      const selector = part.trim()
+      if (selector.startsWith('@')) continue
+      if (!shadowed.includes(selector)) shadowed.push(selector)
+    }
+  }
+  assert.ok(
+    shadowed.length > 0,
+    'expected at least one surface to separate itself with `--elevation`; if this is 0 the check below proves nothing',
+  )
+
+  for (const selector of shadowed) {
+    // A surface with its own border is already safe in this mode.
+    const ownBorder = declarationOf(selector, 'border')
+    if (ownBorder !== null && !/^\s*none\b/.test(ownBorder)) continue
+    assert.ok(
+      bordered.has(selector) || borderedUnder(bordered, selector),
+      `${selector} separates itself with a shadow and no border, so under \`forced-colors: active\` it loses every edge it has and reads as part of what is behind it`,
+    )
+  }
 })
