@@ -17,6 +17,7 @@
  *   node tools\preview.mjs <scenario> <out.png> --locale zh-CN
  *   node tools\preview.mjs <scenario> <out.png> --keys "Tab,PageDown"
  *   node tools\preview.mjs <scenario> <out.png> --ax-tree "#transcript"
+ *   node tools\preview.mjs <scenario> <out.png> --resize 520x900
  *   node tools\preview.mjs --list
  *
  * `tools/gallery.mjs` drives this to regenerate `docs/screenshots/`, which is
@@ -1389,6 +1390,57 @@ async function main() {
         process.stdout.write(`  focus: ${focused.result.value} for ${focusSelector}\n`)
       }
       await new Promise((r) => setTimeout(r, 250))
+    }
+
+    // `--scroll-bottom` puts the transcript at its newest row *before* anything
+    // that follows. Reading in the middle and reading at the bottom are opposite
+    // cases for a reflow — one is anchored to a row, the other to the end — and
+    // only this one can be set up by the scenario fixtures, which all render at
+    // whatever offset their length happens to leave.
+    if (rest.includes('--scroll-bottom')) {
+      const scrolled = await cdp.send('Runtime.evaluate', {
+        expression: `(() => {
+          const el = document.getElementById('transcript');
+          if (el === null) return 'missing';
+          el.scrollTop = el.scrollHeight;
+          el.dispatchEvent(new Event('scroll'));
+          return String(Math.round(el.scrollTop));
+        })()`,
+        returnByValue: true,
+      }, sessionId)
+      emit(`  scrolled to bottom: ${scrolled.result?.value}\n`)
+      await new Promise((r) => setTimeout(r, 200))
+    }
+
+    // `--resize <WxH>` changes the panel's size *after* it has loaded, which is
+    // a different question from rendering it at that size. A sidebar is resized
+    // by dragging its edge while the panel is live; anything the page positions
+    // in pixels from `window.innerWidth`/`innerHeight` has to be recomputed when
+    // that happens, and a capture at a fixed size can never ask whether it was.
+    // The `Emulation` domain is what makes the change real: it fires `resize` on
+    // the page, so a listener that exists is exercised and one that does not is
+    // exposed.
+    //
+    // It runs after `scenario.click` and before the screenshot, so the capture
+    // shows the layout that resulted from the change rather than the one before
+    // it.
+    const resizeTo = textOf('resize', '')
+    if (resizeTo.length > 0) {
+      const match = /^(\d+)x(\d+)$/.exec(resizeTo)
+      if (match === null) {
+        emit(`  WARNING --resize ${JSON.stringify(resizeTo)} is not WxH\n`)
+        exitCode = 1
+      } else {
+        await cdp.send('Emulation.setDeviceMetricsOverride', {
+          width: Number(match[1]),
+          height: Number(match[2]),
+          deviceScaleFactor: 2,
+          mobile: false,
+        }, sessionId)
+        // A layout effect of the resize is asynchronous: the event fires, then
+        // whatever handles it writes styles, then the browser lays out again.
+        await new Promise((r) => setTimeout(r, 400))
+      }
     }
 
     const shot = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true }, sessionId)

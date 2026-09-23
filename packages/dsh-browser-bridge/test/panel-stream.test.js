@@ -198,10 +198,21 @@ globalThis.Highlight = class Highlight {
 // these tests stricter — it silently truncated the thing under test.
 //
 // Aliasing `globalThis` is not enough: Node's global has no `addEventListener`.
-// The panel touches exactly three members, so the stub is those three, and the
-// focus listeners are recorded rather than dropped so a test can fire one.
+// The panel touches three members, so the stub is those three, and the listeners
+// are recorded by type rather than dropped, so a test can fire one.
 /** @type {(() => unknown)[]} */
 const focusListeners = []
+/**
+ * Every other kind of window listener, by event name.
+ *
+ * This used to keep `focus` and discard the rest, which made a `resize` handler
+ * unreachable from a test: the panel could register one, or stop registering
+ * one, and no assertion could tell the difference. A stub that drops the thing
+ * under test is worse than no stub, because the suite still reports green.
+ *
+ * @type {Map<string, ((event?: unknown) => unknown)[]>}
+ */
+const windowListeners = new Map()
 // Counted rather than ignored: the offline chip's whole purpose is to open the
 // settings page, and a no-op stub cannot tell that from a button that does
 // nothing.
@@ -209,6 +220,9 @@ let openedOptions = 0
 globalThis.window = {
   addEventListener: (type, listener) => {
     if (type === 'focus') focusListeners.push(listener)
+    const existing = windowListeners.get(type) ?? []
+    existing.push(listener)
+    windowListeners.set(type, existing)
   },
   innerWidth: 400,
   innerHeight: 800,
@@ -4617,6 +4631,109 @@ test('two picture-only messages do not collide as one row', async () => {
   assert.equal(shots.length, 2, 'both messages are on screen')
   const sources = shots.map((shot) => shot.querySelectorAll('img')[0].getAttribute('src'))
   assert.notEqual(sources[0], sources[1], 'and they are two different pictures, not one drawn twice')
+})
+
+test('narrowing the panel does not move the row being read', async () => {
+  // The sidebar is resized by dragging its edge, and the panel is live while that
+  // happens. A narrower column reflows every row — the same sentence needs more
+  // lines — so the content above the viewport gets taller and everything below it
+  // slides down. Measured in a real browser: reading an answer at 380px and
+  // narrowing to 260px grew the transcript from 5109px to 6159px, left
+  // `scrollTop` untouched, and put the reader eight rows further back, on a
+  // question they had already read.
+  //
+  // `drawTranscript` already compensates for a *redraw*, by measuring what was
+  // added. A resize is not a redraw, so that path never runs and nothing
+  // compensated. The panel turns off the browser's own scroll anchoring
+  // (`overflow-anchor` in `sidepanel.html`, because it fights that manual
+  // restore), so this case is the panel's to handle.
+  // `openChat` first: an earlier test in this file can leave the panel showing
+  // the session list, where `view` is not `'chat'` and the resize handler returns
+  // early. Without this the test drives a panel that is not in the state it is
+  // about — measured, `view` was `history` and the transcript held three rows.
+  await openChat()
+  await settleToIdle()
+  // And an earlier test can leave a *search* parked, which shows a window around
+  // a match rather than the newest rows: `host.reads` still carried `end: 96`, so
+  // the panel drew three rows of a different part of the conversation. Closing
+  // the bar clears the query; the window itself is left behind, so the send path
+  // is what returns the panel to the newest rows.
+  closeFindBar()
+  const composer = registry.get('input')
+  composer.value = 'back to the newest rows'
+  registry.get('send').emit('click')
+  await settle()
+
+  host.messages = longTranscript(300)
+  await settle()
+
+  const transcript = registry.get('transcript')
+  const rows = transcript.children
+  assert.ok(rows.length > 4, 'the fixture has to be long enough to scroll')
+
+  // The reader is in the middle of the conversation, not at either end.
+  transcript.measure({ scrollTop: 600, scrollHeight: 2000, clientHeight: 500 })
+  // The scroller's own top edge sits 30px down the viewport, so "how far below the
+  // top of the scroller is this row" is a real subtraction. With everything at
+  // zero, an implementation that forgot to subtract it would still pass.
+  transcript.rectTop = 30
+  for (const [index, row] of rows.entries()) {
+    row.offsetHeight = 100
+    row.rectTop = 30 + (index - 2) * 100 + 40
+  }
+  // The scroll is what records the anchor, and it names the node the reader is on
+  // rather than an index — which is what lets it survive a window that grows
+  // upwards.
+  transcript.emit('scroll')
+
+  const anchorRow = rows[2]
+  assert.equal(
+    anchorRow.getBoundingClientRect().top - transcript.getBoundingClientRect().top,
+    40,
+    'the fixture has to put the anchor where this test then asks about it',
+  )
+
+  // The drag, as a reflow: every row needs more lines, so the text above the
+  // viewport pushes the anchor down — and the transcript as a whole gets taller
+  // with it. Both happen together, and the second is what makes "just add the
+  // difference in `scrollHeight`" look like a reasonable implementation. It is
+  // not: the two numbers are unrelated, and only the anchor's own movement says
+  // how far the text under the reader actually went.
+  for (const row of rows) row.rectTop += 75
+  transcript.scrollHeight = 2200
+
+  for (const listener of windowListeners.get('resize') ?? []) listener()
+
+  assert.equal(
+    transcript.scrollTop,
+    675,
+    'the offset must take up exactly what the anchor moved by, not the height change',
+  )
+})
+
+test('a panel pinned to the bottom stays at the bottom when it is resized', async () => {
+  // The other half of the same gesture, and the one that is wrong in the opposite
+  // direction. Somebody at the newest message is anchored to the *end* of the
+  // transcript, not to a row: a reflow moves that end further away, so keeping
+  // `scrollTop` unchanged drops them behind the newest message they were reading.
+  // Same reason as the test above: this one is also about the chat view.
+  await openChat()
+  await settleToIdle()
+  host.messages = longTranscript(300)
+  await settle()
+  await openChat()
+
+  const transcript = registry.get('transcript')
+  transcript.measure({ scrollTop: 1500, scrollHeight: 2000, clientHeight: 500 })
+  transcript.emit('scroll')
+
+  for (const listener of windowListeners.get('resize') ?? []) listener()
+
+  assert.equal(
+    transcript.scrollTop,
+    transcript.scrollHeight,
+    'a reader at the bottom must be sent back to the bottom, not left where the offset was',
+  )
 })
 
 test('reopening the panel puts the draft back in the composer', async () => {

@@ -48,6 +48,15 @@ class Element {
     this.scrollHeight = 0
     this.clientHeight = 0
     this.offsetHeight = 0
+    /**
+     * Where this element's box starts, in the viewport.
+     *
+     * A plain assignable field rather than a real layout engine: a test that
+     * needs a row to sit at a particular place, or to move when something
+     * reflows, sets this. Defaults to 0, which is where every element used to be
+     * pinned.
+     */
+    this.rectTop = 0
     this.parentNode = null
     this.listeners = new Map()
     /** Attributes set by name, read back by the same name. See `setAttribute`. */
@@ -304,6 +313,22 @@ class Element {
     this.clientHeight = clientHeight
   }
 
+  /**
+   * Whether `node` is this element or sits inside it.
+   *
+   * The real API walks the tree; the panel uses it to ask "is the row I
+   * remembered still on screen", which a poll can answer either way. Without it
+   * a caller that guards on it throws instead of taking the guarded branch, so
+   * the test would fail on the shim rather than on the behaviour.
+   */
+  contains(node) {
+    if (node === null || node === undefined) return false
+    for (let walk = node; walk !== null && walk !== undefined; walk = walk.parentNode) {
+      if (walk === this) return true
+    }
+    return false
+  }
+
   /** Every descendant, in document order. */
   descendants() {
     const out = []
@@ -412,8 +437,24 @@ class Element {
     return this.ownerDocument !== undefined
   }
   scrollIntoView() {}
+  /**
+   * The element's box, at whatever position the test has placed it.
+   *
+   * `top` used to be the constant 0, which made every element sit at the same
+   * place: a test could not say "this row is 40px below the viewport's top edge"
+   * or "the reflow pushed it down", so anything measured *between two elements*
+   * — an anchor's distance from the top of the scroller, which is what keeps a
+   * reader's place when a sidebar is resized — was unrepresentable.
+   */
   getBoundingClientRect() {
-    return { top: 0, left: 0, width: 320, height: this.offsetHeight, bottom: this.offsetHeight, right: 320 }
+    return {
+      top: this.rectTop,
+      left: 0,
+      width: 320,
+      height: this.offsetHeight,
+      bottom: this.rectTop + this.offsetHeight,
+      right: 320,
+    }
   }
 
   #adopt(node) {

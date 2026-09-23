@@ -346,6 +346,30 @@ let drawnSignature = ''
 let drawnRows = []
 /** True while the view is pinned to the newest row. */
 let stickToBottom = true
+/**
+ * Where the reader is, named by the text rather than by the pixels.
+ *
+ * A drag on the sidebar's edge reflows every row: the same sentence needs more
+ * lines in a narrower panel, so the content above the viewport gets taller and
+ * everything below it slides down. `drawTranscript` already answers that for a
+ * redraw — it measures what was added and shifts `scrollTop` by the difference —
+ * but a resize is not a redraw. Nothing is re-rendered, no code path runs, and
+ * the offset stays where it was while the text underneath it moves.
+ *
+ * Measured: reading an answer at 380px wide and narrowing the panel to 260px
+ * reflowed the transcript from 5109px to 6159px and moved the reader back eight
+ * rows, to a question they had already read. `scrollTop` did not change at all.
+ *
+ * Native scroll anchoring is the browser's own answer to this, and this panel
+ * turns it off (`overflow-anchor` in `sidepanel.html`) because it fights the
+ * manual restore above. So the manual restore has to cover this case as well.
+ *
+ * The anchor is the node at the top of the viewport plus how far it sat from the
+ * viewport's top edge. The node is held rather than an index because
+ * `reconcileRows` reuses nodes — loading earlier rows prepends and would shift
+ * every index, while the node itself still names the same text.
+ */
+let readingAnchor = null
 /** The deployment's model catalog, or null until it has been read. */
 let catalog = null
 /** Why the catalog is missing, when it is. */
@@ -1667,6 +1691,67 @@ function atBottom() {
   return transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight <= NEAR_BOTTOM_PX
 }
 
+/**
+ * Remember which row the reader is reading, and how far down the viewport it sat.
+ *
+ * Called whenever the scroll position changes, so that a later reflow has
+ * something to restore to. It has to be recorded *in advance* rather than during
+ * the resize: by the time a `resize` listener runs, the layout has already been
+ * redone at the new width and the old positions are gone.
+ *
+ * Pinned to the bottom there is nothing to anchor to — the reader's place is "the
+ * newest row", and `restoreReadingPlace` sends them back there by name.
+ *
+ * @returns {void}
+ */
+function rememberReadingPlace() {
+  if (stickToBottom || view !== 'chat') {
+    readingAnchor = null
+    return
+  }
+  const top = transcript.getBoundingClientRect().top
+  // The first row whose top edge is at or below the viewport's top edge: the row
+  // the reader's eye lands on. Rows above it are partly scrolled off.
+  const row = [...transcript.children].find(
+    (candidate) => candidate.getBoundingClientRect().top >= top - 1,
+  ) ?? null
+  readingAnchor = row === null ? null : { row, offset: row.getBoundingClientRect().top - top }
+}
+
+/**
+ * Put the reader back where `rememberReadingPlace` found them.
+ *
+ * Both halves matter, because a reflow moves the text under a fixed `scrollTop`
+ * either way. Somebody reading in the middle keeps the row they were on at the
+ * same distance from the top edge; somebody pinned to the bottom stays pinned,
+ * which the offset alone would not do — the bottom is further away than it was.
+ *
+ * The position is set by measuring rather than by arithmetic on `scrollTop`
+ * alone, because a narrower panel makes the same text taller and there is no
+ * fixed ratio between the two heights.
+ *
+ * @returns {void}
+ */
+function restoreReadingPlace() {
+  if (view !== 'chat') return
+  if (stickToBottom) {
+    // Back to the newest row. Assigning past the end stops at the end, so this
+    // is correct whether the reflow made the transcript taller or shorter.
+    transcript.scrollTop = transcript.scrollHeight
+    return
+  }
+  if (readingAnchor === null) return
+  const { row, offset } = readingAnchor
+  // A row can be gone by the time this runs: a poll may have redrawn the
+  // transcript with different rows while the resize was settling.
+  if (!transcript.contains(row)) {
+    readingAnchor = null
+    return
+  }
+  const moved = row.getBoundingClientRect().top - transcript.getBoundingClientRect().top - offset
+  if (moved !== 0) transcript.scrollTop += moved
+}
+
 /** Show or hide the way back down. */
 function updateToBottom() {
   // A search jump parks the window inside the conversation. The scrollbar can sit
@@ -1733,6 +1818,9 @@ function drawTranscript(next) {
   else transcript.scrollTop = keep
   grewEarlier = false
   stickToBottom = atBottom()
+  // After the position is settled, not before: the rows may have been replaced
+  // wholesale, and the anchor names a specific node.
+  rememberReadingPlace()
   updateToBottom()
 }
 
@@ -3893,8 +3981,40 @@ input.addEventListener('input', () => {
 
 transcript.addEventListener('scroll', () => {
   stickToBottom = atBottom()
+  rememberReadingPlace()
   updateToBottom()
 })
+
+/**
+ * Keep the reader's place when the sidebar is resized.
+ *
+ * Two things have to be right, and they are separate. The transcript must not
+ * slide out from under somebody who is reading, which is what the anchor pair
+ * above does. And the menus, which are `position: fixed` and placed in pixels
+ * from `window.innerWidth`/`innerHeight`, must be placed again — a menu left at
+ * its old coordinates after the panel narrows hangs off the edge, which the CSS
+ * `max-width` only partly hides.
+ *
+ * The listeners are passive because neither handler calls `preventDefault`, and
+ * marking them so is what keeps the drag that resizes a sidebar off the main
+ * thread's critical path: this runs on every frame of that drag.
+ */
+window.addEventListener('resize', () => {
+  restoreReadingPlace()
+  // The reflow can move the reader across the `NEAR_BOTTOM_PX` line in either
+  // direction, and `stickToBottom` is what the next poll reads to decide whether
+  // to follow the newest row. Leaving it stale means the first message to arrive
+  // after a resize either yanks somebody who had scrolled up, or leaves somebody
+  // at the bottom behind.
+  stickToBottom = atBottom()
+  rememberReadingPlace()
+  updateToBottom()
+  if (menuOpen) positionMenu()
+  // `mention` is the picker's own state, and it is what `closeMention` clears;
+  // the element's `hidden` flag is set a line later and would also be true
+  // during the frame where the picker is being torn down.
+  if (mention !== null) positionMention()
+}, { passive: true })
 
 /**
  * Put text on the clipboard.

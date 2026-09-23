@@ -1,9 +1,9 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v93 已交付并入库。** 下一节就是最新的一轮改动；下面标 v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v93 那一段为止即可。
+> **当前状态：v94 已交付并入库。** 下一节就是最新的一轮改动；下面标 v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v94 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（669 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（671 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 > （真浏览器 e2e 那 4 条需要机器上有 Playwright Chromium 或 Chrome for Testing；
@@ -16,8 +16,89 @@
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
 >
-> **已入库**：v3→v93 的全部改动已提交并推送到 `origin/main`。工作区干净。
+> **已入库**：v3→v94 的全部改动已提交并推送到 `origin/main`。工作区干净。
 > （v92 是 `e3ad6ba`，v91 是 `3d96bf1`，v90 是 `767e4cd`，v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
+
+> ## v94：拖一下侧栏的边，正在读的那一段就被推走了
+
+本轮换到**尺寸变化**这条轴。前三轮（v91/v92/v93）都在字号缩放上，而拖侧栏的边
+是同一个「读者能改布局」的族里最常见的一个动作——面板对此**完全没有准备**。
+
+**缺陷**：`#model-menu` 与 `#at-menu` 是 `position: fixed`，位置由 `positionMenu()`
+（`extension/sidepanel.js:890`）用 `window.innerWidth` / `window.innerHeight` 算出
+像素值写成内联样式；而整个面板**没有任何 `resize` 监听**（全文件搜 `resize` 只命中
+一处注释）。侧栏被拖窄之后，每一行都要重新折行，转写本整体变高，而 `scrollTop`
+停在原处——**文字在动，滚动位置不动**。
+
+**实测（真实 Chromium，`tools/preview.mjs` 新增 `--resize`）**：
+
+| | 380px（基线） | 缩到 260px（修复前） | 缩到 260px（修复后） |
+|---|---|---|---|
+| 视图顶端那一段文字 | 「按钮被一个透明的遮罩层挡住了…」 | **「第 195 个问题：…」** | 「按钮被一个透明的遮罩层挡住了…」 |
+| 顶端行下标 | 53 | **45（退了 8 行）** | **53（未变）** |
+| `scrollTop` | 4521 | **4521（一动没动）** | 5445（跟着文字走） |
+| `scrollHeight` | 5109 | 6159 | 6159 |
+
+读者正在读的回答被推出屏外，眼前换成八行之前的提问。**贴底的人同样受害**：修复前
+`gapToBottom` 从 0 变成 1165，最新一条回复被推到看不见的地方。
+
+**根因不是漏了补偿，是补偿的触发条件**：`drawTranscript`（`sidepanel.js:1697`）
+本来就在重绘后按「加了多高就补多少」恢复位置，注释还写明了为什么。而
+**改尺寸不是重绘**——没有一行被重新渲染，那条路径根本不会跑。`extension/sidepanel.html:390`
+的 `overflow-anchor: none` 又关掉了浏览器自己的滚动锚定（注释记载：它和手写的恢复
+逻辑打架），于是这个情形**两个机制都不管**。
+
+**修法**：记录「视图顶端那一行 + 它距顶端多少」，在 resize 时放回去。
+- `rememberReadingPlace()` / `restoreReadingPlace()`（`sidepanel.js`），
+  状态 `let readingAnchor = null`。
+- **记的是节点不是下标**：`reconcileRows` 会复用节点，而加载更早的内容是往**前面**
+  插行，下标会整体平移（v71 修过同一个坑的另一面）。
+- 锚点在**滚动时**就记好，不是等 resize 才去量——`resize` 监听跑起来的时候，浏览器
+  已经按新宽度重排完了，旧位置已经没了。
+- **贴底的情形单独处理**：那里的「位置」是转写本的末尾，不是某一行；只做偏移补偿会
+  把贴底的读者落在后面。`restoreReadingPlace` 在 `stickToBottom` 时直接
+  `scrollTop = scrollHeight`（赋值超出末尾会停在末尾，所以变高变矮都对）。
+- 顺带 `stickToBottom = atBottom()` + `rememberReadingPlace()` + `updateToBottom()`
+  一起收尾：一次重排可能把读者推过 `NEAR_BOTTOM_PX` 这条线，留下陈旧的 `stickToBottom`
+  会让**下一条到达的消息**要么把已经上翻的人拽回底部，要么把贴底的人落在后面。
+- 两个浮层在 resize 后重新定位（`positionMenu` / `positionMention`）。实测窄化之后
+  内联 `left` 是陈旧的 `22px`（正确答案 `16px`），目前被 CSS `max-width` 挡住一半。
+
+**★ 三条测试基建的真实缺口（不修就写不出这两条测试）**：
+1. `packages/dsh-browser-bridge/test/panel-stream.test.js` 的 `globalThis.window` 替身
+   **只记录 `focus` 监听，其余静默丢弃**——面板可以注册 `resize`、也可以不注册，
+   没有任何断言分得出来。改为按事件名记录（`windowListeners`）。
+2. `test/dom-shim.js` 的 `getBoundingClientRect()` 把 `top` 写死为 `0`，于是
+   **任何「两个元素之间」的测量都无法表达**（锚点距滚动容器顶端多少，正是本轮要测的）。
+   新增可写字段 `rectTop`，`top` 由它得出。
+3. `test/dom-shim.js` 没有 `Node.contains`，面板用它判断「我记的那一行还在不在」。
+   补上（沿 `parentNode` 上溯）。
+
+**★ 我自己的测试错了两处，都是「我以为的状态不是实际状态」**：
+- 第一版跑起来 `view = history`（上一个测试把面板留在会话列表），转写本只有 3 行。
+  用既有的 `openChat()` 助手修好。
+- 修好之后仍然 3 行：`host.reads.at(-1)` 带着 `end: 96`——**更早的测试把搜索窗口停在了
+  会话中间**，面板画的是一段窗口而不是最新的 60 行。诊断办法是把 `host.reads` 的最后一笔
+  打出来，而不是继续猜。
+- 断言也错过一次：原本断言「锚点距顶端仍是 40px」，而 shim **不把 `scrollTop` 和几何
+  联动**，所以在那里断言视觉结果是不忠实的。改为断言**滚动偏移恰好补上锚点移动的距离**
+  （75px），并把滚动容器自己的 `rectTop` 设成 30 而非 0——否则「忘了减容器原点」这个
+  错误实现照样能通过。
+
+**验证读数（已绿，不必重跑）**
+- `npm test` → **671 passed, 0 failed, 0 skipped**（669 → 671）
+- `npm run check:extension` → exit 0
+- `.tmp-run/mutate-resize-anchor.mjs` → **6/6 命中**、`restoredExactly: true`：
+  `no-resize-listener`、`restore-does-nothing`、`anchor-never-remembered`、
+  `bottom-case-dropped`、`uses-height-delta`（用 `scrollHeight` 差当位移——看起来合理，
+  但两个数无关）、`forgets-scroller-origin`（不减容器 `rectTop`）。
+  每条红的都是对应的那条测试，且只有它。
+- 真实浏览器两条路径：读中间的人缩放后顶端文字不变（`topVisibleIndex: 53`）；
+  贴底的人缩放后 `gapToBottom: 0`、`atBottom: true`、末行完整可见。
+
+**新增工具能力**（`tools/preview.mjs`）：`--resize WxH`（加载**之后**改尺寸，走
+`Emulation.setDeviceMetricsOverride` 触发真的 `resize` 事件）、`--scroll-bottom`
+（先滚到最新一行，好让「贴底」这个前置条件可复现）。用法已写进文件头。
 
 > ## v93：字号缩放轴上还剩三处「盒子装不住自己的字」
 >
