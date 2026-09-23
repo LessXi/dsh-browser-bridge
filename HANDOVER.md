@@ -1,22 +1,22 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v86 已交付并入库。** 下一节就是最新的一轮改动；下面标 v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v86 那一段为止即可。
+> **当前状态：v87 已交付并入库。** 下一节就是最新的一轮改动；下面标 v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v87 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（624 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（656 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 > （真浏览器 e2e 那 4 条需要机器上有 Playwright Chromium 或 Chrome for Testing；
 > 没有时会**跳过并说明**，不会失败。）
 >
 > **要看界面**：`README.md` 的「界面」一节有 3 张主视觉海报（`docs/posters/`）与
-> 11 张界面状态（`docs/screenshots/`）。`node tools/poster.mjs` 重渲海报，
+> 13 张界面状态（`docs/screenshots/`）。`node tools/poster.mjs` 重渲海报，
 > `node tools/gallery.mjs` 重渲界面状态，`node tools/preview.mjs --list` 列出全部场景。
 >
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
 >
-> **已入库**：v3→v85 的全部改动已提交并推送到 `origin/main`。工作区干净。
+> **已入库**：v3→v87 的全部改动已提交并推送到 `origin/main`。工作区干净。
 > （v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
 
 > ## ⚠️ 两条并行版本线（2026-09-23 处理，后续轮次务必先读这段）
@@ -184,7 +184,99 @@
 > - `earlier.png` 与 `hostDown.png` **sha256 相同**：那张图画的是阻塞屏，
 >   「更早的内容」胶囊根本没出现在交付的图里。成因未定位。
 
-> ### v86：读者发的图片在面板里根本不存在（本轮）
+> ### v87：工具产出的图片，以及一个**从没跑过**的测试文件（本轮）
+>
+> 两件事，第二件比第一件严重。
+>
+> #### 一、工具行画出了它产出的图片
+>
+> `tool/result` 的图片此前完全不显示——而这是数量上的主要来源。要定形状，
+> 先量了三件事（`.tmp-run/probe-tool-image-shape.mjs`，扫 40 份真实日志、72262 个事件）：
+>
+> | 问题 | 读数 |
+> | --- | --- |
+> | 图片出现在哪一侧 | `tool/result` **254** 次；`tool/call` **0** 次（14068 个调用） |
+> | 藏在第几层 | 顶层 191 次；`tool-result` 块内 **63** 次 |
+> | 一次调用产出几张 | **全部为 1**（254/254） |
+> | 会被 `collapseToolRuns` 并起来吗 | **不会**（带图的 254 段摘要全不相同） |
+> | 同一 callId 收到几条 result | **1 条**（我的第一个探针报「57 个收到 2 条」，是**探针自己的 bug**：`resultsPerCall` 声明在文件循环之外，跨会话累加了） |
+>
+> 修法：`imageBlocks(content, depth = 1)` 增加 `depth`（默认 1，保持 `user/message`
+> 的既有语义），`tool/result` 分支用 **depth 2**——`toolResultText` 早就在同一处
+> 递归两层，注释写着「a reader that stops at the outer block finds nothing」。
+> 图片**累积**而不像 `status` 那样赋值：状态是被最后一次结果**了结**的，而图片是
+> 这次调用**产出**的，后来一条不带图的结果并不能取消它。`collapseToolRuns`
+> 也把图片带过合并（量到的数据里不会发生，守的是形状）。
+> 面板侧：`row.kind === 'tool'` 分支在失败详情之后 append `renderImages(shots)`；
+> CSS 加 `.row[data-kind="tool"]:has(> .shots)`（列向、`flex-start`，工具行是左对齐的）。
+>
+> #### ★ 二、`image.test.js` **从来没有在 `npm test` 里跑过**
+>
+> 这个文件第一行是 `import test from 'node:test'`，而本仓库用的是自建 harness
+> （`test/harness.js`）——`node:test` 注册的测试，自建 runner **收不到**。
+> 后果：文件被 `run.js` 正常 import（44 个套件里就有它），**却贡献 0 条测试**，
+> 它的断言一次都没执行过。上一轮报告「624 passed」时，那个文件的 **32 条**测试
+> **不在这个数字里**；上一轮记的「新增 23 条」也从未参与统计。
+>
+> 改成 `import { assert, main, test } from './harness.js'` 之后，**当场 8 条变红**：
+> `t.after is not a function`——本 harness 的清理接口叫 `t.onCleanup`，`t.after`
+> 是 `node:test` 的名字。**也就是说：那 8 条路由测试（含「非本机拒绝 403」
+> 「不当作文档下发」「缓存永久」「缺参数 400」）从写下的那一刻起就是坏的，
+> 只是没人跑过它们。** 修完之后 `image` 单套件 32 passed。
+>
+> **判据读数**：`npm test` 624 → **656 passed**（多出的 32 条就是它）。
+>
+> #### 三、给 runner 加了一道守卫（这才是修复的重点）
+>
+> `test/run.js` 现在逐个 import 套件时比对 `registeredCount()`，注册数为 0 的
+> 文件**点名报错并 exit 1**：
+>
+> ```
+> test/run: 1 suite(s) registered no tests: image.test.js
+> Each *.test.js must import { test } from the local harness, not node:test.
+> ```
+>
+> 已实测：把 `image.test.js` 的 import 换回 `node:test`，这条守卫命中、
+> 退出码 1、总数退回 624 ——**证明那 32 条确实不在里面**。
+> 一个注册不了测试的套件文件不是「通过的套件」，它是一份没人读的报告。
+>
+> #### 四、量过但**没有采纳**的一处改动（别重复挖）
+>
+> 追一个「同一命令渲染出两种图」的抖动时，先定位到 `header`：`height: 44px` 是
+> border-box，减去 1px 下边框后内容盒 **43px（奇数）**，28px 的图标居中落在
+> **y=7.5**。改成 45px 后落在 y=8，读数确实变整数。**但改完抖动仍在**，
+> 所以又量了「半像素到底糊不糊」（`.tmp-run/icon-sharpness.mjs`，56x62 的图标区）：
+> **两个版本都是 53 个灰度层次、130 个中间调像素、3.74%**——在
+> `devicePixelRatio: 2` 下**没有可测差异**。于是**已还原**（只留下一条注释说明
+> 为什么这个数不动）：为了买不到的东西把仓库里 13 张图全部重渲一遍是错的。
+>
+> #### ★ 五、那次抖动的真正成因（已定位，**未修**）
+>
+> 逐像素读颜色（`.tmp-run/pixel-rgba.mjs`）：物理 (14,115) 上两次取值
+> **250 vs 244**（差 6/255），左邻恒为深色 18、右邻恒为白 255 —— 是**抗锯齿的
+> 覆盖值**。该坐标 = CSS (7, 57.5)，而 `#find-input` 的盒子是 `left: 8`，
+> `outline-offset: -1px` ⇒ **焦点环的外沿正好在 x=7**（`:focus-visible`
+> 实测为 true，`2px solid rgb(255,255,255)`，`border-radius: 6px`）。
+> 也就是说：**圆角描边的斜边上，覆盖率取整偶尔会落到另一侧**，
+> 约 **10 次渲染出现 1 次**（实测 9:1）。
+> 这条**没有修**：它是 Chromium 光栅化圆角的方式，不是本仓库的代码缺陷；
+> 记录在此是为了下次再见到「截图哈希偶尔不同」时不必重查一遍。
+>
+> #### 六、验证读数（已绿）
+>
+> - `npm test` → **656 passed, 0 failed, 0 skipped**；`check:extension` exit 0
+> - `image` 单套件 → **32 passed**
+> - 变异 `.tmp-run/mutate-tool-images.mjs` → **5/5 命中**、`restoredExactly: true`
+>   （`tool-result-images-ignored`、`only-the-outer-level-is-read`、
+>   `assign-instead-of-accumulate`、`duplicates-are-not-deduped`、
+>   `merge-drops-the-pictures`）
+> - 真实浏览器（`picture` 场景）→ `everyToolImageDrawn: true`、
+>   `rowsWithImages: 1`、`naturalWidth: 1280`、`userShots: 2`（读者自己的没受影响）
+> - 面板侧变异（把 `wrapper.append(renderImages(shots))` 去掉）→
+>   `rowsWithImages: 0`、`everyToolImageDrawn: false`，**探针确实会红**
+> - `picture.png` 重渲 3 次逐字节一致；其余 12 张未变
+
+> ### v86：读者发的图片在面板里根本不存在（已完成）
 >
 > #### 一、缺陷：一条只有图片的消息**连一行都不产生**
 >

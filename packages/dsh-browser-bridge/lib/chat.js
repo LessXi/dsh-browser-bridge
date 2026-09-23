@@ -135,15 +135,27 @@ function oneLine(value, maximum) {
  * block whose bytes are inline instead has no `attachment`, so it is skipped
  * rather than half-read: there is no id to fetch it by later.
  *
+ * `depth` exists because the two callers nest differently, and the difference is
+ * measurable rather than stylistic. A reader's own message carries its images at
+ * the top level — 191 of the 254 image blocks in this machine's logs sit as a
+ * sibling of the text block, `[text, image]`. A tool result wraps them one level
+ * deeper, inside the `tool-result` block that `toolResultText` already descends
+ * into for the same reason; 63 of the 254 are there. Reading only the top level
+ * would silently find three quarters of them.
+ *
  * @param {unknown} content - The message's content array.
+ * @param {number} [depth] - Levels to descend through nested content arrays.
  * @returns {object[]} One entry per referenced image, in the order written.
  */
-export function imageBlocks(content) {
-  if (!Array.isArray(content)) return []
+export function imageBlocks(content, depth = 1) {
+  if (!Array.isArray(content) || depth <= 0) return []
   const found = []
   for (const block of content) {
     if (typeof block !== 'object' || block === null) continue
-    if (block.type !== 'image') continue
+    if (block.type !== 'image') {
+      if (Array.isArray(block.content)) found.push(...imageBlocks(block.content, depth - 1))
+      continue
+    }
     const attachment = block.attachment
     if (typeof attachment !== 'object' || attachment === null) continue
     const attachmentId = asText(attachment.attachmentId)
@@ -360,6 +372,23 @@ export function collapseToolRuns(rows) {
       previous.status = row.status
       if (typeof row.failure === 'string' && row.failure.length > 0) previous.failure = row.failure
       else delete previous.failure
+      // Pictures are carried across the merge for the same reason the reason is:
+      // the row now stands for every call in the run, so a picture produced by
+      // the third one belongs to it. Dropping them here would be the same defect
+      // this row was fixed for, one level down — a thing that exists and is not
+      // drawn. Measured on this machine's logs, an image-producing call never
+      // merges (254 of them, every summary distinct), so this guards a shape
+      // rather than a case that has been seen.
+      if (Array.isArray(row.images) && row.images.length > 0) {
+        const images = Array.isArray(previous.images) ? previous.images : []
+        const seen = new Set(images.map((image) => image.attachmentId))
+        for (const image of row.images) {
+          if (seen.has(image.attachmentId)) continue
+          seen.add(image.attachmentId)
+          images.push(image)
+        }
+        previous.images = images
+      }
       continue
     }
     out.push(row.kind === 'tool' ? { ...row, count: 1 } : row)
@@ -631,6 +660,28 @@ export function describeEvents(events, api) {
             else delete row.failure
           } else {
             delete row.failure
+          }
+          // Images accumulate where the status does not, because the two say
+          // different kinds of thing. A status is a property of the call and the
+          // latest word settles it; a picture is something the call *produced*,
+          // and a later result carrying no picture does not unproduce it. Adding
+          // rather than assigning is also the only choice that cannot lose one:
+          // `browser_screenshot` is exactly this row, and a screenshot that never
+          // appears is the bug this row exists to fix.
+          //
+          // Each distinct image is kept once. An id is a content address, so the
+          // same one twice is the same bytes, and showing it twice would be a
+          // visible duplicate rather than two findings.
+          const produced = imageBlocks(data?.message?.content, 2)
+          if (produced.length > 0) {
+            const images = Array.isArray(row.images) ? row.images : []
+            const seen = new Set(images.map((image) => image.attachmentId))
+            for (const image of produced) {
+              if (seen.has(image.attachmentId)) continue
+              seen.add(image.attachmentId)
+              images.push(image)
+            }
+            row.images = images
           }
         }
         break

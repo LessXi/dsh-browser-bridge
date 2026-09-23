@@ -417,6 +417,27 @@ const PICTURE_MESSAGES = [
     }],
   },
   { kind: 'assistant', text: '这次点到了，弹窗已经出来。' },
+  // A call that produced a picture. This is the shape `browser_screenshot` and
+  // `read_image` leave behind, and it is the one a tool row could not draw: the
+  // row named the call and showed nothing it returned, so the model could be
+  // seen looking at something with no indication of what it saw.
+  {
+    kind: 'tool',
+    callId: 'call-picture-1',
+    name: 'browser_screenshot',
+    summary: '#stage',
+    status: 'ok',
+    count: 1,
+    images: [{
+      attachmentId: `sha256:${'c'.repeat(64)}`,
+      mediaType: 'image/png',
+      bytes: 145922,
+      width: 1280,
+      height: 800,
+      name: 'snapshot.png',
+    }],
+  },
+  { kind: 'assistant', text: '遮罩层确实盖在按钮上，我把它移开再试。' },
 ]
 
 const DEFAULT_MESSAGES = [
@@ -768,12 +789,15 @@ const SCENARIOS = {
   /** The ordinary case: connected, one conversation, chips visible. */
   normal: {},
   /**
-   * A picture the reader sent, with and without a caption.
+   * Pictures in the conversation, from both directions.
    *
-   * Both shapes are here on purpose. The captioned one is the ordinary case; the
-   * bare one is the case that produced **no row at all** before — the transcript
-   * simply skipped a message whose text was empty, so a reader who sent a
-   * screenshot with no words saw a turn that began with no question.
+   * Three shapes are here on purpose, because they take different paths through
+   * the code. A captioned picture is the ordinary case. A bare one is the case
+   * that produced **no row at all** before — the transcript skipped a message
+   * whose text was empty, so a reader who sent a screenshot with no words saw a
+   * turn that began with no question. And the third comes from a tool rather
+   * than a person: it arrives nested one level deeper, inside the `tool-result`
+   * block, which is where three quarters of this machine's images live.
    */
   picture: { messages: PICTURE_MESSAGES },
   /** A page with a highlighted passage, so the selection chip is on screen. */

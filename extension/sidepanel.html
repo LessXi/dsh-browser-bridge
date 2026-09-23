@@ -183,6 +183,14 @@
         display: flex;
         align-items: center;
         gap: 2px;
+        /* 44px leaves a 43px content box (the bottom border comes out of this
+           height), so the 28px icons center on y=7.5 rather than a whole pixel.
+           That was worth chasing and turned out not to be worth fixing: measured
+           at devicePixelRatio 2, the half-pixel version and a 45px version that
+           lands on y=8 are pixel-for-pixel equally sharp — 53 distinct greys and
+           130 midtones either way, in a 56x62 crop of the icons. Changing it
+           would have re-rendered every screenshot in the repository to buy
+           nothing, so the number stays. */
         height: 44px;
         padding: 0 6px 0 8px;
         border-bottom: 1px solid var(--line-soft);
@@ -407,6 +415,16 @@
         flex-direction: column;
         align-items: flex-end;
         gap: 6px;
+      }
+      /* A tool row that produced pictures stacks them under its own line. The
+         row is a flex row, so without this the group would sit beside the call
+         description and squeeze it; `flex-start` and not `flex-end`, because a
+         tool row is left-aligned like the answers and unlike the reader's own
+         bubbles. */
+      .row[data-kind="tool"]:has(> .shots) {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 4px;
       }
       .shots { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
       .shot {

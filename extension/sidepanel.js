@@ -1351,16 +1351,11 @@ function renderImages(images) {
     // a tab hands that job to the browser's own image viewer, which already has
     // zoom, pan and save — a lightbox here would be a worse copy of it. The
     // thumbnail is a link, not a button, because it is exactly that: a URL.
-    img.className = 'shot-open'
+    img.classList.add('shot-open')
     img.title = t('image.open')
     img.addEventListener('click', () => {
       chrome.tabs.create({ url }).catch(() => {})
     })
-    // The reader's own filename is the only alt text that says anything true
-    // here: the panel does not know what the picture shows.
-    img.alt = typeof image.name === 'string' && image.name.length > 0 ? image.name : t('image.alt')
-    img.loading = 'lazy'
-    img.decoding = 'async'
     // Reserve the space from the reference's own numbers, and only when both
     // are known. The ratio is clamped so one very tall screenshot cannot push
     // the whole conversation off the screen.
@@ -1549,6 +1544,13 @@ function renderRow(row) {
       detail.textContent = reason
       wrapper.append(detail)
     }
+    // What the call produced, under the line that names the call. A screenshot
+    // the model took is the evidence for what it did next, and leaving it out
+    // made `read_image` and `browser_screenshot` look like calls that returned
+    // nothing — the reader could see the model had looked at something and not
+    // what it saw.
+    const shots = Array.isArray(row.images) ? row.images : []
+    if (shots.length > 0) wrapper.append(renderImages(shots))
     return wrapper
   }
 

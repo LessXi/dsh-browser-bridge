@@ -1,10 +1,22 @@
-import assert from 'node:assert/strict'
-import test from 'node:test'
+/**
+ * Tests for pictures in the transcript, and for the route that serves them.
+ *
+ * The fixtures use the shapes the harness actually writes. Two of them were
+ * measured against this machine's own session logs rather than guessed: a
+ * `tool/call` carries no image at all (0 of 14068), so a picture can only ever
+ * arrive on the `tool/result` that follows it; and the images sit at two
+ * different depths depending on who sent them — 191 of 254 at the top level of
+ * the reader's own message, 63 nested inside a `tool-result` block.
+ *
+ * @module dsh-browser-bridge/test/image
+ */
+
 import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
+import { assert, main, test } from './harness.js'
 import { createChat, imageBlocks, textBlocks } from '../lib/chat.js'
 
 /** An image block exactly as the harness writes one into a session log. */
@@ -188,7 +200,7 @@ function temporaryHome(t) {
   if (existsSync(tree)) symlinkSync(tree, join(home, 'profiles', 'node_modules'), 'junction')
   const previous = process.env.DSH_HOME
   process.env.DSH_HOME = home
-  t.after(() => {
+  t.onCleanup(() => {
     if (previous === undefined) delete process.env.DSH_HOME
     else process.env.DSH_HOME = previous
     rmSync(home, { recursive: true, force: true })
@@ -368,4 +380,177 @@ test('can this image be written to is refused rather than treated as a read', as
   assert.equal(answer.status, 405)
   assert.equal(answer.headers.allow, 'GET, HEAD')
 })
+
+/** A `tool/call` event, as the harness writes one. */
+function toolCall(callId, name, args) {
+  return { seq: 1, time: 1, type: 'tool/call', data: { callId, name, arguments: args } }
+}
+
+/**
+ * A `tool/result` event carrying a tool-result block.
+ *
+ * The nesting is the point: a tool's own output lives inside a `tool-result`
+ * block's `content`, one level below the message's own content array. Measured
+ * against this machine's logs, 63 of 254 tool images are here and the rest are
+ * at the top level, so a reader that only looks at one of the two levels finds
+ * three quarters of them.
+ */
+function toolResult(callId, content) {
+  return {
+    seq: 2,
+    time: 2,
+    type: 'tool/result',
+    data: { message: { source: { callId }, content } },
+  }
+}
+
+test('a tool that produced a picture shows it on its own row', async () => {
+  const chat = chatWith([
+    toolCall('c1', 'browser_screenshot', { selector: '#stage' }),
+    toolResult('c1', [{ type: 'tool-result', content: [imageBlock(ID)] }]),
+  ])
+  const { messages } = await chat.readMessages('s')
+  assert.equal(messages.length, 1)
+  assert.equal(messages[0].kind, 'tool')
+  assert.equal(messages[0].images.length, 1, 'the call kept what it produced')
+  assert.equal(messages[0].images[0].attachmentId, ID)
+})
+
+test('a tool result carries its picture at either nesting depth', async () => {
+  // Both levels are real. Reading only the outer one is what would silently drop
+  // the nested case, and it would look like a tool that returned nothing.
+  const nested = chatWith([
+    toolCall('c1', 'browser_screenshot', { selector: '#stage' }),
+    toolResult('c1', [{ type: 'tool-result', content: [imageBlock(ID)] }]),
+  ])
+  const flat = chatWith([
+    toolCall('c1', 'browser_screenshot', { selector: '#stage' }),
+    toolResult('c1', [imageBlock(ID)]),
+  ])
+  const fromNested = (await nested.readMessages('s')).messages[0].images.length
+  const fromFlat = (await flat.readMessages('s')).messages[0].images.length
+  assert.equal(fromNested, 1, 'the level the harness actually uses')
+  assert.equal(fromFlat, 1, 'and the level the reader’s own messages use')
+})
+
+test('an image arrives on the result even though the call named none', async () => {
+  // Measured: `tool/call` carries zero images across 14068 calls, so the picture
+  // can only ever appear on the second event. A row built once at `tool/call`
+  // and never updated would show none of them.
+  const chat = chatWith([
+    toolCall('c1', 'read_image', { path: 'a.png' }),
+    toolResult('c1', [{ type: 'tool-result', content: [imageBlock(ID)] }]),
+  ])
+  const { messages } = await chat.readMessages('s')
+  assert.equal(messages[0].images?.length, 1)
+})
+
+test('a tool row with no pictures carries no images field at all', async () => {
+  const chat = chatWith([
+    toolCall('c1', 'browser_click', { selector: '#save' }),
+    toolResult('c1', [{ type: 'tool-result', content: [{ type: 'text', text: 'ok' }] }]),
+  ])
+  const { messages } = await chat.readMessages('s')
+  assert.equal('images' in messages[0], false, 'an empty array would draw an empty group')
+})
+
+test('the same picture twice is kept once', async () => {
+  // An id is a content address: the same one twice is the same bytes, so drawing
+  // it twice would be a visible duplicate rather than two findings.
+  const chat = chatWith([
+    toolCall('c1', 'browser_screenshot', { selector: '#stage' }),
+    toolResult('c1', [{ type: 'tool-result', content: [imageBlock(ID)] }]),
+    toolResult('c1', [{ type: 'tool-result', content: [imageBlock(ID)] }]),
+  ])
+  const { messages } = await chat.readMessages('s')
+  assert.equal(messages[0].images.length, 1)
+})
+
+test('a second picture on a later result is added, not swapped for the first', async () => {
+  // A status is settled by the latest word; a picture is something the call
+  // produced, and a later result without one does not unproduce it. Assigning
+  // here would lose the first picture — the same defect this row was fixed for.
+  const other = `sha256:${'9'.repeat(64)}`
+  const chat = chatWith([
+    toolCall('c1', 'browser_screenshot', { selector: '#stage' }),
+    toolResult('c1', [{ type: 'tool-result', content: [imageBlock(ID)] }]),
+    toolResult('c1', [{ type: 'tool-result', content: [{ type: 'text', text: 'done' }] }]),
+  ])
+  const { messages } = await chat.readMessages('s')
+  assert.equal(messages[0].images.length, 1, 'the first is still there')
+
+  const two = chatWith([
+    toolCall('c1', 'browser_screenshot', { selector: '#stage' }),
+    toolResult('c1', [{ type: 'tool-result', content: [imageBlock(ID)] }]),
+    toolResult('c1', [{ type: 'tool-result', content: [imageBlock(other)] }]),
+  ])
+  const rows = (await two.readMessages('s')).messages
+  assert.deepEqual(
+    rows[0].images.map((image) => image.attachmentId),
+    [ID, other],
+    'both, in the order the calls produced them',
+  )
+})
+
+test('merging a run of identical calls keeps every picture in it', async () => {
+  // `collapseToolRuns` folds an unbroken run of identical calls into one row
+  // with a count. That row then stands for all of them, so a picture from any
+  // one of them belongs to it — dropping them is the same "exists but is not
+  // drawn" defect this whole row was fixed for.
+  const other = `sha256:${'9'.repeat(64)}`
+  const chat = chatWith([
+    toolCall('c1', 'browser_screenshot', { selector: '#stage' }),
+    toolResult('c1', [{ type: 'tool-result', content: [imageBlock(ID)] }]),
+    toolCall('c2', 'browser_screenshot', { selector: '#stage' }),
+    toolResult('c2', [{ type: 'tool-result', content: [imageBlock(other)] }]),
+  ])
+  const { messages } = await chat.readMessages('s')
+  assert.equal(messages.length, 1, 'the run collapsed')
+  assert.equal(messages[0].count, 2)
+  assert.deepEqual(
+    messages[0].images.map((image) => image.attachmentId),
+    [ID, other],
+    'a merged row stands for every call in it',
+  )
+})
+
+test('a tool row’s picture can be read back through the same route', async () => {
+  // The route authorises by looking the id up in the rows it already read, so a
+  // picture only reachable from a tool row would 404 without this.
+  const asked = []
+  const bytes = new Uint8Array([137, 80, 78, 71])
+  const chat = chatWith([
+    toolCall('c1', 'browser_screenshot', { selector: '#stage' }),
+    toolResult('c1', [{ type: 'tool-result', content: [imageBlock(ID)] }]),
+  ], {
+    readImage: async (ref) => {
+      asked.push(ref.attachmentId)
+      return { ref, data: bytes }
+    },
+  })
+  const image = await chat.readImage('s', ID)
+  assert.deepEqual(asked, [ID])
+  assert.deepEqual([...image.data], [...bytes])
+})
+
+test('a picture nested deeper than a tool result is found at that depth too', () => {
+  // Depth is bounded rather than trusted: this runs on whatever a log contains,
+  // and a cyclic content array would otherwise hang the read that draws the
+  // panel. Two levels is what the harness writes; the bound is what keeps a
+  // malformed log from being a hang.
+  const threeDeep = [{
+    type: 'tool-result',
+    content: [{ type: 'tool-result', content: [imageBlock(ID)] }],
+  }]
+  assert.equal(imageBlocks(threeDeep, 2).length, 0, 'the second level is where a result stops')
+  assert.equal(imageBlocks(threeDeep, 3).length, 1, 'and a deeper one is reachable when allowed')
+})
+
+// Direct invocation runs just this suite. Without it the file would import
+// cleanly and register nothing under `npm test`, which is exactly how its first
+// version was invisible: it imported `node:test`, so it ran standalone and
+// reported nothing to the runner the project actually uses.
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  await main()
+}
 

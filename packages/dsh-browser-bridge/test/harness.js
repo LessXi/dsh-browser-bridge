@@ -85,6 +85,19 @@ export function beforeEach(hook) {
   beforeEachHooks.push(hook)
 }
 
+/**
+ * How many tests have been registered so far.
+ *
+ * The runner compares this before and after importing a suite file, so one that
+ * registers nothing is reported rather than counted as a pass. See the note in
+ * `run.js` for the round this was written after.
+ *
+ * @returns {number} The count.
+ */
+export function registeredCount() {
+  return registered.length
+}
+
 export { assert }
 
 /**
