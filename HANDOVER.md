@@ -1,9 +1,9 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v70 已交付并入库。** 下一节就是最新的一轮改动；下面标 v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v70 那一段为止即可。
+> **当前状态：v71 已交付并入库。** 下一节就是最新的一轮改动；下面标 v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v71 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（545 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（548 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 > （真浏览器 e2e 那 4 条需要机器上有 Playwright Chromium 或 Chrome for Testing；
@@ -12,8 +12,8 @@
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
 >
-> **已入库**：HEAD = `65bc3c5`（2026-09-23），v3→v69 的全部改动已提交并推送到
-> `origin/main`；v70 在本轮提交。工作区干净。（此前的 `2ea6baf` 是 v2 的最后一个提交。）
+> **已入库**：HEAD = `4867121`（2026-09-23），v3→v70 的全部改动已提交并推送到
+> `origin/main`；v71 在本轮提交。工作区干净。（此前的 `2ea6baf` 是 v2 的最后一个提交。）
 
 > ## ⚠️ 两条并行版本线（2026-09-23 处理，后续轮次务必先读这段）
 >
@@ -52,6 +52,106 @@
 > 审批问题的屏幕阅读器播报），合并时会出现"同一件事的两种实现"，
 > 需要按上面的取向二选一，而不是把两份都留下。
 
+
+> ### v71：用户展开的那一行，会在「加载更早的内容」之后变成另一行（本轮）
+>
+> 这一轮从**滚动窗口**这条轴切入。v33 把「页码」换成「窗口」时，考虑的只有
+> 滚动位置；本轮发现同一个设计还有第二个受害者。
+>
+> #### 缺陷：展开状态按**数组下标**记，而窗口向上扩张会让下标整体平移
+>
+> 机制（两处代码叠加，各自都对）：
+>
+> - 展开态是 `Set<number>`，`renderRow(row, index)` 用 `index` 决定 `open`，
+>   点击时 `add(index)` / `delete(index)`（`extension/sidepanel.js`）。
+> - `loadEarlier()` 做 `depth += PAGE_ROWS`（60），而宿主 `readMessages`
+>   **从末尾切片**（`end = len - skip`、`start = end - maximum`），
+>   所以窗口向**上**扩张——新的行插在数组**开头**。
+>
+> 一叠加：同一个下标在新数组里指向另一行。**用户展开一个失败行，上翻加载更早的
+> 内容，展开态就漂到 60 行之前（一页）的另一行上。**
+>
+> **为什么活了 38 轮**：`panel-stream.test.js` 的夹具只回答**一份固定行集**，
+> 所以"窗口变宽 + 行发生位移"从测试里根本驱动不出来。同一文件里
+> `switching sessions forgets which failures were open` 的注释写着
+> 「The open set is keyed by row index」——团队知道索引键这件事，只为
+> **切换会话**做了清除，**没有为加载更早的内容做**。
+>
+> **复现（端到端，真实模块）**：新增测试 `loading earlier rows keeps an open
+> row open, and on the same row`。第一版**假通过**过——`hasEarlier` 只在下一次
+> 读取时才更新，所以那次 `click` 是空操作，行从未位移。加了三条防呆断言
+> （胶囊必须可见、`limit` 必须真的变大、更早的行必须真的到了最前面）之后才报出
+> 真实失败：
+>
+> ```
+> ✖ loading earlier rows keeps an open row open, and on the same row
+>   the open row followed the index instead of the reader:
+>   it now shows "failure of older0"
+> ```
+>
+> 「显示的是 older0」正是插入的行数造成的位移——证据精确指向机制，而非"看起来不对"。
+>
+> #### 修法：用**行身份**代替下标
+>
+> 新增 `rowKey(row)`（`extension/sidepanel.js`）：tool 行用宿主的 `callId`
+> （每调用唯一），其余行用「kind + 可见文本」。`renderRow(row)` 不再接收 `index`。
+>
+> 两个设计判断：
+> - **kind 要进键**：推理块与引用它的回答可能文字完全相同，而开一个不该开另一个。
+>   （实测：这个前缀在当前结构下**不承重**——展开态是两个独立的 Set，
+>   回答行不查任何 Set。保留是为了语义正确，不是为了测试。）
+> - **tool 行没有 `callId` 时回退到「name + summary」，不是空串**。回退到空串会让
+>   所有无 id 的 tool 行塌缩成同一个键，**开一个会把同名的全打开**——这是写测试时
+>   真实撞到的第一种实现，现已固化成一条变异。
+>
+> #### 验证
+>
+> | 读数 | 结果 |
+> |---|---|
+> | `npm test` | **548 passed, 0 failed, 0 skipped**（原 545 + 新增 3） |
+> | `npm run check:extension` | exit 0 |
+> | 真实 Chromium 实测 | 点开中间一个推理行 → `bodiesOpen: 1`、`expandedToggleCount: 1`，展开体文字 = 被点那行的推理文字（`openedMatchesClick: true`） |
+> | 变异（`.tmp-run/mutate-row-key.mjs`） | `back-to-index`→红、`tool-key-drops-callid`→红、`tool-key-empty-callid`→红，`allCaught: true`、`restoredExactly: true` |
+>
+> 截图证据：`.tmp-run/r6-open-shot.png`（新场景 `longReasoningOpen`，展开的那一行
+> 在 `Thinking ⌄` 下面）。
+>
+> #### 本轮**量过但没改**的：长会话的渲染成本（记录下来，别重复挖）
+>
+> 用户的真实会话有 **6969 行**（v33 实测），所以"会话变长之后面板还快吗"是真实的
+> 问题。本轮新造 `long` 场景（200 轮 ≈ 470 行）并量了：
+>
+> | 读数 | 470 行 |
+> |---|---|
+> | DOM 节点总数 | **2741**（零虚拟化，全部在 DOM 里） |
+> | `scrollHeight` | 38,375px |
+> | 一次整体重建 | **18.2ms**（超出 16.7ms 帧预算） |
+> | ├ 建节点 | 1.2ms |
+> | ├ 挂载 | 1.1ms |
+> | └ **布局** | **16.0ms** |
+> | 只追加一行（对照） | **0.2ms（91×）** |
+> | 只改一个已有节点的文本 | 0.3ms（61×） |
+>
+> **成本几乎全在布局，不在建节点**——这排除了"少建节点"的方向。
+>
+> 试过并**否决**的：
+>
+> | 方案 | 重建耗时 | `scrollHeight` | 结论 |
+> |---|---|---|---|
+> | `content-visibility: auto` + `contain-intrinsic-size: auto 84px` | 21.5 → **2.0ms（10.8×）** | 38375 → **6594** | **否决。永久失真 82.8%**，而滚动锚定（`grewEarlier` 那一支）正是靠它；把 470 行全滚一遍也不收敛 |
+> | `contain: layout style` / `content` / `paint` | 16.1–17.1ms | 守恒 | 无效（既不省布局也不改高度） |
+> | `overflow-wrap: break-word` / `normal` 替换 `anywhere` | 16.2–17.8ms | 守恒 | 无效 |
+>
+> 现在留下的读数是：**唯一有效的手段是跳过屏外布局，而它恰好破坏滚动锚定**。
+> 下一步若要修，方向是"追加而非重建"（0.2ms vs 18.2ms），但那要动
+> `drawTranscript` 里那套很微妙的滚动锚定，属于独立一轮的工作，本轮没有动。
+>
+> 探针（全部保留在 `.tmp-run/`）：`probe-long-nodes.js`、`probe-rebuild-cost.js`、
+> `probe-rebuild-breakdown.js`、`probe-append-vs-rebuild.js`、`probe-content-visibility.js`、
+> `probe-cv-convergence.js`、`probe-cv-reader-drift.js`、`probe-contain-options.js`、
+> `probe-wrap-cost.js`、`probe-row-heights.js`、`probe-expand-marker.js`、
+> `probe-reasoning-shape.js`、`probe-reasoning-shot.js`。
+> 变异：`.tmp-run/mutate-row-key.mjs`。
 
 > ### v70：Windows 高对比度下的两处状态丢失（本轮）
 >

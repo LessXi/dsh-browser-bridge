@@ -188,14 +188,14 @@ let currentSessionBlank = false
 let currentSessionRunning = false
 /** @type {Map<string, string>} */
 const drafts = new Map()
-/** Reasoning rows the user opened, by row index. */
+/** Reasoning rows the user opened, by row name. See `rowKey`. */
 const expandedReasoning = new Set()
 /**
- * Failed tool rows the user opened, by row index.
+ * Failed tool rows the user opened, by row name. See `rowKey`.
  *
- * Separate from `expandedReasoning` because the two sets are keyed by the same
- * row indices and a row is only ever one kind: sharing one set would make
- * opening a failure also open whatever reasoning row held that index.
+ * Separate from `expandedReasoning` because a row is only ever one kind, and
+ * sharing one set would make opening a failure also open whatever reasoning row
+ * happened to carry the same name.
  */
 const expandedFailures = new Set()
 /** The last drawn transcript, for the "did anything change" comparison. */
@@ -1105,13 +1105,49 @@ function renderContexts() {
 }
 
 /**
+ * A stable name for one transcript row, for remembering what the reader opened.
+ *
+ * The open sets used to be keyed by **array position**, and a position is not an
+ * identity in this panel: the transcript is a window counted back from the newest
+ * row (`refreshTranscript` sends `limit: depth`), so loading earlier content
+ * widens the window and puts the older rows at the *front*. Every row already on
+ * screen moves down by a page, and a set of positions then describes different
+ * rows than the ones the reader touched. Reproduced in `panel-stream.test.js`:
+ * opening a failed row and then asking for earlier content left the row open four
+ * rows above where the reader had put it.
+ *
+ * A tool row is named by its `callId`, which the host already sends and which is
+ * unique per call. The other kinds have no id from the host, so what the reader
+ * can see stands in: two rows with the same kind and the same visible text are
+ * indistinguishable to the reader as well, so treating them as one row costs
+ * nothing that was ever observable. The kind is part of the name because a
+ * reasoning row and the answer quoting it can hold the same text, and opening one
+ * must not open the other.
+ *
+ * A tool row with no `callId` falls back to the same visible text, which for a
+ * tool row is its name and arguments. Falling back to the empty string instead
+ * would name every such row alike, and opening one would open all of them — the
+ * exact failure this function exists to prevent.
+ *
+ * @param {object} row - A row from the host's `messages` action.
+ * @returns {string} The row's name.
+ */
+function rowKey(row) {
+  if (row.kind === 'tool') {
+    if (typeof row.callId === 'string' && row.callId.length > 0) return `tool\u0000${row.callId}`
+    return `tool\u0000${row.name ?? ''}\u0000${row.summary ?? ''}`
+  }
+  return `${row.kind}\u0000${typeof row.text === 'string' ? row.text : ''}`
+}
+
+/**
  * Render one transcript row.
  *
  * @param {object} row - A row from the host's `messages` action.
- * @param {number} index - Its position, which is the identity of an expanded reasoning row.
  * @returns {HTMLElement} The node.
  */
-function renderRow(row, index) {
+function renderRow(row) {
+  const key = rowKey(row)
   if (row.kind === 'user') {
     const wrapper = document.createElement('div')
     wrapper.className = 'row'
@@ -1150,7 +1186,7 @@ function renderRow(row, index) {
   if (row.kind === 'reasoning') {
     const wrapper = document.createElement('div')
     wrapper.className = 'reasoning'
-    const open = expandedReasoning.has(index)
+    const open = expandedReasoning.has(key)
     const toggle = document.createElement('button')
     toggle.type = 'button'
     toggle.className = 'reasoning-toggle'
@@ -1164,8 +1200,8 @@ function renderRow(row, index) {
       wrapper.append(body)
     }
     toggle.addEventListener('click', () => {
-      if (expandedReasoning.has(index)) expandedReasoning.delete(index)
-      else expandedReasoning.add(index)
+      if (expandedReasoning.has(key)) expandedReasoning.delete(key)
+      else expandedReasoning.add(key)
       drawTranscript(rows)
     })
     return wrapper
@@ -1182,7 +1218,7 @@ function renderRow(row, index) {
     // person watching could not tell a missed selector from a blocked tab from a
     // page that never answered — and so could not tell whether to intervene.
     const reason = typeof row.failure === 'string' ? row.failure : ''
-    const open = reason !== '' && expandedFailures.has(index)
+    const open = reason !== '' && expandedFailures.has(key)
 
     // A real `<button>` when there is something to reveal, and a plain `div`
     // otherwise. The first version made the div clickable, which is a control
@@ -1211,8 +1247,8 @@ function renderRow(row, index) {
       line.classList.add('has-reason')
       line.setAttribute('aria-expanded', String(open))
       line.addEventListener('click', () => {
-        if (expandedFailures.has(index)) expandedFailures.delete(index)
-        else expandedFailures.add(index)
+        if (expandedFailures.has(key)) expandedFailures.delete(key)
+        else expandedFailures.add(key)
         drawTranscript(rows)
       })
     }
@@ -1317,7 +1353,7 @@ function drawTranscript(next) {
   // the screen — the same jump the poll used to cause, arriving by a new route.
   const before = transcript.scrollHeight
   const fragment = document.createDocumentFragment()
-  next.forEach((row, index) => fragment.append(renderRow(row, index)))
+  next.forEach((row) => fragment.append(renderRow(row)))
 
   transcript.replaceChildren(fragment)
   renderWorking()

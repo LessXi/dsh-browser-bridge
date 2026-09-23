@@ -1318,9 +1318,12 @@ test('a successful tool call is not a control', async () => {
 })
 
 test('switching sessions forgets which failures were open', async () => {
-  // The open set is keyed by row index, and a new session's rows reuse the same
-  // indices. Carrying the set across would open a row nobody touched, which
-  // looks like the panel remembering a conversation the person just left.
+  // The open set is keyed by what the row *is* (see `rowKey`), so a session left
+  // and returned to produces the same names again — and an identical failed call
+  // in another session would otherwise arrive already open. Carrying the set
+  // across would open a row nobody touched, which looks like the panel
+  // remembering a conversation the person just left. This test is what keeps the
+  // clearing at `selectSession` load-bearing now that the keys survive a shift.
   await show([
     { kind: 'tool', name: 'browser_click', summary: '#save', status: 'error', failure: 'no element matches #save' },
   ])
@@ -1335,6 +1338,157 @@ test('switching sessions forgets which failures were open', async () => {
   ])
 
   assert.equal(transcript.querySelector('.tool-failure'), null, 'a row was open in a session the user had left')
+})
+
+test('loading earlier rows keeps an open row open, and on the same row', async () => {
+  // The open set is keyed by row index — the same fact the test above relies on,
+  // and the same fact that makes this one fail. Widening the window inserts the
+  // older rows at the *front* (`readMessages` slices from the end), so every row
+  // that was on screen moves down by a page. An index-keyed set then describes a
+  // different row than the one the reader opened.
+  //
+  // This is the sibling of the session-switch case, and it went unnoticed for the
+  // same reason: the suite's fixture answered one fixed row set, so "the window
+  // widened and the rows shifted" could not be driven from here at all.
+  const rowsFor = (prefix, count) =>
+    Array.from({ length: count }, (_, index) => ({
+      kind: 'tool',
+      // The summary is what names the row on screen, so a wrong-row open is
+      // visible as the *other* row's summary appearing in the opened body.
+      name: 'browser_click',
+      summary: `${prefix}${index}`,
+      status: 'error',
+      failure: `failure of ${prefix}${index}`,
+    }))
+
+  // Sixty rows, so the widened read has something older to put in front.
+  await show(rowsFor('r', 6))
+  const opened = transcript.querySelectorAll('.tool')[0]
+  opened.emit('click', {})
+  await settle()
+  assert.notEqual(
+    transcript.querySelector('.tool-failure'),
+    null,
+    'the row never opened, so nothing below is proved',
+  )
+
+  // The host now answers the wider window with a page of older rows in front of
+  // the ones already on screen — which is exactly what a real host does when
+  // `limit` grows and the window is counted back from the newest row.
+  //
+  // `hasEarlier` is only refreshed by a read, so the `more` flag needs one poll
+  // to become the panel's own belief before the pill will do anything. Without
+  // this the click below is a no-op, the rows never shift, and the assertions
+  // pass against a panel that was never asked to do the thing under test — which
+  // is how the first version of this test read green.
+  host.more = true
+  host.messages = [...rowsFor('older', 4), ...rowsFor('r', 6)]
+  await clockOf('transcript')
+  assert.equal(registry.get('earlier').hidden, false, 'the pill is hidden, so the click below proves nothing')
+
+  const limitBefore = Number(host.reads.at(-1).limit)
+  registry.get('earlier').emit('click')
+  await settle()
+  await settle()
+
+  assert.ok(
+    Number(host.reads.at(-1).limit) > limitBefore,
+    `the window never widened (${limitBefore}), so the rows never shifted and nothing below is proved`,
+  )
+  assert.match(
+    transcript.querySelectorAll('.tool')[0].textContent,
+    /older0/,
+    'the widened read did not put the older rows in front, so the index shift this test is about never happened',
+  )
+
+  // Exactly one row is open: the reader opened one and has not touched anything
+  // else. More than one means the state drifted onto rows nobody opened.
+  const openedBodies = transcript.querySelectorAll('.tool-failure')
+  assert.equal(
+    openedBodies.length,
+    1,
+    `widening the window left ${openedBodies.length} rows open; the reader opened one`,
+  )
+  assert.match(
+    openedBodies[0].textContent,
+    /failure of r0\b/,
+    `the open row followed the index instead of the reader: it now shows ${JSON.stringify(openedBodies[0].textContent)}`,
+  )
+
+  host.more = false
+  host.messages = []
+})
+
+test('a reasoning row opens and closes, and survives a repaint of the same rows', async () => {
+  // The reasoning toggle is the other index-keyed control, and it had no test at
+  // all: every reasoning row on screen reads `Thinking ⌄`, so a test that finds
+  // "the open one" by its text cannot tell which row it is looking at. It is
+  // asserted through the body text instead, which is the part that is actually
+  // unique per row.
+  const reasoningRow = (text) => ({ kind: 'reasoning', text })
+  await show([reasoningRow('第一条推理'), { kind: 'user', text: '继续' }, reasoningRow('第二条推理')])
+
+  const toggles = transcript.querySelectorAll('.reasoning-toggle')
+  assert.equal(toggles.length, 2, 'the two reasoning rows were not both drawn')
+
+  assert.equal(transcript.querySelector('.reasoning-body'), null, 'a row was open before anything was clicked')
+  toggles[1].emit('click', {})
+  await settle()
+
+  const opened = transcript.querySelectorAll('.reasoning-body')
+  assert.equal(opened.length, 1, `clicking one toggle opened ${opened.length} bodies`)
+  assert.equal(
+    opened[0].textContent,
+    '第二条推理',
+    'the toggle opened the other row',
+  )
+  assert.equal(
+    transcript.querySelectorAll('.reasoning-toggle')[1].getAttribute('aria-expanded'),
+    'true',
+    'the open row did not say it was open',
+  )
+  assert.equal(
+    transcript.querySelectorAll('.reasoning-toggle')[0].getAttribute('aria-expanded'),
+    'false',
+    'an untouched row claimed to be open',
+  )
+
+  // A repaint of the *same* rows must not close what the reader opened: the
+  // signature includes the open set, so this is also what proves the name is
+  // stable across a redraw rather than being recomputed differently.
+  await clockOf('transcript')
+  const afterRepaint = transcript.querySelectorAll('.reasoning-body')
+  assert.equal(afterRepaint.length, 1, 'a poll closed the row the reader had opened')
+  assert.equal(afterRepaint[0].textContent, '第二条推理', 'the open row changed which row it was after a poll')
+
+  toggles[1].emit('click', {})
+  await settle()
+  assert.equal(transcript.querySelector('.reasoning-body'), null, 'a second click did not close the row')
+})
+
+test('a reasoning row and an answer with the same words are still two rows', async () => {
+  // The row's name is derived from what it holds, and a reasoning block is very
+  // often quoted verbatim by the answer it produced. Without the kind in the
+  // name, the two would share one, and opening the reasoning would also mark the
+  // answer open — or, worse, the answer's row would be the one that opened.
+  const same = '这两行文字完全一样'
+  await show([
+    { kind: 'reasoning', text: same },
+    { kind: 'assistant', text: same },
+  ])
+
+  transcript.querySelectorAll('.reasoning-toggle')[0].emit('click', {})
+  await settle()
+
+  const bodies = transcript.querySelectorAll('.reasoning-body')
+  assert.equal(bodies.length, 1, `opening the reasoning row opened ${bodies.length} bodies`)
+  assert.equal(bodies[0].textContent, same)
+  // The answer is a different kind and must not have been treated as the same row.
+  assert.equal(
+    transcript.querySelectorAll('.answer').length,
+    1,
+    'the answer row disappeared or was duplicated when the reasoning row opened',
+  )
 })
 
 test('a failed turn is still visible after the panel is reloaded', async () => {
