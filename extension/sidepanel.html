@@ -125,6 +125,22 @@
       #composer:has(textarea:focus-visible) {
         box-shadow: var(--elevation), 0 0 0 2px var(--accent);
       }
+      /* Under Windows High Contrast the card's ring is not drawn at all: forced
+         colours discard `box-shadow`, which is the only thing that ring is made
+         of, while `outline: none` above has already removed the indicator the
+         browser would otherwise supply. Measured with the emulated feature, all
+         seven controls lose their box-shadow, six survive on the browser's own
+         outline, and the editor is the one that ends up with no visible focus at
+         all — the control the panel focuses on open.
+         So the editor gets an outline back, but only here. It is a real
+         `outline` rather than a shadow on purpose: forced colours are what this
+         block exists for, and they *keep* outlines, repainting them in the
+         system's highlight colour. The square-inside-a-round-corner objection
+         that moved the ring onto the card does not apply, because in this mode
+         the card is not drawn as a rounded accent shape either. */
+      @media (forced-colors: active) {
+        textarea:focus-visible { outline: 2px solid Highlight; outline-offset: 1px; }
+      }
       [hidden] { display: none !important; }
 
       /* ---- header: a title and one action, and nothing else ---- */
@@ -992,6 +1008,9 @@
       }
       .menu-efforts { display: flex; flex-wrap: wrap; gap: 4px; padding: 2px 8px 6px; }
       .menu-effort {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
         height: 26px;
         padding: 0 10px;
         border-radius: 999px;
@@ -1000,6 +1019,11 @@
         color: var(--muted);
       }
       .menu-effort:hover { color: CanvasText; }
+      /* The glyph is what survives Windows High Contrast, where the tinted pill
+         below is replaced and the two levels would otherwise look identical.
+         A fixed-width slot on every button, so the label does not shift sideways
+         as the choice moves from one level to the other. */
+      .menu-effort .check { flex: none; width: 10px; color: inherit; }
       .menu-effort[aria-checked="true"] {
         background: var(--accent-soft);
         color: CanvasText;

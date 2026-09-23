@@ -1,9 +1,9 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v69 已交付并入库。** 下一节就是最新的一轮改动；下面标 v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v69 那一段为止即可。
+> **当前状态：v70 已交付并入库。** 下一节就是最新的一轮改动；下面标 v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v70 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（541 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（545 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 > （真浏览器 e2e 那 4 条需要机器上有 Playwright Chromium 或 Chrome for Testing；
@@ -12,8 +12,8 @@
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
 >
-> **已入库**：HEAD = `a0cf1a2`（2026-09-23），v3→v69 的全部改动已提交并推送到
-> `origin/main`。工作区干净。（此前的 `2ea6baf` 是 v2 的最后一个提交。）
+> **已入库**：HEAD = `65bc3c5`（2026-09-23），v3→v69 的全部改动已提交并推送到
+> `origin/main`；v70 在本轮提交。工作区干净。（此前的 `2ea6baf` 是 v2 的最后一个提交。）
 
 > ## ⚠️ 两条并行版本线（2026-09-23 处理，后续轮次务必先读这段）
 >
@@ -52,6 +52,95 @@
 > 审批问题的屏幕阅读器播报），合并时会出现"同一件事的两种实现"，
 > 需要按上面的取向二选一，而不是把两份都留下。
 
+
+> ### v70：Windows 高对比度下的两处状态丢失（本轮）
+>
+> 这一轮换了验证轴：v3→v69 的每一次实测都在**普通渲染**下进行，配色只在
+> `dark` / `light` 之间切换。Windows 高对比度（`forced-colors: active`）是另一个轴，
+> 而它对这套界面的作用方式完全不同——它不是"另一种配色"，是**浏览器接管颜色**：
+> 作者的 `background-color`、`box-shadow` 会被替换或丢弃，`outline` 会被保留并重着色为
+> 系统 Highlight。
+>
+> 面板大量依赖被丢弃的那两类绘制，所以这个模式下暴露了两处真实缺陷。
+>
+> #### 先补仪器：`preview.mjs` 此前**无法模拟这个模式**
+>
+> `preview.mjs` 的 `Emulation.setEmulatedMedia` 只模拟 `prefers-color-scheme`，
+> 于是"高对比度下没问题"这类结论此前根本没有被测量过。本轮给它加了三个能力：
+>
+> | 新增 | 作用 | 验证方式 |
+> | --- | --- | --- |
+> | `--forced-colors none\|active` | 第二个独立轴（与配色轴正交） | `.tmp-run/probe-forced-colors-flag.js` 用 `matchMedia` 读回：`none`→`false`、`active`→`true` |
+> | `--focus <selector>` | **截图之前**把焦点放到元素上 | 截图发生在探针之前（`preview.mjs` 里 capture 在 probe 前），没有这个开关，任何"焦点长什么样"的图其实都是未聚焦状态 |
+> | `working` 场景 | 回合运行但还没有任何 token | 此前**没有任何场景渲染过 `.working`**，而那是每次提问都会经过的状态 |
+>
+> #### 缺陷一：输入框的焦点环在高对比度下完全消失（功能性）
+>
+> `sidepanel.html` 里 `textarea:focus-visible { outline: none }` 关掉浏览器自带 outline，
+> 替代品是 `#composer:has(textarea:focus-visible) { box-shadow: ... }`——
+> 而 **forced-colors 丢弃 `box-shadow`**。两头落空，键盘用户看不出焦点在哪。
+>
+> **证据**（`.tmp-run/probe-forced-colors.js`，7 个可聚焦控件）：
+> 全部 7 个都 `lostShadowRing`；6 个按钮靠浏览器强制 outline 幸存（`survivesByOutline`）；
+> **只有 `textarea#input` 是 `ownOutline:false` + `cardOutline:false` → `unindicated`**。
+> 双模式对照 `.tmp-run/probe-fc-paint.js`：`composerShadowDrawn` 从 `true` 变 `false`。
+>
+> **修法**（`sidepanel.html`，紧随 `#composer:has(...)` 规则）：
+>
+> ```css
+> @media (forced-colors: active) {
+>   textarea:focus-visible { outline: 2px solid Highlight; outline-offset: 1px; }
+> }
+> ```
+>
+> 用真正的 `outline` 而非 shadow：该模式**保留** outline 并重着色为系统 Highlight，
+> 这正是它有效的原因。范围限定在媒体查询内——普通渲染下那条 `outline: none` 是 v67
+> 有意为之（圆角卡片内的方框环），必须保持不变。
+> **验证**：修复后 `unindicated: []`；正常模式截图 **sha256 与修复前逐字节相同**
+> （`6436ee23…`），证明普通渲染零影响。
+>
+> #### 缺陷二：推理强度的选中态只由会被丢弃的绘制表达（信息性）
+>
+> `.menu-effort[aria-checked="true"]` 与未选中项的差异**只有** `background` +
+> `inset box-shadow`，两者在 forced-colors 下都被丢弃。
+>
+> **证据**（`.tmp-run/probe-state-paint.js`，按"会不会被丢弃"给差异分类）：
+> 高对比度下唯一幸存差异是 `rgba(0,0,0,.15)` vs `rgba(0,0,0,.11)`——两个几乎一样的黑，
+> `survives: []`。截图确证 `Low` 与 `High` 看起来完全一样。
+> **模型行没这个问题**，因为它用 `✓` 字形（`sidepanel.js` 里 `.check` span）。
+>
+> **修法**：给每个 effort 按钮加 `<span class="check">`（`effort.checked ? '✓' : ''`，
+> `aria-hidden="true"`，因状态已由 `aria-checked` 承载）+ `<span class="name">` 包住标签；
+> CSS 上 `.menu-effort` 改 `inline-flex`，`.check` 固定 10px 宽（避免勾号出现时标签横跳）。
+> **验证**：修复后 `stateCarriedOnlyByDiscardedPaint: []`，幸存差异是 `text: ✓High -> Low`。
+>
+> #### 一个探针误报，值得记住
+>
+> `probe-state-paint.js` 第一版只比样式属性，于是加上 `✓` 之后它**仍然报缺陷**——
+> 因为那个勾是子节点的 `textContent`，不是任何一条 CSS。已把 `text` 加进"幸存类"判据。
+> **教训：探针报错时先读被测代码的类型/机制，别先怀疑产品**（v69 已经踩过一次同类坑）。
+>
+> #### 测试缺口：模型菜单的 DOM 此前**一条测试都没有**
+>
+> `panel-stream.test.js` 的 fixture 在 `action === 'models'` 上**无条件**返回
+> `{ error: 'empty-catalog' }`，所以菜单**从这个套件里根本打不开**——
+> `drawModelMenu` 建的两行状态行（选中的模型、选中的推理强度）从来没被任何测试看过。
+> 本轮把该响应改为可覆盖（`host.catalog`，与其他 fixture 字段一致），并补 3 条测试：
+>
+> 1. 选中的推理强度由**字形**标记，不只是色块；
+> 2. 字形落在**正确的**那一行（勾错了比不勾更糟，它在断言一件假事）；
+> 3. 两行用**同一个**约定（`.check` 槽位两边都有）。
+>
+> **变异验证**（`.tmp-run/mutate-effort-mark.mjs`）：`no-mark`→红、`mark-always`→红、
+> `mark-unhidden`→红，`allCaught: true`、`restoredExactly: true`。
+> 焦点环那条另有 `.tmp-run/mutate-focus-forced-colors.mjs`：`drop-block`→红、
+> `shadow-instead`→红（后者是"看着像修好了、其实在该模式下依然不画"的写法，最难靠读代码发现）。
+>
+> **同时横扫了此前没扫过的轴**：`.tmp-run/height-scan.mjs` 扫**视口高度**
+> （此前只扫宽度）——4 场景 × 6 高度 = **24 组合 0 broken**，`header`/`stage`/`#composer`
+> 三块始终不重叠、输入框不掉出视口。高度是侧栏唯一随用户拉窗口变化的尺寸，值得单独扫。
+>
+> 测试：**545 passed, 0 failed, 0 skipped**（原 542 + 新增 3）。
 
 > ### v69：插件第一次在真实 `dsh web` 进程里端到端跑通；图标的一个错误前提被推翻（本轮）
 >

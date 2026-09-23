@@ -72,6 +72,13 @@ const host = {
   reads: [],
   /** Whether the host says rows exist beyond the window it returned. */
   more: false,
+  /**
+   * The answer `models` gets, mutated per test.
+   *
+   * `null` means the host has no catalog, which is what the panel was only ever
+   * tested against. Set it to a real catalog to open the menu.
+   */
+  catalog: null,
   /** The active tab the panel sees. `icon` is swapped per test. */
   tab: {
     id: 7,
@@ -214,7 +221,18 @@ globalThis.fetch = async (url, options = {}) => {
         more: host.more === true,
       })
     }
-    if (body.action === 'models') return respond({ error: 'empty-catalog' })
+    // Overridable so the model menu can be driven from here. It answered
+    // `empty-catalog` unconditionally, which is a real state the panel must
+    // handle — but it was the *only* state reachable, so `drawModelMenu`'s
+    // rendering had no test at all, and the two state-carrying rows it builds
+    // (the chosen model, the chosen reasoning effort) shipped without one.
+    if (body.action === 'models') {
+      // The panel reads `payload.catalog`, and falls back to `error` when there is
+      // no catalog at all — the two are different states and the shape here has
+      // to be the real one, or the menu renders "unavailable" while the fixture
+      // believes it answered.
+      return respond(host.catalog ?? { error: 'empty-catalog' })
+    }
     if (body.action === 'send') {
       host.sent.push(body)
       return respond({ accepted: true })
@@ -2623,5 +2641,175 @@ test('a question and a finished answer are announced, and a healthy start is not
     announcer.textContent,
     /three phases/,
     `the finished answer must be announced once, got: ${announcer.textContent}`,
+  )
+})
+
+/**
+ * The two rows in the model menu that carry a state, asserted on the DOM.
+ *
+ * Both defects these cover were invisible to every test that existed, because
+ * the fixture answered `empty-catalog` unconditionally: the menu could not open
+ * from here at all, so nothing in this suite ever saw `drawModelMenu` build a
+ * row. The states were then checked in a real browser under an emulated
+ * `forced-colors: active`, which is where a state carried *only* by a discarded
+ * paint stops being carried at all:
+ *
+ *   1. `background` and `box-shadow` are replaced by the system palette, so the
+ *      chosen reasoning level's tinted pill vanished and `Low`/`High` came out
+ *      pixel-identical — the reader could not see which one was selected.
+ *   2. The `✓` on the chosen model survives, because it is a glyph rather than a
+ *      colour, which is why the model row was never affected and why the fix
+ *      reuses it instead of inventing a second convention.
+ *
+ * Asserted on the rendered tree, not on the source: the panel is a real module
+ * and what matters is the node it appends.
+ */
+/**
+ * The catalog the host answers `models` with, in the shape the panel reads.
+ *
+ * It is wrapped in `catalog` because that is the contract: `refreshCatalog`
+ * takes `payload.catalog`, and a fixture that answered with the groups directly
+ * would leave the panel showing "no models" while looking, from here, like it
+ * had answered — which is how the first version of these tests failed.
+ *
+ * The session on screen has to be on a model that *declares* efforts, or the
+ * effort row is not drawn at all: `modelMenuModel` offers the levels belonging to
+ * the model the session is actually using, so `deepseek-v4-pro` (no `reasoning`
+ * block) yields an empty row no matter what the catalog lists.
+ */
+const MENU_CATALOG = {
+  catalog: {
+    // The deployment default, which is what the menu falls back to for a session
+    // that has not chosen a model. It points at the one model that declares
+    // efforts: the levels offered belong to the model in use, so a default on
+    // `deepseek-v4-pro` would draw no effort row and these tests would pass
+    // vacuously against a row that is not there.
+    default: { provider: 'deepseek', model: 'deepseek-flash', reasoningEffort: 'high' },
+    groups: [
+      {
+        id: 'deepseek',
+        name: 'DeepSeek',
+        models: [
+          {
+            id: 'deepseek-flash',
+            name: 'deepseek-v4.1-flash',
+            reasoning: { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }], defaultEffort: 'high' },
+          },
+          { id: 'deepseek-v4-pro', name: 'deepseek-v4-pro' },
+        ],
+      },
+    ],
+  },
+}
+
+/**
+ * Open the picker and hand back its rows.
+ *
+ * The wait is a macrotask rather than `settle`: the panel reads the catalog once
+ * at startup, where this suite's fixture answers `empty-catalog`, so opening the
+ * menu finds `catalog === null` and kicks off a `fetch` to fill it in. That
+ * request resolves on a later task, and the menu repaints when it lands — a
+ * microtask drain reads the menu before the rows exist.
+ *
+ * @param {object} catalog - What the host answers `models` with.
+ * @returns {Promise<{efforts: object[], options: object[], menu: object}>} The rendered rows.
+ */
+async function openModelMenu(catalog) {
+  host.catalog = catalog
+  registry.get('model').click()
+  await settleMacrotask()
+  await settle()
+  const menu = registry.get('model-menu')
+  return {
+    menu,
+    efforts: menu.querySelectorAll('.menu-effort'),
+    options: menu.querySelectorAll('.menu-option'),
+  }
+}
+
+test('the chosen reasoning level is marked by a glyph, not only by its tint', async (t) => {
+  // `forced-colors: active` discards `background` and `box-shadow`, which was
+  // the entire visible difference between the chosen level and the other one.
+  // A glyph survives that mode, so the state has to be in the text.
+  t.onCleanup(() => {
+    host.catalog = null
+    registry.get('model').click()
+  })
+
+  const { efforts } = await openModelMenu(MENU_CATALOG)
+  assert.equal(efforts.length, 2, 'the catalog lists two reasoning levels, so two buttons must be drawn')
+
+  const checked = efforts.filter((row) => row.getAttribute('aria-checked') === 'true')
+  assert.equal(checked.length, 1, 'exactly one level must be marked as chosen')
+  assert.match(
+    checked[0].textContent,
+    /✓/,
+    `the chosen level must carry a visible mark, found ${JSON.stringify(checked[0].textContent)}`,
+  )
+
+  // And the unchosen ones must not, or the mark stops meaning anything.
+  for (const row of efforts.filter((r) => r.getAttribute('aria-checked') !== 'true')) {
+    assert.ok(
+      !row.textContent.includes('✓'),
+      `an unchosen level must not be marked, found ${JSON.stringify(row.textContent)}`,
+    )
+  }
+
+  // The mark is decoration over a state the radio already reports. Announcing
+  // both would make a screen reader say the choice twice.
+  const mark = checked[0].querySelector('.check')
+  assert.ok(mark !== null, 'the mark must be its own node so it can be hidden from assistive tech')
+  assert.equal(mark.getAttribute('aria-hidden'), 'true')
+})
+
+test('the chosen level is the one the session actually selected', async (t) => {
+  // The mark is only useful if it lands on the right row: a glyph on the wrong
+  // level is worse than no glyph, because it asserts something false.
+  t.onCleanup(() => {
+    host.catalog = null
+    registry.get('model').click()
+  })
+
+  const { efforts } = await openModelMenu(MENU_CATALOG)
+  const marked = efforts.filter((row) => row.textContent.includes('✓'))
+  assert.equal(marked.length, 1, 'exactly one level must carry the mark')
+
+  // `session-a` is on `deepseek-v4-pro`, which declares no `reasoning` block, so
+  // the menu shows no levels for it at all. What this asserts is that whatever
+  // rows *are* drawn agree with `aria-checked` rather than contradicting it.
+  for (const row of efforts) {
+    const checked = row.getAttribute('aria-checked') === 'true'
+    assert.equal(
+      row.textContent.includes('✓'),
+      checked,
+      `the mark and aria-checked must agree on ${JSON.stringify(row.textContent)}`,
+    )
+  }
+})
+
+test('both menu rows put their mark in the same place', async (t) => {
+  // One convention, not two: the model rows and the effort rows are the same
+  // kind of choice, so a reader who learns one has learned the other. This is
+  // the assertion that would have caught the effort row being added without a
+  // mark at all.
+  t.onCleanup(() => {
+    host.catalog = null
+    registry.get('model').click()
+  })
+
+  const { efforts, options } = await openModelMenu(MENU_CATALOG)
+  assert.ok(options.length > 0, 'the catalog lists models, so the menu must draw model rows')
+
+  const effortMarks = efforts.filter((row) => row.querySelector('.check') !== null)
+  const optionMarks = options.filter((row) => row.querySelector('.check') !== null)
+  assert.equal(
+    effortMarks.length,
+    efforts.length,
+    'every effort row needs a mark slot, so the label does not shift as the choice moves',
+  )
+  assert.equal(
+    optionMarks.length,
+    options.length,
+    'every model row needs a mark slot',
   )
 })

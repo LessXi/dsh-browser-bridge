@@ -605,7 +605,28 @@ function drawModelMenu() {
       button.className = 'menu-effort'
       button.setAttribute('role', 'radio')
       button.setAttribute('aria-checked', String(effort.checked))
-      button.textContent = effort.label || t('model.default')
+      // The chosen level carries a glyph, not only a colour.
+      //
+      // The tinted pill was the whole difference between chosen and unchosen,
+      // and it is made of `background` — which Windows High Contrast replaces,
+      // leaving the two levels pixel-identical. Measured with the forced-colours
+      // feature emulated: the only surviving difference was
+      // `rgba(0,0,0,.15)` against `rgba(0,0,0,.11)`, two near-identical blacks,
+      // so a person using that mode could not tell which effort was selected.
+      //
+      // The model rows below already solved this with a `✓`; this reuses it
+      // rather than inventing a second convention. Marked `aria-hidden` because
+      // the state is already carried by `aria-checked` on the radio, and a
+      // screen reader announcing both would say it twice.
+      const mark = document.createElement('span')
+      mark.className = 'check'
+      mark.textContent = effort.checked ? '✓' : ''
+      mark.setAttribute('aria-hidden', 'true')
+      button.append(mark)
+      const label = document.createElement('span')
+      label.className = 'name'
+      label.textContent = effort.label || t('model.default')
+      button.append(label)
       button.addEventListener('click', () => {
         chooseModel({ reasoningEffort: effort.id }).catch(() => {})
       })

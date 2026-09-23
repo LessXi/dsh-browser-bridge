@@ -146,6 +146,43 @@ test('the two lines of the composer agree on where the text starts', (t) => {
   )
 })
 
+test('the editor keeps a focus ring under forced colours', (t) => {
+  // The fourth geometry defect, and the first one that is not about position.
+  //
+  // `textarea:focus-visible { outline: none }` above moves the ring onto the
+  // card, and the card draws it with `box-shadow`. Windows High Contrast
+  // discards `box-shadow` — that is what the mode is — so in that mode the ring
+  // is not painted while the browser's own outline has already been switched
+  // off. Measured with the emulated feature: all seven focusable controls lose
+  // their shadow, six survive on the browser's outline, and the editor ends up
+  // with no visible focus at all — the control the panel focuses as it opens.
+  //
+  // The fix is scoped to `forced-colors` on purpose, and both halves are
+  // asserted: a rule for that mode, and *no* unconditional outline on the
+  // textarea. An outline declared outside the media query would put the square
+  // ring back inside the rounded card in the ordinary render, which is the
+  // defect this file's first test exists to prevent.
+  const forced = css.match(/@media\s*\(forced-colors:\s*active\)\s*\{([\s\S]*?)\n\s*\}/)
+  assert.ok(
+    forced !== null,
+    'the stylesheet needs a `@media (forced-colors: active)` block for the editor focus ring',
+  )
+  // An outline, not a shadow: forced colours repaint outlines in the system
+  // highlight colour and keep them, which is the whole reason this works.
+  assert.ok(
+    /textarea:focus-visible\s*\{[^}]*outline\s*:\s*[^;]*\bHighlight\b/.test(forced[1]),
+    `the editor must regain an outline under forced colours, found ${JSON.stringify(forced[1].trim().slice(0, 120))}`,
+  )
+
+  // And the ordinary render must be untouched: the textarea's own rule still
+  // says `none`, so the ring is still the card's business everywhere else.
+  const own = declarationOf('textarea:focus-visible', 'outline')
+  assert.ok(
+    own !== null && /^none\b/.test(own),
+    `the unconditional textarea rule must stay \`outline: none\`, found ${JSON.stringify(own)}`,
+  )
+})
+
 test('the earlier-content pill states its height once', (t) => {
   // The transcript reserves room for the pill, so the reservation and the pill
   // are two places that must agree about one number. Written twice they drift;
