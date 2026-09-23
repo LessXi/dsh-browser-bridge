@@ -126,7 +126,15 @@ test('the host carries the failure code all the way to the panel', () => {
   assert.match(stream, /\.\.\.\(delta\.code === undefined \? \{\} : \{ code: delta\.code \}\)/)
 
   const chat = read('packages/dsh-browser-bridge/lib/chat.js')
-  assert.match(chat, /rows\.push\(\{ kind: 'failed', text, \.\.\.\(code !== '' \? \{ code \} : \{\}\) \}\)/)
+  // Deliberately not pinned to one line's exact spacing. This assertion is about
+  // `code` reaching the row, and it broke on a reformat that changed nothing
+  // about that — the row now also carries `question`, and the push had to become
+  // multi-line to say so. A test that fails on whitespace teaches nothing and
+  // gets "fixed" by pasting the new text, which is how it stops being read.
+  assert.match(
+    chat,
+    /rows\.push\(\{\s*kind: 'failed',\s*text,[\s\S]*?code !== '' \? \{ code \} : \{\}/,
+  )
 })
 
 test('the picker and the failure vocabulary agree on the locale', () => {

@@ -4115,6 +4115,82 @@ test('the shortcut steps aside while the reader is typing', async () => {
   assert.deepEqual(prevented, [], 'and it must not claim it either')
 })
 
+test('a failed turn hands its question back to the composer', async () => {
+  // A failed turn used to be a sentence and nothing else, and three of the
+  // sentences this panel can write end in 「稍后再试」. There is no retry to
+  // offer — the host cannot re-run a turn — so the recourse is to give the
+  // reader their words back and let them decide.
+  //
+  // The question comes from the row, which is the host's answer to "which
+  // message opened this turn". Reading upward instead would pick the assistant
+  // line: the fixture deliberately puts one between the question and the failure.
+  await settleToIdle()
+  await show([
+    { kind: 'user', text: '帮我把表格抓下来' },
+    { kind: 'assistant', text: '好，我先建一个会话。' },
+    { kind: 'failed', code: 'MISSING_CREDENTIAL', question: '帮我把表格抓下来', text: 'no key' },
+  ])
+
+  const button = transcript.querySelector('.failure-again')
+  assert.notEqual(button, null, 'a failed turn that knows its question must offer a way out')
+  assert.equal(registry.get('input').value, '', 'the box starts empty, or this proves nothing')
+  assert.equal(
+    button.closest('.row')?.dataset?.question,
+    '帮我把表格抓下来',
+    'the row must carry the question, or the click handler has nothing to restore',
+  )
+
+  button.click()
+  await settle()
+
+  assert.equal(registry.get('input').value, '帮我把表格抓下来')
+  assert.equal(
+    registry.get('send').disabled,
+    false,
+    'handing the question back is pointless if the send button stays disabled',
+  )
+})
+
+test('a failed turn with no question of its own offers nothing', async () => {
+  // A goal round or a scheduled wake-up opens a turn nobody typed into. Drawing
+  // the button anyway would put words in the reader's mouth — and the words
+  // would be from some earlier turn, since there is no question to find.
+  await settleToIdle()
+  await show([{ kind: 'failed', code: 'RATE_LIMIT', text: '429' }])
+
+  assert.equal(transcript.querySelector('.failure') !== null, true, 'the failure itself must still be drawn')
+  assert.equal(transcript.querySelector('.failure-again'), null)
+})
+
+test('handing the question back does not overwrite what the reader typed', async () => {
+  // The second failure in the fixture. The reader has started typing again; the
+  // restored question must not clobber it, and it must not be appended after it
+  // either — the question came first in the conversation, so it reads first.
+  await settleToIdle()
+  await show([
+    { kind: 'user', text: '先看看这个' },
+    { kind: 'failed', code: 'MISSING_CREDENTIAL', question: '先看看这个', text: 'no key' },
+  ])
+
+  const field = registry.get('input')
+  field.value = '我再补充一句'
+  // `emit`, not `dispatchEvent`: the shim's elements have no `dispatchEvent`, and
+  // the panel listens with `addEventListener`/`emit` throughout. Using the wrong
+  // one throws rather than quietly failing, which is why this is worth saying.
+  field.emit('input', { target: field })
+  await settle()
+
+  transcript.querySelector('.failure-again').click()
+  await settle()
+
+  assert.equal(field.value, '先看看这个\n\n我再补充一句')
+  assert.equal(
+    field.selectionStart,
+    field.value.length,
+    'the caret belongs at the end, so the reader keeps typing rather than retyping',
+  )
+})
+
 test('Escape closes the find bar and hands focus back', async () => {
   // The bar is the layer a keyboard user is most likely to have opened with
   // `Ctrl+F` and then want gone. Escape answered the model menu and the history

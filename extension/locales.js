@@ -186,6 +186,14 @@ export const zh = Object.freeze({
   'error.code.reasoning': '这个模型不支持该推理强度',
   'error.code.unreachable': '连不上模型服务',
   'error.code.empty': '模型没有返回内容',
+  // The recourse a failed turn offers. Not a retry: the host cannot re-run a
+  // turn, so a button that said 「重试」 would promise something no code path can
+  // deliver. This one puts the question back in the box and lets the reader
+  // decide — the only action that neither writes to the conversation behind
+  // their back nor pretends to know whether the original message carried
+  // attachments.
+  'failure.putBack': '把问题放回输入框',
+  'failure.putBack.title': '问题回到输入框，你可以改完再发',
   // The one place the panel asks instead of reporting. The harness's other
   // answerer is the graphical client, so this card is often the only thing
   // standing between a running turn and one that waits forever.
@@ -297,6 +305,9 @@ export const en = Object.freeze({
   'error.code.reasoning': 'This model lacks that effort',
   'error.code.unreachable': 'Cannot reach the model service',
   'error.code.empty': 'The model returned nothing',
+  // See the zh entry: this is not a retry, because the host cannot re-run a turn.
+  'failure.putBack': 'Put the question back',
+  'failure.putBack.title': 'Edit it before sending',
   'approval.asking': 'Needs your call',
   'approval.wants': 'Wants to use {tool}',
   'approval.wantsSite': 'Wants to use {tool} on {site}',

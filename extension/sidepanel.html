@@ -654,6 +654,39 @@
         line-height: 1.45;
         overflow-wrap: anywhere;
       }
+      /* The way out of a dead end. Sized to the 24px tap target the rest of the
+         panel's small controls use, and outlined rather than filled: it is an
+         offer, not the thing the reader came here to do. Colour is `CanvasText`
+         so the outline survives Windows High Contrast, which discards
+         `box-shadow` and repaints every `background`. */
+      .failure-again {
+        margin-top: 6px;
+        display: inline-flex;
+        /* `align-self` is load-bearing. `.row` is a flex container, so a flex
+           item is blockified (its `inline-flex` is ignored) and stretched on the
+           cross axis — the button spanned the full width of the panel, reading as
+           a banner rather than a control and giving the eye a 350px target for a
+           130px label. Measured before this: 340px wide in a 380px panel. */
+        align-self: flex-start;
+        align-items: center;
+        min-height: 24px;
+        padding: 0 8px;
+        border: 1px solid var(--line-soft);
+        border-radius: var(--radius-sm);
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        font-size: var(--text-xs);
+        cursor: pointer;
+      }
+      .failure-again:hover {
+        background: var(--hover);
+        border-color: var(--line);
+      }
+      .failure-again:focus-visible {
+        outline: 2px solid Highlight;
+        outline-offset: 1px;
+      }
 
       /* The `@` picker. It sits above the composer, where the eye already is
          after typing, and it is the only list in the panel — the history view

@@ -375,6 +375,37 @@ export function describeEvents(events, api) {
   const rows = []
   /** @type {Map<string, object>} */
   const toolRows = new Map()
+  /**
+   * The question each turn was started with, by the harness's turn number.
+   *
+   * A failed turn leaves the person with a sentence and nothing to do about it.
+   * The host has no way to re-run a turn, so the only honest recourse the panel
+   * can offer is to put the question back in the composer — which means the
+   * panel has to know what that question was.
+   *
+   * It cannot be found by looking upward from the failed row: a turn's reply can
+   * run for hundreds of rows, and the row directly above the failure is usually
+   * an assistant line or a `llm/retry`, not the question. The turn number is
+   * what links them, and the link is positional.
+   *
+   * Read off a real session log rather than the fixtures, because the two
+   * disagree and only one of them is evidence (`~/.dsh/sessions`, a 16749-event
+   * log, decoded frame by frame — the file is a sequence of independent zstd
+   * frames, one per append, so reading only the first yields the header):
+   *
+   *   seq 2857  turn/start        turn=3
+   *   seq 2871  user/message      source.kind='user'  ← the question
+   *   seq 2873  assistant/message turn=3
+   *
+   * So the question arrives *inside* the turn it starts and carries no turn of
+   * its own — `user/message` has only `content`/`id`/`role`/`source`. The open
+   * turn is the link, and it is the last `turn/start` seen.
+   *
+   * @type {Map<number, string>}
+   */
+  const questionByTurn = new Map()
+  /** The turn currently accepting a question, or null before the first one. */
+  let openTurn = null
 
   /**
    * Whether this event belongs on the current surface.
@@ -395,6 +426,22 @@ export function describeEvents(events, api) {
     return event.surfaceOp === 'append'
   }
 
+  /**
+   * The turn an event belongs to, or null when it does not say.
+   *
+   * Not every event carries one — `user/message` is written before the turn it
+   * starts has a number, and older logs may not have them at all — so this
+   * returns null rather than a guess. A wrong turn number would hand the reader
+   * someone else's question.
+   *
+   * @param {object} event - One session event.
+   * @returns {number | null} The turn number.
+   */
+  const turnOf = (event) => {
+    const turn = event?.data?.turn
+    return typeof turn === 'number' && Number.isInteger(turn) ? turn : null
+  }
+
   for (const event of events) {
     if (typeof event?.type !== 'string') continue
     const data = event.data
@@ -407,7 +454,17 @@ export function describeEvents(events, api) {
         const source = data?.source
         if (source?.kind === 'user') {
           const text = textBlocks(data?.content)
-          if (text.length > 0) rows.push({ kind: 'user', text })
+          if (text.length > 0) {
+            rows.push({ kind: 'user', text })
+            // The question belongs to the turn it arrived in; see
+            // `questionByTurn`. Only a question the reader typed can be handed
+            // back, so injected context — goal rounds, compaction notices, the
+            // nudge — never becomes a retry offer.
+            // First question wins: it is the one the turn opened with. A second
+            // queued message belongs to the same turn but did not start it, and
+            // joining the two would fabricate a message nobody wrote.
+            if (openTurn !== null && !questionByTurn.has(openTurn)) questionByTurn.set(openTurn, text)
+          }
           break
         }
         if (source?.plugin === PLUGIN_ID) {
@@ -438,6 +495,14 @@ export function describeEvents(events, api) {
         break
       }
 
+      case 'turn/start': {
+        // Opens the turn the next question will arrive in. Kept as the turn
+        // number the log itself uses, so the failure at the end of the turn
+        // finds the same one.
+        openTurn = turnOf(event)
+        break
+      }
+
       case 'turn/end': {
         // A turn that died commits no assistant message, so without this the
         // transcript of a failed turn is just the user's message and then
@@ -445,13 +510,33 @@ export function describeEvents(events, api) {
         // except this one survives a reload and a cold replay. Only `error` is
         // reported: `aborted` means the turn was stopped on purpose, which the
         // person did themselves, and a normal turn ends with no reason at all.
+        //
+        // The turn is closed here either way, and the question it started with
+        // is taken out of the map as it is read: it is only ever wanted by the
+        // failure at the end of its own turn, and a question arriving after this
+        // point belongs to the next one.
+        const turn = turnOf(event) ?? openTurn
+        openTurn = null
+        const question = turn === null ? undefined : questionByTurn.get(turn)
+        if (turn !== null) questionByTurn.delete(turn)
+
         if (data?.reason?.kind !== 'error') break
         const text = oneLine(asText(data.reason.error?.message), FAILURE_TEXT_MAX)
         const code = asText(data.reason.error?.code)
         // The code is what the panel turns into a sentence; the message is the
         // developer's own wording and only reaches the screen when the code is
         // one the panel has no words for.
-        rows.push({ kind: 'failed', text, ...(code !== '' ? { code } : {}) })
+        //
+        // The question travels with the row so the panel can offer the only
+        // recourse that is honest: giving it back to the reader. It is carried
+        // only when this turn really was started by one — a goal round or a
+        // scheduled wake-up has no question of the reader's to restore.
+        rows.push({
+          kind: 'failed',
+          text,
+          ...(code !== '' ? { code } : {}),
+          ...(question === undefined ? {} : { question }),
+        })
         break
       }
 

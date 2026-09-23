@@ -89,6 +89,25 @@ function turnEndEvent(reason) {
 }
 
 /**
+ * A turn opening. `seq` defaults below any fixture that follows it.
+ *
+ * The ordering this fixture encodes was read off a real session log rather than
+ * invented: `turn/start` comes **first**, and the question arrives inside the
+ * turn it opened. From `~/.dsh/sessions` (16749 events, decoded frame by frame —
+ * the file is a series of independent zstd frames, one per append):
+ *
+ *   seq 2857  turn/start        turn=3
+ *   seq 2871  user/message      source.kind='user'   ← the question the reader typed
+ *   seq 2873  assistant/message turn=3
+ *
+ * `user/message` carries no turn of its own — only `content`/`id`/`role`/`source`
+ * — so the open turn is the only thing that links the two.
+ */
+function turnStartEvent(turn) {
+  return { seq: 2, time: 2, type: 'turn/start', data: { turn } }
+}
+
+/**
  * The exact `turn/end` a refused provider request produced.
  *
  * Taken from a real failing turn on a probe instance with no provider key: the
@@ -257,6 +276,74 @@ test('a turn that died leaves a lasting row, not just a live toast', () => {
       code: 'MISSING_CREDENTIAL',
     },
   ])
+})
+
+test('a failed turn carries the question that started it', () => {
+  // The host has no way to re-run a turn, so the only recourse the panel can
+  // offer is to put the question back in the composer. That needs the question
+  // to travel with the failure — and it cannot be recovered from the rows,
+  // because by then the row above the failure is the assistant's first sentence
+  // rather than anything the reader typed.
+  const rows = describeEvents([
+    turnStartEvent(1),
+    userEvent('为什么保存按钮点不动'),
+    assistantEvent([{ type: 'text', text: '我先看一眼。' }]),
+    FAILED_TURN,
+  ], SURFACE)
+
+  assert.deepEqual(rows.map((row) => row.kind), ['user', 'assistant', 'failed'])
+  // The question that opened the turn, not the assistant's reply above it.
+  assert.equal(rows[2].question, '为什么保存按钮点不动')
+})
+
+test('a failure with no question of its own offers nothing to restore', () => {
+  // A goal round or a scheduled wake-up opens a turn nobody typed into. Handing
+  // back the last thing the reader said — possibly many turns ago — would put
+  // words in their mouth, which is worse than offering no recourse at all.
+  const rows = describeEvents([
+    { seq: 1, time: 1, type: 'user/message', data: { content: [{ type: 'text', text: 'wake up' }], source: { kind: 'goal' } } },
+    turnStartEvent(1),
+    FAILED_TURN,
+  ], SURFACE)
+
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].kind, 'failed')
+  assert.equal('question' in rows[0], false, 'injected context must not become a retry')
+})
+
+test('a failure does not inherit a question from an earlier turn', () => {
+  // Two turns, one question. The second turn is a goal round that failed; the
+  // reader's question belongs to the first and must not be offered again.
+  const rows = describeEvents([
+    turnStartEvent(1),
+    userEvent('把表格抓下来'),
+    turnEndEvent(),
+    turnStartEvent(2),
+    FAILED_TURN,
+  ], SURFACE)
+
+  const failed = rows.filter((row) => row.kind === 'failed')
+  assert.equal(failed.length, 1)
+  assert.equal('question' in failed[0], false)
+})
+
+test('a turn that took several messages hands back the one that opened it', () => {
+  // Real sessions queue messages into a running turn — one log has three in a
+  // single turn, and its shape is `turn3:[user,user,user,plugin]`. Only the
+  // first one started the turn, so only the first one is the question this
+  // failure is the answer to. Restoring the last would offer to resend something
+  // that was never sent on its own.
+  const rows = describeEvents([
+    turnStartEvent(1),
+    userEvent('先看一眼保存按钮'),
+    userEvent('顺便看下控制台'),
+    userEvent('还有网络请求'),
+    FAILED_TURN,
+  ], SURFACE)
+
+  const failure = rows.filter((row) => row.kind === 'failed')
+  assert.equal(failure.length, 1)
+  assert.equal(failure[0].question, '先看一眼保存按钮')
 })
 
 test('a turn stopped on purpose is not recorded as a failure', () => {

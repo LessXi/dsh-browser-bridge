@@ -121,6 +121,16 @@
 搜索的字，不是一句要读的话。**右：一轮正在跑。** 等待行 `思考中…`，发送键变成停止方块。
 
 <p align="center">
+  <img src="docs/screenshots/failure-recourse.png" width="330" alt="回合失败：一句话说明白，并把问题还给读者">
+</p>
+
+**一次回合死掉之后，你拿得回自己的问题。** 失败行不只说「哪一步没成」，它还带一个按钮，
+把当初那句话放回输入框——你改完再发，或者不发。这里**没有「重试」**，因为宿主没有
+重新生成的能力：一个写着「重试」的按钮会承诺没有任何代码路径能兑现的事。而且面板
+无权替你重发——用户消息只存了文字，原消息带的附件到那时已经不在，静默重发等于**发出
+一封少了页面的信**。所以它只把话还给你。没有提问的回合（目标轮、定时唤醒）不画这个按钮。
+
+<p align="center">
   <img src="docs/screenshots/host-down.png" width="330" alt="宿主没有运行：说明白并给一个有用的动作">
   <img src="docs/screenshots/high-contrast.png" width="330" alt="Windows 高对比度模式下的同一个面板">
 </p>
@@ -386,7 +396,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 612 条
+npm test                          # 全部 619 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -476,7 +486,7 @@ Chrome for Testing 都装进带版本号的目录，写死路径会在一台机�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 612 条
+npm test                 # 619 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）

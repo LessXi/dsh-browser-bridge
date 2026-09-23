@@ -111,6 +111,13 @@ const SHOTS = [
     why: 'A turn in flight: the waiting row, and the send button turned into stop.',
   },
   {
+    file: 'failure-recourse.png',
+    scenario: 'failed',
+    scheme: 'dark',
+    locale: 'zh-CN',
+    why: 'A turn that died offers the reader their question back — the one recourse the host can actually keep, because it cannot re-run a turn.',
+  },
+  {
     file: 'host-down.png',
     scenario: 'hostDown',
     scheme: 'dark',

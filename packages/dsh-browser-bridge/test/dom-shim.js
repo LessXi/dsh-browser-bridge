@@ -384,8 +384,18 @@ class Element {
     }
     return undefined
   }
+  /**
+   * Fire a click at this node, the way a browser does.
+   *
+   * `target` is the load-bearing part. Delegated handlers find the control that
+   * was clicked by walking up from `event.target` — `closest('.failure-again')`
+   * and the whole copy-button handler work that way — so a shim that emitted a
+   * bare `{}` made every delegated handler silently do nothing. That reads as
+   * "the feature was never implemented" rather than "the event had no target",
+   * which is the worst way for a test double to be wrong.
+   */
   click() {
-    this.emit('click', {})
+    this.emit('click', { target: this })
   }
   /**
    * Whether this node is in a document, which a browser answers natively.

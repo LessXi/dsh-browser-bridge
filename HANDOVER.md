@@ -1,9 +1,9 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v83 已交付并入库。** 下一节就是最新的一轮改动；下面标 v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v83 那一段为止即可。
+> **当前状态：v84 已交付并入库。** 下一节就是最新的一轮改动；下面标 v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v84 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（612 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（619 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 > （真浏览器 e2e 那 4 条需要机器上有 Playwright Chromium 或 Chrome for Testing；
@@ -16,7 +16,7 @@
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
 >
-> **已入库**：v3→v83 的全部改动已提交并推送到 `origin/main`。工作区干净。
+> **已入库**：v3→v84 的全部改动已提交并推送到 `origin/main`。工作区干净。
 > （v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
 
 > ## ⚠️ 两条并行版本线（2026-09-23 处理，后续轮次务必先读这段）
@@ -184,7 +184,140 @@
 > - `earlier.png` 与 `hostDown.png` **sha256 相同**：那张图画的是阻塞屏，
 >   「更早的内容」胶囊根本没出现在交付的图里。成因未定位。
 
-> ### v83：界面按产品介绍，不按功能罗列（本轮）
+> ### v84：失败行有了出路——但出路不是「重试」（本轮）
+>
+> #### 一、缺陷：一次回合死掉之后，读者拿不回自己的问题
+>
+> `failed` 行只画「一句红字 + 一段 detail」，**没有任何控件**。实测
+> （`.tmp-run/probe-failure-exit.js`，`failed` 场景）：`failureCount: 2`、
+> `controlsOnFailure: []`、`anyFailureOffersAction: false`，而
+> `composerAfterFailure.hasText: false`——读者的提问还在屏幕上，要重试**必须凭记忆重打**。
+>
+> 更刺眼的是：面板认识的 8 种失败文案里，**三种在说「稍后再试」**
+> （`error.code.rateLimited`、`error.code.quota`、`error.code.unreachable`），
+> 而面板没给任何「再试」的手段。对照：`#blocked` 界面**早就有** retry 按钮
+> （`extension/sidepanel.js` 的 `blockedAction`），设计语言已经存在，只是没覆盖到失败行。
+>
+> #### 二、★ 为什么不能做成「重试」按钮（三条硬约束，都查过出处）
+>
+> | 约束 | 证据 |
+> | --- | --- |
+> | **宿主没有「重新生成」能力** | bridge 用到的 `commands.*` 只有 `cancel`/`create`/`inspect`/`list`/`modelCatalog`/`prompt`/`readSessionState`/`selectModel`，没有 retry；`llm/retry` 是**事件**不是命令 |
+> | **失败行是自动重试耗尽后的终态** | `llm/retry` 是回合内事件；失败行来自 `turn/end` + `reason.kind === 'error'`（`chat.js` 的 `case 'turn/end'`，注释原文「A turn that died commits no assistant message」） |
+> | **面板无法知道原问题是否带附件** | `chat.js` 的用户行只存 `const text = textBlocks(...)`，没有 attachments 字段；`mentioned` 在发送成功后清空（`sidepanel.js`）。**静默重发 = 发出一个与原问题不同的消息**（少了模型本该看的页面），比留下重复提问更糟——那是一封被篡改的信 |
+>
+> 所以**唯一诚实的出路是把提问还回输入框**：面板不写对话、不伪造内容，读者自己决定要不要再发。
+>
+> #### 三、★★ 实现的关键：提问怎么找到「它属于哪个回合」
+>
+> 「从失败行往上找最近一条 user 行」是**错的**。夹具里失败行的上方就是一条 assistant 行
+> （`tools/preview.mjs` 的 `FAILED_MESSAGES`），实测该判据在第一个失败行上就
+> `immediatelyFollowsQuestion: false`。
+>
+> 真正可靠的连接点是**回合号**。而这里**仓库里的测试夹具与真实会话顺序相反**，
+> 所以不能靠夹具定方案，只能读磁盘上的真实日志：
+>
+> ```powershell
+> # ~/.dsh/sessions 下的 session.v*.jsonl.zstd
+> # ★ 这个文件是**一连串独立的 zstd 帧**（每次 append 一帧），
+> #   对整份文件调一次 zstdDecompressSync 只得到会话头 209 字节。
+> node -e "…数帧魔数 28 b5 2f fd，逐帧解…"
+> ```
+>
+> 真实日志（16749 个事件，`.tmp-run/probe-real-event-order.mjs`）给出的事实：
+>
+> | 事实 | 读数 |
+> | --- | --- |
+> | `user/message` **不带** `turn` | 135 条里 0 条有；dataKeys 只有 `content`/`id`/`role`/`source` |
+> | **真实顺序是 `turn/start` 在前** | seq2857 `turn/start`(turn=3) → seq2871 `user/message`(source.kind='user') → seq2873 `assistant/message`(turn=3) |
+> | 仓库夹具写的顺序**相反** | `chat.test.js` 的旧写法是 `userEvent` 在 `turnStartEvent` 之前 |
+> | 一个回合里**真会出现多条用户消息** | `session-4b30482c` 实测 `turn3:[user,user,user,plugin]` |
+> | `turn/end` 与下一个 `turn/start` 之间**从无** user/message | 5 个日志、107 个回合，全部为 0 |
+>
+> 所以规则是：**当前打开的回合（最后一个 `turn/start`）接收提问，且第一条为准**。
+>
+> #### 四、实现
+>
+> 宿主侧（`packages/dsh-browser-bridge/lib/chat.js` 的 `describeEvents`）：
+> - 新增 `turnOf(event)`（`data.turn` 是整数才作数，否则 null——猜错会把别人的问题递给读者）
+> - 新增 `case 'turn/start'` 记录 `openTurn`
+> - `user/message` 且 `source.kind === 'user'` 时，`if (openTurn !== null && !questionByTurn.has(openTurn))` 登记提问
+>   （**只有读者打的字才有资格被交还**——goal 回合、压缩通知、nudge 都不算）
+> - `case 'turn/end'` 里取走该回合的提问（取走即删除）、`openTurn = null`，失败行带上 `question` 字段
+>
+> 面板侧（`extension/sidepanel.js`）：失败行在 `question` 非空时多画一个 `.failure-again` 按钮，
+> 提问写在 `wrapper.dataset.question` 上（处理函数读行，不闭包行对象——行每次重绘都会换新节点）；
+> 点击后把提问**放在已打文字之前**、光标落到末尾、`setDraft` 存草稿、`drawSend()` 让发送键可用。
+> 文案 `failure.putBack`（zh「把问题放回输入框」/ en「Put the question back」）刻意不叫「重试」。
+>
+> #### 五、★ 两个 CSS 判断（都量过）
+>
+> - **`.failure-again` 必须写 `align-self: flex-start`**：`.row` 是 flex 容器，flex 子项会被
+>   blockify（`inline-flex` 失效）并在交叉轴被拉伸，按钮从「控件」变成「横幅」——
+>   实测**中文 114px 的标签拿到整行 340px 的宽度**（截图 `.tmp-run/r23-after.png`）。
+>   修复后 114px、`hugsItsText: true`。
+> - 描边用 `var(--line-soft)`、焦点环用 `Highlight`。高对比度实测
+>   （`.tmp-run/probe-failure-again-contrast.js`）：`forcedColorsActive: true`、
+>   `hasSeparatingEdge: true`、`colorIsSystem: true`（`rgb(255,255,255)`）、
+>   `meetsTapTarget: true`（24px）。
+>
+> #### 六、★ 测试基础设施的一个真实缺口（不修就写不出面板侧测试）
+>
+> `packages/dsh-browser-bridge/test/dom-shim.js` 的 `click()` 原本发出的是**裸 `{}`**，
+> **没有 `target`**。而面板用的是**事件委托**——处理函数从 `event.target` 往上 `closest()`
+> 找控件，复制按钮与这个新按钮都是这么写的。于是所有委托处理器在套件里**静默地什么都不做**，
+> 读起来像「这个功能没实现」，而不是「事件没有 target」。
+>
+> 修法：`click()` 改为 `this.emit('click', { target: this })`。这一改同时让既有的复制按钮
+> 委托路径第一次被真实覆盖。
+>
+> #### 七、一处**测试哲学**的修正
+>
+> `packages/dsh-browser-bridge/test/failure.test.js` 原本把失败行的 `rows.push({...})`
+> **整行源码文本**钉死。本轮那次 push 因为要多带一个 `question` 字段而变成多行，测试立刻变红，
+> 而它要守的契约（`code` 有没有传到行里）**一点没变**。
+> **一个会被空白改红的断言教不了任何东西**，而它被「修好」的方式是粘贴新文本——那正是它停止
+> 被阅读的起点。已改为匹配契约、不匹配缩进。
+>
+> #### 八、变异验证（`.tmp-run/mutate-question-turn.mjs`）
+>
+> **4/4 真坏法命中**，`falsePositives: []`，`restoredExactly: true`：
+> `question-from-fixture-order`（照旧夹具顺序实现——夹具对、真实错，**本轮最要紧的一条**）、
+> `any-user-message-becomes-the-question`、`last-question-wins`、`question-not-cleared-on-turn-end`。
+>
+> 另有 1 条**如实标注的等价变异** `turn-end-does-not-close-the-turn`：真实日志里
+> `turn/end` 与下一个 `turn/start` 之间从无 user/message（107 个回合全为 0），
+> 所以两种写法对所有真实输入等价，**它必须不红**——红了说明实现变了，需要重新判定。
+> 命中判据分两类统计（`realTotal` 与 `equivalentTotal`），不混成一个「命中数」。
+>
+> #### 九、验证读数（已绿，不必重跑）
+>
+> - `npm test` → **619 passed, 0 failed, 0 skipped**（612 → 619）
+> - `npm run check:extension` → exit 0
+> - 真实浏览器（`.tmp-run/probe-failure-put-back.js`，`failed` 场景）：`gotTheQuestion: true`、
+>   `gotTheAssistantLineInstead: false`、`caretAtEnd: true`、`sendEnabled: true`、
+>   `typedTextSurvived: true`、`questionComesFirst: true`、`usedItsOwnQuestion: true`
+> - 高对比度：`hasSeparatingEdge: true`、`colorIsSystem: true`、`meetsTapTarget: true`
+> - 截图：`.tmp-run/r23-zh.png`（中文修复后）、`r23-fc.png`（高对比度）
+>
+> #### 十、本轮新增探针（`.tmp-run/`，被 gitignore）
+>
+> `probe-real-event-order.mjs`（真实会话的事件顺序与回合归并）、`probe-mutation-equivalence.mjs`
+> （哪些变异是等价的）、`probe-failure-exit.js`（失败行有无出路）、`probe-failure-put-back.js`
+> （放回输入框的端到端判据）、`probe-failure-button-box.js`（按钮盒子与触控目标）、
+> `probe-failure-again-contrast.js`（高对比度）、`why-put-back-fails.mjs`（定位 shim 缺口）、
+> `mutate-question-turn.mjs`（变异）。
+>
+> #### 十一、留给下一轮
+>
+> - **附件仍然丢了**：`question` 只带文字。要让「重发」真的等价于原消息，宿主侧得把
+>   附件引用也存进用户行（`chat.js` 的 `user/message` 分支现在只取 `textBlocks`）。
+>   在那之前，面板给的是「把文字放回去」，而不是「重发那条消息」——这是当前唯一诚实的边界。
+> - `HANDOVER.md` 的 v82 段记着「`earlier.png` 与 `hostDown.png` 的 sha256 相同」。
+>   **实测这条已过时**：当前 11 张 `docs/screenshots/*.png` 哈希**全部互不相同**
+>   （那两个文件在 v82 已被替换）。这条线索关闭。
+
+> ### v83：界面按产品介绍，不按功能罗列
 >
 > **用户的批评**（原文）：「readme里面的图片放的像功能罗列，不像产品展示和介绍。
 > 能不能学学苹果发布会风格？」

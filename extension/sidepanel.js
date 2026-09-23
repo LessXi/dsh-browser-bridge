@@ -1496,6 +1496,35 @@ function renderRow(row) {
       more.textContent = detail
       wrapper.append(more)
     }
+    // The way out. Every other dead end in this panel has one — the blocked
+    // screen has a retry, a refused attachment is reported — but a failed turn
+    // was a sentence and nothing else, and three of the sentences this panel can
+    // write end in 「稍后再试」.
+    //
+    // It is not a retry, because the host cannot re-run a turn: `commands` has
+    // no such verb, and re-sending would append a second copy of a question that
+    // is already in the conversation. It also cannot resend on the reader's
+    // behalf, because a user row stores only its text — the attachments the
+    // original message carried are gone by then, so a silent resend would be the
+    // same question minus the page the model was supposed to read.
+    //
+    // So the button hands the words back and the reader decides. The question
+    // comes from the host, which is the only side that sees the turn it belongs
+    // to; when a turn had none — a goal round, a scheduled wake-up — there is
+    // nothing to hand back and no button is drawn.
+    if (typeof row.question === 'string' && row.question.length > 0) {
+      const again = document.createElement('button')
+      again.type = 'button'
+      again.className = 'failure-again'
+      again.dataset.failure = 'put-back'
+      again.textContent = t('failure.putBack')
+      again.title = t('failure.putBack.title')
+      wrapper.append(again)
+      // The handler reads it from the row rather than closing over the row object,
+      // because the row is rebuilt on every draw and the node the reader clicks
+      // belongs to the newest one.
+      wrapper.dataset.question = row.question
+    }
     return wrapper
   }
 
@@ -3631,6 +3660,43 @@ transcript.addEventListener('click', (event) => {
       button.textContent = t('action.copy')
     }, 1400)
   })
+})
+
+/**
+ * Hand a failed turn's question back to the composer.
+ *
+ * The question is taken from the row rather than read off the nearest user row
+ * above, because the two are not the same thing: a turn's reply can run for
+ * hundreds of rows, and the row directly above a failure is usually an assistant
+ * line. The host knows which question opened the turn; the panel does not.
+ *
+ * Two things it deliberately does not do. It does not send: the host cannot
+ * re-run a turn and a second send would append a duplicate of a question already
+ * in the conversation. And it does not overwrite anything the reader has typed
+ * since — text already in the box is theirs, so the question goes in front of it
+ * with a blank line between, which is also `setDraft`'s own notion of the box's
+ * contents surviving a redraw.
+ *
+ * The caret lands at the end so the reader can keep typing, and the box is
+ * resized because assigning `value` does not fire `input` and the height is set
+ * there.
+ */
+transcript.addEventListener('click', (event) => {
+  const button = event.target?.closest?.('.failure-again')
+  if (button === null || button === undefined) return
+  const row = button.closest('.row')
+  const question = row?.dataset.question ?? ''
+  if (question.length === 0) return
+  const typed = input.value.trim()
+  input.value = typed.length === 0 ? question : `${question}\n\n${typed}`
+  input.style.height = 'auto'
+  input.style.height = `${Math.min(140, input.scrollHeight)}px`
+  setDraft(currentSessionId, input.value)
+  drawSend()
+  input.focus()
+  // The caret at the end, so typing continues where the question stopped rather
+  // than replacing it. `setSelectionRange` is what the focus alone does not do.
+  input.setSelectionRange?.(input.value.length, input.value.length)
 })
 
 toBottom.addEventListener('click', () => {

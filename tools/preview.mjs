@@ -514,9 +514,15 @@ const FAILED_MESSAGES = [
   { kind: 'assistant', text: '好，我先建一个会话。' },
   // `code` decides the sentence; `text` is the provider's own words, kept
   // reachable behind it.
+  //
+  // `question` is what the host attaches to a failed row: the message that
+  // opened the turn. It is here rather than recoverable from the rows above,
+  // which is why the assistant line stays between them — the question this
+  // failure answers is two rows up, and reading upward would be a guess.
   {
     kind: 'failed',
     code: 'MISSING_CREDENTIAL',
+    question: '帮我把这个页面上的表格抓下来',
     text: 'No API key found for provider "deepseek". Set DEEPSEEK_API_KEY in the environment, or run `dsh auth login` and pick a profile. The request was not sent.',
   },
   { kind: 'user', text: '那我换一种方式' },
@@ -525,6 +531,7 @@ const FAILED_MESSAGES = [
   {
     kind: 'failed',
     code: 'SOMETHING_NEW',
+    question: '那我换一种方式',
     text: 'upstream returned 502 from the gateway after 3 retries',
   },
 ]
