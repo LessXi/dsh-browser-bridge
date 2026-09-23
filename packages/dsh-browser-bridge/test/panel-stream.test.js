@@ -3061,7 +3061,18 @@ const MENU_CATALOG = {
  */
 async function openModelMenu(catalog) {
   host.catalog = catalog
-  registry.get('model').click()
+  const model = registry.get('model')
+  // The click toggles, so a picker left open by the previous test is *closed* by
+  // this one — and every assertion below would then be reading rows out of a
+  // menu nobody has open. `aria-expanded` is the panel's own statement of
+  // whether its popup is showing, which is what makes this deterministic; a
+  // test that read `menu.hidden` instead would be reading the DOM, and the two
+  // disagree at startup because the stub is not built from the markup.
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (model.getAttribute('aria-expanded') === 'true') break
+    model.click()
+    await settle()
+  }
   await settleMacrotask()
   await settle()
   const menu = registry.get('model-menu')
@@ -3157,6 +3168,165 @@ test('both menu rows put their mark in the same place', async (t) => {
     options.length,
     'every model row needs a mark slot',
   )
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The picker is a menu, and says so
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('the picker declares the role its rows require, and is named', async (t) => {
+  // `menuitemradio` and `option` are owned roles: WAI-ARIA lets them exist only
+  // inside a known parent role, and with none the browser has no widget to
+  // describe. Measured in a real browser before this, both rows reported their
+  // owner as nothing at all — the role was written on one side of a boundary
+  // and the other side never answered.
+  //
+  // The trigger was already promising it: `aria-haspopup="menu"` is a claim
+  // about the thing that appears when you press it. That attribute is in the
+  // markup, which this suite's document never parses, so the promise is checked
+  // against the trigger's own word here and the markup itself in
+  // `panel-geometry.test.js`.
+  t.onCleanup(() => {
+    host.catalog = null
+    registry.get('model').click()
+  })
+
+  const { menu, options, efforts } = await openModelMenu(MENU_CATALOG)
+  assert.equal(menu.getAttribute('role'), 'menu', 'the container the rows are owned by')
+
+  // A menu also has to be nameable, or a screen reader announces an unnamed
+  // list of choices.
+  assert.equal(menu.getAttribute('aria-labelledby'), 'model', 'the menu is named by the button that opens it')
+
+  // Every row a menu owns has to be focusable, or the arrow keys have nowhere
+  // to go. The two kinds differ because they answer different questions: which
+  // model is in force, and which level it runs at.
+  const roles = [...efforts, ...options].map((row) => row.getAttribute('role'))
+  assert.deepEqual(
+    [...new Set(roles)].sort(),
+    ['menuitemradio', 'radio'],
+    `every row must be owned by the container, got ${JSON.stringify(roles)}`,
+  )
+})
+
+test('opening the picker puts a reachable row under the keyboard', async (t) => {
+  // A menu moves focus into itself when it opens; that is what makes the arrow
+  // keys work, because they are handled on the menu and an event aimed at the
+  // trigger never reaches it. Measured in a real browser before this, ArrowDown
+  // on a freshly opened picker left focus exactly where it was.
+  t.onCleanup(() => {
+    host.catalog = null
+    registry.get('model').click()
+  })
+
+  const { menu } = await openModelMenu(MENU_CATALOG)
+  const rows = menu.querySelectorAll('button')
+  assert.ok(rows.length > 0, 'the catalog lists choices, so there is something to focus')
+  assert.equal(
+    document.activeElement,
+    rows[0],
+    'the first row must hold focus, or the arrow keys have nothing to move from',
+  )
+})
+
+test('the arrow keys walk the picker and stop at its ends', async (t) => {
+  t.onCleanup(() => {
+    host.catalog = null
+    registry.get('model').click()
+  })
+
+  const { menu } = await openModelMenu(MENU_CATALOG)
+  const rows = menu.querySelectorAll('button')
+  assert.ok(rows.length >= 3, `expected a list to walk, got ${rows.length} rows`)
+
+  // Counted rather than stubbed: a key that moves focus and also scrolls is two
+  // behaviours fighting over one keystroke.
+  const key = (name) => {
+    let prevented = 0
+    document.activeElement.emit('keydown', { key: name, preventDefault: () => { prevented += 1 } })
+    return prevented
+  }
+
+  rows[0].focus()
+  assert.equal(key('ArrowDown'), 1, 'the menu moved focus without claiming the keystroke')
+  assert.equal(document.activeElement, rows[1], 'ArrowDown did not move to the next choice')
+  assert.equal(key('ArrowUp'), 1)
+  assert.equal(document.activeElement, rows[0], 'ArrowUp did not move back')
+
+  // No wrapping, matching the session list: the ends of a list are information.
+  key('ArrowUp')
+  assert.equal(document.activeElement, rows[0], 'ArrowUp from the first row wrapped to the last')
+  const last = rows[rows.length - 1]
+  last.focus()
+  key('ArrowDown')
+  assert.equal(document.activeElement, last, 'ArrowDown from the last row wrapped to the first')
+
+  // Home and End are the list's own, and a plain letter is not navigation.
+  assert.equal(key('Home'), 1)
+  assert.equal(document.activeElement, rows[0], 'Home did not reach the first choice')
+  assert.equal(key('End'), 1)
+  assert.equal(document.activeElement, last, 'End did not reach the last choice')
+  assert.equal(key('a'), 0, 'the menu claimed a key it does not act on')
+})
+
+test('closing the picker hands focus back to the button it came from', async (t) => {
+  // Closing while standing in the list would leave focus on a row that no longer
+  // exists, which puts it on `body` and makes the next Tab start from the top of
+  // the panel.
+  t.onCleanup(() => {
+    host.catalog = null
+    registry.get('model').click()
+  })
+
+  const model = registry.get('model')
+  const { menu } = await openModelMenu(MENU_CATALOG)
+  assert.ok(menu.querySelectorAll('button').length > 0, 'the menu has rows to stand on')
+
+  document.activeElement.emit('keydown', { key: 'Escape', preventDefault: () => {} })
+  await settle()
+
+  assert.equal(menu.hidden, true, 'Escape closed the picker')
+  assert.equal(document.activeElement, model, 'focus must return to the button that opened it')
+})
+
+test('a repaint leaves a reader standing in the picker where they were', async (t) => {
+  // The picker is repainted from `renderChrome`, which the five-second
+  // `refreshGroups` calls — so an open menu used to be rebuilt on every poll
+  // whether or not anything had changed. Measured in a real browser with a
+  // `MutationObserver` on the container: five nodes removed and five added per
+  // poll while the reader sat still, and focus went to `body`.
+  //
+  // The poll is driven through `clockOf('groups')` rather than by awaiting a
+  // settle, and that is the whole difference between this test proving something
+  // and proving nothing: the rebuild only happens when `refreshGroups` actually
+  // runs, which nothing but an armed clock does. The first version of this test
+  // awaited a macrotask, and the mutation that removes the signature check
+  // altogether left it green.
+  t.onCleanup(() => {
+    host.catalog = null
+    registry.get('model').click()
+  })
+
+  const { menu } = await openModelMenu(MENU_CATALOG)
+  const rows = menu.querySelectorAll('button')
+  rows[1].focus()
+
+  // The guard that makes the rest mean something. `drawModelMenu` is reached
+  // through `drawModel`, and `drawModel` only calls it while `menuOpen` is true
+  // — so if the picker is not actually open, the poll below proves nothing at
+  // all about whether a repaint rebuilds it. The mutation that removes the
+  // signature check outright leaves this test green without this assertion.
+  assert.equal(menu.hidden, false, 'the picker must be open, or the poll below never reaches it')
+
+  // A poll answering with the same catalog: the rows are identical, so the DOM
+  // already says everything this repaint would say.
+  await clockOf('groups')
+  assert.equal(menu.hidden, false, 'the poll must leave the picker open')
+
+  const after = menu.querySelectorAll('button')
+  assert.equal(after.length, rows.length, 'the same catalog must draw the same rows')
+  assert.equal(after[1], rows[1], 'the row must be the same node, not a replacement of it')
+  assert.equal(document.activeElement, rows[1], 'focus must still be on the row it was on')
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3309,5 +3479,54 @@ test('reopening the panel puts the draft back in the composer', async () => {
     typed,
     'a reopened panel must put back what was typed into it',
   )
+})
+
+test('an empty picker is not a menu, because it holds no choices', async (t) => {
+  // The one state where the role is wrong rather than merely absent: with no
+  // catalog there is a single sentence saying why, and announcing that as a list
+  // of choices describes something that is not there.
+  //
+  // The panel reads the catalog once and keeps it, so this cannot be driven by
+  // `openModelMenu`: by the time this test runs an earlier one has filled the
+  // cache and the panel has no reason to ask again. A fresh panel is the honest
+  // way to reach the state — it is what someone gets when they open the side
+  // panel on a deployment whose models cannot be read.
+  //
+  // It sits at the end of the file for a reason worth recording: importing the
+  // module again attaches a **second** set of listeners to the same elements,
+  // because `getElementById` hands back the same stubs. A test that dispatches a
+  // keystroke after this one runs every handler twice and counts two
+  // `preventDefault` calls where the panel made one.
+  t.onCleanup(() => {
+    host.catalog = null
+    registry.get('model').click()
+  })
+
+  host.catalog = { catalog: null, reason: 'no model service in this profile' }
+  globalThis.setInterval = (body) => {
+    clocks.push(body)
+    return clocks.length
+  }
+  try {
+    await import(`${pathToFileURL(join(extensionDir, 'sidepanel.js')).href}?no-catalog=${turn += 1}`)
+    await settle()
+  } finally {
+    globalThis.setInterval = realSetInterval
+  }
+
+  registry.get('model').click()
+  await settleMacrotask()
+  await settle()
+
+  const menu = registry.get('model-menu')
+  const options = menu.querySelectorAll('.menu-option')
+  const efforts = menu.querySelectorAll('.menu-effort')
+  assert.equal(options.length + efforts.length, 0, 'there is nothing to choose in this state')
+  assert.notEqual(
+    menu.getAttribute('role'),
+    'menu',
+    'a list with no items must not claim to be a menu',
+  )
+  assert.match(menu.textContent, /no model service in this profile/, 'and it must still say why')
 })
 

@@ -1,9 +1,9 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v75 已交付并入库。** 下一节就是最新的一轮改动；下面标 v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v75 那一段为止即可。
+> **当前状态：v76 已交付并入库。** 下一节就是最新的一轮改动；下面标 v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v76 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（560 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（567 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 > （真浏览器 e2e 那 4 条需要机器上有 Playwright Chromium 或 Chrome for Testing；
@@ -12,8 +12,8 @@
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
 >
-> **已入库**：HEAD = `92be533`（2026-09-23），v3→v75 的全部改动已提交并推送到
-> `origin/main`。工作区干净。（此前 `dae44ed` 是 v73，`82497f9` 是 v72。）
+> **已入库**：v3→v76 的全部改动已提交并推送到 `origin/main`。工作区干净。
+> （v75 是 `e0ef3ee`，v74 是 `bb5af8d`，v73 是 `dae44ed`，v72 是 `82497f9`。）
 
 > ## ⚠️ 两条并行版本线（2026-09-23 处理，后续轮次务必先读这段）
 >
@@ -179,6 +179,89 @@
 >   所以**真实流式态本轮没有视觉证据**。
 > - `earlier.png` 与 `hostDown.png` **sha256 相同**：那张图画的是阻塞屏，
 >   「更早的内容」胶囊根本没出现在交付的图里。成因未定位。
+
+> ### v76：模型选择器声明了 menu，却没有一样兑现（本轮）
+>
+> **缺陷是两处，同一类**：`#model` 触发按钮写着 `aria-haspopup="menu"`
+> （`sidepanel.html`），而它打开的 `#model-menu` **没有任何 role**；
+> 里面的按钮写着 `role="menuitemradio"`（`sidepanel.js` 的 `drawModelMenu`），
+> 而 `menuitemradio` 是 WAI-ARIA 的**owned role**——只允许存在于 `menu`/`menubar`
+> 之内，没有父容器时浏览器无部件可描述。`#at-menu` 的子项写 `role="option"`
+> 而容器同样没有 role，是同类第二处。
+>
+> **实测**（`.tmp-run/probe-aria-context.js`，按角色配对而非按 id）：
+> 修复前 `violationCount: 2`（两条 `menuitemradio` 的 owner 为 null），
+> `promises[0].fulfilled: false`。**对照组是决定性的**：同一份探针里
+> `radiogroup`/`radio`（容器写了 role）**零违规**——所以这不是巧合，是规则。
+> `@` 弹层 `violationCount: 1`（`option` 无 `listbox` 父容器）。
+>
+> **修法**：角色由**填充行的同一段代码**设置，而不是写在标记里。因为空目录态
+> 必须放弃这个 role（`menu` 的唯一子节点是一句话时，读屏会播报一份并不存在的
+> 选项列表）。`drawModelMenu` 在有行时设 `role="menu"` + `aria-labelledby="model"`
+> （`menu` 必须有可访问名），无行时设为 `none`；`drawMentionRows` 同理用 `listbox`。
+> `@` 弹层取 `listbox` 而非 `menu`：它的行是过滤集里的选项、焦点留在文本框里，
+> 与 `menu` 的语义不同，给两者同一个 role 会描述错其中一个。
+>
+> **★ 顺带修掉的第二个缺陷：菜单每 5 秒被整个重建。**
+> `refreshGroups`（`sidepanel.js` L3164-3166 每 5 秒一次）→ `renderChrome()`
+> → `drawModel()` → 因 `menuOpen` 为真而 `drawModelMenu()`，而它第一行是
+> `replaceChildren()`。**读者站在菜单里时，那个节点每 5 秒消失一次。**
+>
+> 用真实浏览器实测（`MutationObserver` 挂在容器上，等真实的 5 秒定时器）：
+>
+> | 读数 | 修复前 | 修复后 |
+> | --- | --- | --- |
+> | 一次轮询的菜单增删 | **removed 5 / added 5** | **0 / 0** |
+> | 焦点 | 落到 `body` | 仍在原来那一项上 |
+> | 节点身份 | 被换新 | 同一个节点对象 |
+>
+> 修法是**签名比对**（`drawnMenuSignature`）：行是目录与当前选择的纯函数，
+> 两次输入相同就没有要画的。另补 `setMenu` 的两处键盘契约——
+> **打开时把焦点移进第一项**（否则方向键事件从触发按钮冒泡，而处理挂在菜单上，
+> 永远收不到）、**关闭时把焦点交回触发按钮**（否则焦点留在被移除的行上，落到
+> `body`，下一次 Tab 从面板顶部开始）。这与第 7 轮修 `drawTranscript` 是同一类：
+> **数据刷新销毁了界面状态**。
+>
+> **★ 本轮测试基建修掉两个真实缺口**（否则上面的测试写不出来）：
+>
+> 1. `dom-shim.js` 的 `emit` **只在自己身上派发，然后直接跳到 document**，
+>    跳过了中间所有祖先。而 `role="menu"` 恰恰靠**容器上的处理函数**维持方向键，
+>    所以这个 shim 分不出「菜单能用」与「按键根本没人收」。现改为逐级冒泡，
+>    无父节点的 stub 仍经 `ownerDocument` 抵达 document 监听器。
+> 2. `openModelMenu`（`panel-stream.test.js`）用 `registry.get('model').click()`
+>    打开菜单，而**点击是切换**：上一个测试留下的开着状态会被下一个关掉。
+>    这条一直存在，只是此前的断言从没依赖过「菜单真的开着」。
+>    现在从 `aria-expanded`（面板自己的声明）驱动，最多点三次直到它为真。
+>
+> **★ 一条差点被写进测试的假断言**：给上面那条轮询测试加的防呆断言
+> `assert.equal(menu.hidden, false)` **立刻变红**——揭示菜单其实从来没开着。
+> 若没有这条防呆，那条测试在「把签名比对整个删掉」的变异下**依然是绿的**
+> （已实测）。**这正是「判据错了会把缺陷读没了」的又一例。**
+>
+> **验证读数**：
+> - `npm test` → **567 passed, 0 failed, 0 skipped**（560 → 567，新增 7 条）
+> - `npm run check:extension` → exit 0
+> - 真实浏览器（`.tmp-run/probe-contract-v3.js`）：`keyboardContractHeld: true`
+>   ——打开即第一项、方向键 / Home / End 全部移动焦点、一次真实 5 秒轮询
+>   `removedNodes: 0` 且节点身份不变、Escape 关闭并把焦点交回 `#model`
+> - 变异 6 种坏法**全部命中**且红的正是新断言、`restoredExactly: true`：
+>   `no-role`、`role-always`、`no-open-focus`、`no-arrow-keys`、`no-escape-return`、
+>   `always-repaint`
+>
+> **探针自身的三个错**（都在 `.tmp-run/` 里改正后重写）：
+> 1. 用「按顺序重新盖章」的编号判断节点身份——新节点拿到同样的编号，
+>    `sameIdSet` 恒真，什么也证明不了；
+> 2. 在同一个元素上先按 `ArrowDown` 再按 `ArrowUp`——第一次移动后元素已变，
+>    第二次按的是新元素，两次抵消，于是报「方向键无效」；
+> 3. 返回的对象字面量在 `press('Escape')` **之后**求值，于是 `menuStillOpen`
+>    读到的是关闭之后的状态。**对象属性在构造时求值**，状态必须在发生时快照。
+>
+> **留待下一轮（已实测确认，未修）**：`noCatalog` 态触发器显示
+> `deepseek-v4-pro · high`，与正常态 `· High` **只差一个首字母大小写**，
+> 且按钮仍可点。**更正上一轮的记录**：菜单打开后**是有说明的**
+> （`.menu-note` 读到 `No model list：no model service in this profile`），
+> 上一轮记的「`.menu-note` 为空」是我那个探针**没打开菜单**造成的假读数。
+> 所以真正的缺口窄得多：**只有触发器这一处看不出状态**。
 
 > ### v75：Windows 高对比度下，浮层没有任何边界（本轮）
 >

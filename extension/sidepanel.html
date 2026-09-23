@@ -1161,8 +1161,29 @@
           <button id="send" type="button"></button>
         </div>
       </div>
+      <!--
+        Both pickers are named and typed by the code that fills them, because
+        the role depends on whether there is anything to choose.
+
+        `menuitemradio` and `option` are *owned* roles: WAI-ARIA lets them exist
+        only inside a known parent, and with none the browser has no widget to
+        describe. Measured before this existed, the model picker reported its
+        rows as owning no role at all, so a screen reader read them as loose
+        buttons and never announced the position or the selection that makes a
+        list a list.
+
+        The model trigger was already promising this. It carries
+        `aria-haspopup="menu"` and opened a container with no role at all — a
+        claim about the thing that appears when you press it.
+
+        The role is not declared here because the empty state has to give it up:
+        when there is no catalog the picker holds one sentence saying why, and a
+        `menu` whose only child is a paragraph describes a list of choices that
+        is not there. `drawModelMenu` and `drawMentionRows` therefore set the
+        role alongside the rows it belongs to, so the two cannot disagree.
+      -->
       <div id="model-menu" hidden></div>
-  <div id="at-menu" hidden></div>
+      <div id="at-menu" hidden></div>
     </footer>
 
     <script src="sidepanel.js" type="module"></script>

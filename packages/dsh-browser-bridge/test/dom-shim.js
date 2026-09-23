@@ -202,6 +202,16 @@ class Element {
    * shim that stopped at the element could not tell a fix from a regression in
    * exactly that case.
    *
+   * It walks every ancestor rather than jumping to the document, because that is
+   * what a browser does and the difference is load-bearing: a `role="menu"` keeps
+   * its arrow keys with a handler on the container, so a shim that skipped the
+   * middle of the path could not tell a working menu from one whose keys go
+   * nowhere — the handler simply never ran.
+   *
+   * Root stubs (`getElementById`'s elements, which have no parent) still reach
+   * the document listeners through `ownerDocument`, because in a browser they
+   * hang off the document and the document is on the path.
+   *
    * `event.preventDefault` is provided when the caller did not, because every
    * handler under test calls it and a shim that throws on its absence reports a
    * TypeError instead of the behaviour.
@@ -219,13 +229,23 @@ class Element {
       const original = event.stopPropagation
       event.stopPropagation = () => { stopped = true; original() }
     }
-    for (const listener of [...(this.listeners.get(type) ?? [])]) listener(event)
-    if (stopped) return
-    // Bubble to the document, which is where the panel installs its Escape
-    // handling. The `document` object has its own `emit` that does not bubble,
-    // so this terminates rather than recursing.
-    const root = this.ownerDocument
-    if (root !== undefined && typeof root.emit === 'function') root.emit(type, event)
+    let node = this
+    while (node !== null && node !== undefined) {
+      // The document has its own `emit` that does not bubble, so reaching it
+      // terminates the walk rather than recursing.
+      if (node.isDocument === true) {
+        node.emit(type, event)
+        return
+      }
+      for (const listener of [...(node.listeners?.get(type) ?? [])]) listener(event)
+      if (stopped) return
+      if (node.parentNode === null || node.parentNode === undefined) {
+        const root = this.ownerDocument
+        if (root !== undefined && typeof root.emit === 'function') root.emit(type, event)
+        return
+      }
+      node = node.parentNode
+    }
   }
 
   /**

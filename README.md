@@ -2682,6 +2682,9 @@ VS Code fuzzy scorer）。**我抄的是它的判据，不是它的算法**—�
   改为 `--radius-xl`，与 `#model-menu` 及上面 v7 表里的官方值一致；
   容器自身的 `border` 也已移除——`--elevation` 的首段 `0 0 0 1px` 就是它的边，
   两者并存会把同一条线画两遍。详见 `HANDOVER.md` 的 v75 段。）
+  （v76 起容器声明 `role="listbox"`：行写的是 `role="option"`，而这是 WAI-ARIA
+  的 owned role，只允许存在于 `listbox` 之内。角色由 `drawMentionRows` 与行
+  一起设置，空态时改回 `none`——详见 `HANDOVER.md` 的 v76 段。）
 - `extension/locales.js`：zh/en 各 3 键 —— `at.list`（标签页）、`at.empty`、`at.none`。
 
 **实测（无头 Chrome 截图 + `--dump-dom`，三条设计逐一验证）**

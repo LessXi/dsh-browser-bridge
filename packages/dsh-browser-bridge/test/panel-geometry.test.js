@@ -622,3 +622,53 @@ test('every surface that floats over the page keeps an edge in High Contrast', (
     )
   }
 })
+
+/**
+ * One attribute's value on a tag in the markup.
+ *
+ * Reads the source rather than the live DOM because the panel's test document
+ * never parses this file: `getElementById` mints a bare stub per id, so anything
+ * only the markup declares is invisible to a DOM test. The two suites divide
+ * along that line — behavior is proved against the running panel, and what the
+ * markup promises is read here.
+ *
+ * @param {string} id - The element's id.
+ * @param {string} attribute - The attribute name.
+ * @returns {string|null} The value, or null when absent.
+ */
+function attributeOf(id, attribute) {
+  const at = html.indexOf(`id="${id}"`)
+  if (at === -1) return null
+  // Back up to the tag's own `<` so the scan cannot pick up a preceding element.
+  const open = html.lastIndexOf('<', at)
+  const close = html.indexOf('>', at)
+  if (open === -1 || close === -1) return null
+  const tag = html.slice(open, close)
+  const match = tag.match(new RegExp(`\\s${attribute}="([^"]*)"`))
+  return match === null ? null : match[1]
+}
+
+test('a trigger that promises a menu opens something that is one', () => {
+  // `aria-haspopup="menu"` is a claim about what appears when the control is
+  // pressed, and the container has to answer it. Measured in a real browser
+  // before this, the trigger said `menu` and the container it opened had no role
+  // at all — so the rows inside were never announced as the choices they are.
+  //
+  // The container's role is set by the renderer rather than written here,
+  // because it depends on whether there is anything to choose; the promise on
+  // the trigger is static, so the two are checked where each one lives.
+  const promised = attributeOf('model', 'aria-haspopup')
+  assert.equal(promised, 'menu', '#model must declare what kind of thing it opens')
+
+  const renderer = readExtensionFile('sidepanel.js')
+  assert.match(
+    renderer,
+    /modelMenu\.setAttribute\('role',\s*'menu'\)/,
+    'the picker must take the role the trigger promised it',
+  )
+  assert.match(
+    renderer,
+    /modelMenu\.setAttribute\('aria-labelledby',\s*'model'\)/,
+    'and a menu must be named, by the button that opens it',
+  )
+})

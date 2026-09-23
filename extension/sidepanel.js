@@ -236,6 +236,23 @@ let catalog = null
 let catalogReason = ''
 /** Whether the picker is open. */
 let menuOpen = false
+
+/**
+ * The picker contents currently on screen, as a signature.
+ *
+ * Rebuilding rows that are already right is not free. `drawModel` runs on every
+ * `renderChrome`, which runs on every five-second `refreshGroups` — so an open
+ * menu was torn down and rebuilt every five seconds whether or not the catalog
+ * had changed. Measured in a real browser: a `MutationObserver` on the menu
+ * recorded five nodes removed and five added per poll while the reader sat
+ * still, and `document.activeElement` went from the focused level to `body`.
+ * A keyboard user walking the list lost their place twice a minute.
+ *
+ * The rows are a pure function of the catalog and the current selection, so
+ * comparing what *would* be drawn against this is enough to know whether the
+ * DOM already says it.
+ */
+let drawnMenuSignature = ''
 /**
  * The open `@` picker, or null.
  *
@@ -605,10 +622,34 @@ function drawModel() {
  * @returns {void}
  */
 function drawModelMenu() {
-  modelMenu.replaceChildren()
   const { error, efforts, groups: modelGroups } = modelMenuModel(catalog, currentModel())
+  // What the menu would say, before any of it is built. The rows are a function
+  // of the catalog and the selection, so two calls with the same inputs produce
+  // the same list — and the second one has nothing to do.
+  const signature = JSON.stringify({ error, efforts, groups: modelGroups, reason: error.length > 0 ? catalogReason : '' })
+  if (signature === drawnMenuSignature) return
+  drawnMenuSignature = signature
+
+  // This runs while the reader may be standing in the menu: `drawModel` is
+  // reached from every `renderChrome`, which the five-second `refreshGroups`
+  // calls. Where focus was is recorded before the rebuild and put back after,
+  // because the node holding it is about to stop existing — measured, focus went
+  // to `body` on each poll, so walking the list with a keyboard lost the place.
+  const active = document.activeElement
+  const standing = active !== null && active !== undefined && containsNode(modelMenu, active)
+  const control = standing
+    ? String(active.className ?? '').split(' ').filter(Boolean)[0]
+    : undefined
+  const label = standing ? active.textContent.trim() : ''
+
+  modelMenu.replaceChildren()
 
   if (error.length > 0) {
+    // Nothing to choose from, so this is not a menu yet — it is one sentence
+    // saying why. Leaving the role on would announce a list of choices with
+    // nothing in it, immediately before the sentence explaining why.
+    modelMenu.setAttribute('role', 'none')
+    modelMenu.removeAttribute('aria-labelledby')
     const note = document.createElement('p')
     note.className = 'menu-note'
     // The code is the module's; the sentence and the host's reason are ours to show.
@@ -618,6 +659,12 @@ function drawModelMenu() {
     modelMenu.append(note)
     return
   }
+  // Set here rather than in the markup so the role and the rows it owns are
+  // written by the same code, and cannot describe different things. `role="menu"`
+  // also requires an accessible name; `aria-labelledby` takes it from the button
+  // that opens the picker, which is the name a reader already heard on the way in.
+  modelMenu.setAttribute('role', 'menu')
+  modelMenu.setAttribute('aria-labelledby', 'model')
 
   if (efforts.length > 0) {
     const caption = document.createElement('p')
@@ -688,6 +735,16 @@ function drawModelMenu() {
       modelMenu.append(button)
     }
   }
+
+  if (control === undefined) return
+  // The same row, by the class it had and the text it read — the two things the
+  // reader was looking at. When the row is gone the model or the level went with
+  // it and there is nowhere honest to put focus, so it stays where the rebuild
+  // left it rather than jumping to a row that is not the one being walked.
+  const again = [...modelMenu.querySelectorAll(`.${control}`)].find(
+    (node) => node.textContent.trim() === label,
+  )
+  if (again !== undefined) again.focus()
 }
 
 /**
@@ -717,6 +774,12 @@ function positionMenu() {
 /**
  * Open or close the picker.
  *
+ * Opening moves focus to the first item, which is what a menu does and what
+ * `role="menu"` describes. Leaving it on the trigger looks equivalent — Tab does
+ * reach the rows from there — but the arrow keys would not: they are handled on
+ * the menu, and an event fired on the button never reaches it. Measured before
+ * this, ArrowDown on a freshly opened picker left focus on the trigger.
+ *
  * @param {boolean} [next] - The state to force; omitted toggles it.
  * @returns {void}
  */
@@ -725,11 +788,24 @@ function setMenu(next) {
   if (open === menuOpen) return
   menuOpen = open
   modelButton.setAttribute('aria-expanded', String(open))
+  // Closing from inside the menu would otherwise leave focus on a row that is
+  // about to be taken away, so it lands back on the button the reader opened it
+  // from — where they were before, and where the next Tab continues from.
+  const standing = document.activeElement
+  if (!open && standing !== null && standing !== undefined && containsNode(modelMenu, standing)) {
+    modelButton.focus()
+  }
   modelMenu.hidden = !open
   if (!open) return
   if (catalog === null) refreshCatalog().catch(() => {})
   drawModelMenu()
   positionMenu()
+  // Focus goes to the first item, however the menu was opened — the menu
+  // keyboard pattern puts it there, and doing it only for a keyboard opening
+  // would make the arrow keys work for one input method and not the other.
+  // `:focus-visible` still keeps the ring off a mouse click, because the browser
+  // decides that from the interaction that led here, not from this call.
+  modelMenu.querySelector('button')?.focus()
 }
 
 /**
@@ -790,6 +866,9 @@ function closeMention() {
 function drawMentionRows(options, state) {
   atMenu.replaceChildren()
   if (state !== 'listed') {
+    // No rows to own, so the listbox role goes: a `listbox` with a paragraph
+    // inside it is a list of options that are not there.
+    atMenu.setAttribute('role', 'none')
     const note = document.createElement('p')
     note.className = 'at-empty'
     note.textContent = state === 'empty' ? t('at.empty') : t('at.none')
@@ -797,6 +876,11 @@ function drawMentionRows(options, state) {
     atMenu.hidden = false
     return
   }
+  // The rows below carry `role="option"`, which WAI-ARIA lets exist only inside
+  // a `listbox`. Written here so the role and the rows it owns come from one
+  // place; measured before this, the options owned nothing at all.
+  atMenu.setAttribute('role', 'listbox')
+  atMenu.setAttribute('aria-label', t('at.list'))
 
   const label = document.createElement('p')
   label.className = 'at-label'
@@ -2757,6 +2841,34 @@ modelButton.addEventListener('click', (event) => {
 
 modelMenu.addEventListener('click', (event) => {
   event.stopPropagation()
+})
+
+// The menu role is a promise about the keyboard, and this is where it is kept:
+// with `role="menu"` on the container, a reader who opens it with the keyboard
+// expects the arrow keys to walk it and Escape to hand focus back to the button
+// they came from. Before this the only way through the list was Tab — which
+// leaves the menu, because the rows come after it in the document — and Escape
+// closed the picker while leaving focus on a row that had just been removed,
+// which put it on `body` and made the next Tab start from the top of the panel.
+modelMenu.addEventListener('keydown', (event) => {
+  const items = [...modelMenu.querySelectorAll('button')]
+  const index = items.indexOf(document.activeElement)
+  if (index === -1) return
+
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault()
+    const step = event.key === 'ArrowDown' ? 1 : -1
+    // No wrapping, matching the session list: the ends of a list are information,
+    // and jumping from the last row to the first hides how long it is.
+    const next = items[index + step]
+    if (next !== undefined) next.focus()
+    return
+  }
+  if (event.key === 'Home' || event.key === 'End') {
+    event.preventDefault()
+    const end = event.key === 'Home' ? items[0] : items[items.length - 1]
+    end?.focus()
+  }
 })
 
 document.addEventListener('click', () => {
