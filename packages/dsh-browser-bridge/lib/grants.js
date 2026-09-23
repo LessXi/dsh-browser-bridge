@@ -229,6 +229,14 @@ export function classifySensitivity(action) {
   if (tool === 'browser_eval' || tool === 'browser_cdp') {
     return { sensitive: true, reason: 'runs code in the page through the debugger' }
   }
+  if (tool === 'browser_dialog') {
+    // Reporting the dialog is free; answering it changes what the page does
+    // next. Dismissing a `confirm()` sends the site down its "no" branch and
+    // accepting one goes down "yes", which is a page-level decision the user
+    // has not seen. So the second prompt is tied to the write, not the read.
+    const answering = action.args?.accept === true || typeof action.args?.prompt_text === 'string'
+    if (answering) return { sensitive: true, reason: 'answers a dialog the page opened' }
+  }
   if (tool === 'browser_click') {
     const text = String(action.args?.text ?? '').toLowerCase()
     const selector = String(action.args?.selector ?? '').toLowerCase()

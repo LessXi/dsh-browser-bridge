@@ -1,14 +1,2376 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v34 已交付。** 下一节就是最新的一轮改动；下面标 v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v34 那一段为止即可。
+> **当前状态：v69 已交付。** 下一节就是最新的一轮改动；下面标 v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v69 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（412 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（541 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
+> （真浏览器 e2e 那 4 条需要机器上有 Playwright Chromium 或 Chrome for Testing；
+> 没有时会**跳过并说明**，不会失败。）
 >
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
+>
+> **未提交状态（v68 时点）**：HEAD 仍是 `2ea6baf`（2026-09-19）。v3→v68 的全部改动
+> 都还在工作区，另有若干未跟踪文件（`.tmp-run/` 整体被 gitignore，不计入）。
+
+> ### v69：插件第一次在真实 `dsh web` 进程里端到端跑通；图标的一个错误前提被推翻（本轮）
+>
+> 这一轮做了两件事，都是"把产品送到用户手上"这件事的前置条件。
+>
+> #### 一、首次在真实 harness 里验证整条链路（此前全部在测试装置内）
+>
+> v3→v68 的所有验证都发生在自建装置里（假宿主 + 真扩展，或真宿主 + 假扩展）。
+> 这一轮第一次让**两边都是真的**：
+>
+> 1. 在隔离的 DSH_HOME（`F:\Projects\dsh\dsh-bridge\.tmp-home-v69`，`profiles/node_modules`
+>    用目录联接共享，**不碰用户的 3080**）里建了一个只含
+>    `@deepseek-ai/dsh-base` + `@deepseek-ai/dsh-web-app` + `dsh-browser-bridge` 的 profile；
+> 2. `dsh --profile web --port 3199 --no-open` 起真进程；
+> 3. 真 Chrome 装真 `extension/`，**storage 里只写端口、不写令牌**，模拟"刚装好扩展"。
+>
+> **结果（全部实测）**：
+>
+> | 观察 | 读数 |
+> | --- | --- |
+> | 插件是否激活 | `.tmp-home-v69/storages/dsh-browser-bridge.json` 被创建，令牌 64 字符 |
+> | `/browser-bridge/health` | **200**，`enabled:true`、chatServices 全 `true`、`attachmentService:true` |
+> | `/api/browser-bridge/token` | **200**，扩展能自己取到令牌 |
+> | 扩展是否自行接通 | 从**harness 侧**看到 `connected:true`、`connections` 递增 |
+> | 取的令牌是否正确 | `storageTokenIsTheHarnessOne: true`（与磁盘上的逐字相同） |
+> | 是否被钉成手动 | `manualToken: false` —— 保持"自动"，harness 换令牌仍会被发现 |
+>
+> 探针：`.tmp-run/probe-real-harness-e2e.mjs`、`.tmp-run/probe-manual-token-after-enrol.mjs`。
+>
+> **一个自己踩的坑**：第一版把 `manualToken` 的判据写成"找一个 64 字符串"，
+> 于是报出 `unexpected shape: boolean`。查 `background.js:355/362/372` 与
+> `options.js:169-181` 才确认它的契约是**布尔标志位**（"用户是否亲手编辑过令牌"），
+> 不是令牌文本——令牌文本在 `token` 键里。判据已按真实契约改写。
+> **教训：探针报"意外形状"时先读被测代码的类型声明，不要先怀疑产品。**
+>
+> **另注**：`connections` 是**累计**连接次数（`lib/index.js:55-71` `onConnected()`
+> 每次递增、断开不归零），设置页也写作「**本轮**连接次数」。看到它在没有浏览器
+> 连接时仍是 8 不要当成连接泄漏。
+>
+> #### 二、16px 工具栏图标：一个没被验证过的前提，导致了一个没必要的缩小
+>
+> 用户每天点的那个图标，是 16×16 的鲸鱼。它一直是 `scale 0.70`、左偏下，
+> 理由写在 `.tmp-run/measure-icons.mjs:11` 与 `finalise-icons.mjs:5`：
+> "Chrome 的徽章盖在图标**右上角**"，所以要缩小避让。
+>
+> **这个方位是错的。** 当前 Chromium 的实现
+> （`chrome/browser/ui/extensions/icon_with_badge_image_source.cc`）把徽章画在右**下**：
+>
+> ```cpp
+> const int badge_offset_y = icon_area.height() - badge_height;
+> badge_background_rect_ = gfx::Rect(icon_area.x() + badge_offset_x,
+>                                    icon_area.y() + badge_offset_y, badge_width, badge_height);
+> ```
+>
+> 按该算法把徽章叠加到真实素材上（`.tmp-run/render-badge-truth.mjs`，照抄常量
+> 28×28 icon area、badge 高 14、右下对齐、圆角 3+1、1px `kClear` 外扩），
+> 覆盖的是图标坐标 **x 7–12、y 7–12**；而鱼尾在**右上**，本来就不会被盖住。
+> 实测两种几何被徽章抹掉的墨迹比例**完全相同（7.4%）**——避让的收益是零，
+> 代价却是 16px 下鲸鱼的眼睛糊成一块蓝斑。
+>
+> **修法**：`.tmp-run/pick-icon16-geometry.mjs` 在正确的前提下重扫 140 个候选
+> （约束只有两条：不触图标边缘、留在图标内），取墨迹最多的一档。
+> 新几何为**居中 `scale 0.84`**（扫描出的 0.92 鱼尾已贴右边缘，留白不足，
+> 故取 0.84）。墨迹占比 **0.195 → 0.262**，眼睛与尾鳍在真实尺寸下成形。
+> 32/48/128 **未改动**——它们从不是这个错误前提的产物。
+>
+> 保存的证据：`.tmp-run/icon16-before-after.png`（修正前后并排，含 ×11 放大与
+> 真实尺寸工具栏）、`.tmp-run/badge-truth.png`（徽章实际覆盖位置）。
+>
+> #### 三、新增一条会红的回归测试，并当场验证它会红
+>
+> 这条测试断言"16px 的墨迹占比仍在认得出是鱼的区间"（`extension-icons.test.js`）。
+> **第一版写错了**：它还钉了 mark 外接框宽度 `> 0.5`，而扫描中每个候选的实测值
+> 恒为 `0.5` —— 那等于把发布值当成唯一正确答案，**任何改进都会被判红**。
+> 已改为只断言真正必须的性质（墨迹量、轮廓不小于下限、四周留白存在）。
+>
+> **变异测试（`.tmp-run/mutate-icon16.mjs`）**：
+> 鱼缩到 0.45 → **红**；放大到 1.10 → **红**；移到触边 → **红**；
+> 换成扫描出的更优几何 0.88 居中 → **绿**（这条是特意加的：一条把改进也判红的
+> 断言是在锁定现状，不是在保护可辨识度）。
+> `brokenOnesCaught: 3`、`improvementsAllowed: 1`、`allBehavedAsExpected: true`。
+>
+> **一次意外但有效的验证**：渲染对照图时误把旧图标写回 `extension/icons/icon16.png`，
+> 重跑测试**立刻变红**（`the mark covers only 0.195 of the tile`）——
+> 这条断言的防护力因此得到了一次非计划的实证。
+>
+> #### 四、文档与生成器同步（否则下次重跑会退回缺陷）
+>
+> - `README.md` §图标段落补了 **v69 更正**（原文写着"徽章所在的右上角"，已改正并给出源码依据）。
+> - `HANDOVER.md` v54 段（图标首次实现处）加了指向本段的更正标记。
+> - `.tmp-run/measure-icons.mjs` 顶部加醒目更正框，并注明它**已被
+>   `pick-icon16-geometry.mjs` 取代、不要再用来选几何**（它内部仍是错的右上判据，保留为记录）。
+> - `.tmp-run/finalise-icons.mjs`：`SCALE_BY_SIZE[16]` 由 `0.70` 改为 `0.84`，
+>   新增 `OFFSET_BY_SIZE = { 16: { dx: 0.50, dy: 0.50 } }`（其余尺寸沿用 0.42/0.58）。
+>   **验证方式**：重跑生成器后四个 PNG 的字节数与修复后逐位一致
+>   （16=444、32=888、48=1379、128=4051），再跑图标子集 5 条全绿 ——
+>   修复是**可复现**的，不是一次性的手工替换。
+>
+> #### 五、验证读数（全部实测）
+>
+> - `npm test` → **541 passed, 0 failed, 0 skipped**（v68 为 540，新增 1 条可辨识度断言）
+> - `npm run check:extension` → exit 0
+> - `node .tmp-run\width-scan.mjs` → **30 组合（5 宽度 × 6 场景）0 findings**
+> - 面板几何/焦点环/ARIA 三项探针在 380×720 下均无发现：
+>   `ringIsTheOnlyDifference: true`；7 个可聚焦元素全部可达且焦点可见
+>   （`unindicated: []`，"环画在卡片上"的只有 `#input -> #composer`，是 v67 有意为之）；
+>   ARIA `unnamedControls/ghostFocus/unnamedIconButtons` 均为空数组。
+>
+> #### 六、遗留（下一轮可做）
+>
+> 1. **插件仍未安装到用户的 3080 实例**。`~/.dsh/profiles/web/package.json` 的
+>    `dsh.profile.bundles` 里没有 `dsh-browser-bridge`，`storages/` 也没有令牌文件
+>    —— 也就是说 README 描述的功能对用户当前**不可达**。本轮已在隔离 profile 里
+>    证明它装得上、跑得通（见第一节），但**没有替用户改 web profile**
+>    （那是不可逆地改变他的日常环境，先问）。安装命令即 README §2：
+>    `dsh plugin --profile web add file:<repo>\packages\dsh-browser-bridge`。
+> 2. `.tmp-run/` 仍被 gitignore，本轮全部探针与对照图不随仓库交付。
+>    图标那条断言已进仓库（`extension-icons.test.js`），但**它依赖的扫描依据
+>    （`pick-icon16-geometry.mjs`）不在仓库里**。
+> 3. `#input` 的 `max-height: 140px` 到顶后能滚到末尾、卡片同步长高，
+>    实测非缺陷（`canScrollToEnd: true`）；三处 `transition` 未纳入
+>    `prefers-reduced-motion`，属细节层级，未动。
+>
+
+>
+> 这一轮做的是**首次使用体验**里最大的那道坎，而且它不是画得好不好看的问题：
+> 装上扩展之后，用户必须去 DSH 设置页复制一个 64 位十六进制令牌，切到另一个窗口，
+> 粘进一个**看不见内容**的框里。做错一步的报错还会指向 harness。
+>
+> #### 一、先量，再决定动不动手
+>
+> 关键事实不是推理出来的，是**在真实 Chrome 里量出来的**
+> （`.tmp-run/probe-token-cors.js`，三种发起方各测一次）：
+>
+> | 发起方 | 结果 |
+> | --- | --- |
+> | 普通网页 `fetch` | `TypeError: Failed to fetch`（被 CORS 阻断） |
+> | 网页 `mode:'no-cors'` | `type:opaque, status:0, leaked:false`（请求发出，读不到） |
+> | **扩展页面** | `status:200, readToken:true` |
+> | **扩展 service worker** | `status:200, readToken:true` |
+>
+> 服务器看到的请求头里 **`origin: null`**。扩展的 `http://127.0.0.1/*`
+> `host_permissions` 让它能读 `lib/index.js:695-710` 的
+> `/api/browser-bridge/token`——而那条路由**只做 loopback 检查，不带任何 CORS 头**。
+>
+> #### 二、安全论证（这是整件事成立的前提，不是附注）
+>
+> **自动获取令牌不扩大任何人的读取权限。** 那条路由本来就对**本机上任何进程**开放
+> ——它的注释写明了「loopback-only unconditionally」，保护它的一直是浏览器的
+> same-origin policy，不是保密。扩展能读它，是因为 manifest 声明了那个 host
+> permission；网页读不到，是因为响应没有 `access-control-allow-origin`。
+>
+> 所以变的只是**所有者不必再当自己值的快递员**。红线也由此确定：
+> **绝不能给该路由加 CORS 头**——那才会真的把令牌广播给用户打开的任意网页。
+> 本轮 `lib/` **一行未改**，上述性质原样保留。
+>
+> #### 三、改了什么
+>
+> 新增 `extension/bootstrap.js`（`fetchBridgeToken(port, options)`，导出纯函数，
+> 便于注入 fetch 测试）。流程：先读 `/browser-bridge/health`，**`enabled: false`
+> 就停手并单独报「桥接被关掉了」**——用户在 DSH 里关掉桥接是明确的意思表示，
+> 悄悄连上去会让那个开关变成摆设。
+>
+> `extension/background.js`：`connect()` 在无令牌且非手动时调用 `enrol(port)`；
+> 失败**走同一条退避阶梯重试**（`scheduleReconnect()`）。
+>
+> `extension/options.js`：令牌字段改为「通常留空」，新增**重新取令牌**按钮；
+> 三种失败各给一句对症的话（无 harness / 桥接已关 / 应答无令牌），而不是
+> 一句「取不到令牌」把人打发去同时检查三件事。
+>
+> #### 四、自己抓到并修掉的两个真实缺陷
+>
+> 1. **enrol 失败后排重试**（第一版我写成直接 `return`，注释还把它论证成「不需要」）。
+>    真实顺序是**先装扩展、后启动 `dsh web`**；不重试就永远发现不了 harness 起来了，
+>    用户看到的是「桥接坏了，直到重启浏览器」。变异测试 B 精确命中这一条。
+> 2. **自动令牌被静默提升成手动**（`extension/options.js`）：`load()` 把取到的令牌
+>    写进字段，`save()` 又按「字段非空」判定为手动覆盖——于是用户**只要点一次
+>    「连接」**，令牌就被钉死，此后 harness 换令牌时扩展会拿着旧的连不上且无从察觉。
+>    修法：新增 `tokenEdited` 标志，只有**真实编辑事件**（`input`）才算手动；
+>    「重新取令牌」是程序清空，显式重置该标志。变异测试 C 命中。
+>
+> #### 五、测试装置的三处修正（都是真实的坑）
+>
+> - `test/service-worker.js` 的 `data:` URL 加载必须把 `bootstrap.js` 也改写成绝对
+>   URL，否则 `Invalid relative URL or base scheme is not hierarchical`，**整个套件
+>   挂死**（不是失败）——因为相对 specifier 无法对 `data:` 基址解析。
+> - `test/options.test.js` 同理；其 `chrome.storage.local.set` 原来是空操作，改为
+>   **真的存取**，否则自动取到的令牌读回来是空的，页面正确却测不出来。
+> - 新增 `test/bootstrap.test.js`。**它必须自己抢回真 `fetch`**：
+>   `panel-stream.test.js:196` 在模块作用域永久替换 `globalThis.fetch` 且从不恢复，
+>   而 `run.js` 先 import 全部套件再跑测试——那个 stub 对
+>   `/browser-bridge/health` 返回**没有 `enabled` 字段**的假响应，于是「桥接已关闭」
+>   这条被绕过、继续去取令牌，全量运行时它单独变红。沿用 `options.test.js` 已有
+>   的 `realFetch` 模式并加了守卫（若全局已被替换则**大声报错**而不是悄悄测错）。
+> - 另修 `closedPort()`：候选端口改为**随机取**。原先的固定端口会让上一个测试释放
+>   的端口被下一个测试的 `listen(0)` 复用，而前一个 worker 仍在重试，打进来污染计数。
+> - 负面断言（「没有发生请求」）改用**阳性信号**（health 已读 / settings 已读）作等待
+>   条件，而不是固定睡眠——睡眠无法区分「它拒绝了」和「它还没跑到」。
+>
+> #### 六、验证读数（全部实测）
+>
+> - `npm test` → **540 passed, 0 failed, 0 skipped**（基线 530，新增 10 条：
+>   `bootstrap.test.js` 6 条 + `options.test.js` 4 条）
+> - **真实 Chrome 端到端**（`.tmp-run/probe-enrol-real-browser.js`）：清空 storage
+>   的扩展自己读到 `sawHealth:1, sawToken:1`，并发起升级
+>   `upgradeTokenIsRight:true`，`upgradeOrigin:chrome-extension://hajmm…`，
+>   扩展自报 `tokenLength:64, manualToken:false`。
+> - **变异测试三条全部有效**：去掉自动注册 → 3 条红；去掉重试 → 1 条红（精确）；
+>   忽略 `manualToken` → 1 条红（精确）。
+> - `node .tmp-run/audit-all.mjs` → **32 scenarios, 0 findings, 0 broken**
+> - `npm run check:extension` 通过（并把新文件 `bootstrap.js` **补进了该脚本**——
+>   原先没有，是新文件暴露的缺口）
+>
+> #### 七、同步更新
+>
+> `README.md`：安装第 4 步改写为「打开扩展，点一下连接」，并说明令牌字段的用途是
+> 手动指定；测试数 523→540；验收清单第 2 条改为「不填令牌直接点连接，状态点变绿」。
+> `package.json`：`check:extension` 补 `bootstrap.js`。
+>
+> #### 八、用户需要做的一件事
+>
+> 在 `chrome://extensions` **重载扩展**（改的是 `extension/*`，不需要重启 `dsh web`）。
+> 重载后打开选项页，**不填令牌**直接点「连接」应即变绿。
+>
+> #### 九、遗留
+>
+> 1. `origin: null` 这个观测值得记一笔：扩展页面的跨域 fetch **不带 Origin 头**，
+>    所以服务端现有的 `isExtensionOrigin` 校验对这条路径不适用。令牌路由只查
+>    loopback 正是因此仍安全（网页的 fetch 必带 Origin，会被 CORS 挡住），
+>    但**以后若有人给该路由加上依赖 Origin 的逻辑，要重新验证扩展页面的行为**。
+> 2. `.tmp-run/` 仍被 gitignore（`preview.mjs` / `audit-all.mjs` / `audit-in-page.js`
+>    及本轮两个探针都不随仓库交付），与 v67 遗留相同，未擅自改。
+
+> ### v67：侧栏三处「只在图里错」的几何缺陷，以及让审计仪器长出眼睛（历史轮）
+>
+> 这一轮没有加功能。做的是**把侧栏渲染出来、量它、然后修**——因为本项目
+> 历史上每一个 UI 缺陷都是**看出来的**，而当时的审计仪器是绿的。
+>
+> #### 一、仪器当时是绿的，缺陷是真的
+>
+> `.tmp-run/audit-all.mjs` 会跑 15 个场景 × 2 配色 × 2 个页面（侧栏 + 设置页），
+> 每次都用 `audit-in-page.js` 在**面板自己的上下文里**测量对比度、点击目标、
+> 溢出、裁切、flex 挤出、字号，并自报 `coverage`。**基线：32 个场景 0 findings。**
+>
+> 而本轮用 `preview.mjs --probe` 亲手量出三个缺陷，**它一个都没报**：
+>
+> | # | 缺陷 | 实测证据 | 用户可见后果 |
+> |---|---|---|---|
+> | A | `#input` 是面板里**唯一 radius 0** 的元素（其余盒子 6/8/10/12/16/999），聚焦时套 `outline: 2px solid rgb(66,98,240)` | `input.radius 0` vs `#composer 16`；`ringStillOnInput true` | 打开侧栏第一眼：方框蓝环嵌在圆角卡片里 |
+> | B | 输入行与工具栏首项错位 | `inputTextLeft 22` vs `modelTextLeft 30`，**Δ = −8px** | 两行左边界不齐，读起来像失误 |
+> | C | 「更早的内容」胶囊压住第一条消息 | 与用户气泡重叠 **2617px²**，`elementFromPoint` 确认它在最上层；且 `scrollHeight 559 = clientHeight 559` | 被遮的文字**滚不出来**，永久看不到 |
+>
+> C 的关键在于 **C 只在「内容不溢出」时才是缺陷**：同样的浮层在
+> `earlier` 场景（`925 > 559`，可滚动）覆盖 1725px² 是**正常设计**——用户滚一下
+> 就把它移出胶囊。修之前必须把这两者分开，否则修的是设计而不是缺陷。
+>
+> #### 二、三处修复（只动 `extension/sidepanel.html`）
+>
+> - **A**：`textarea:focus-visible { outline: none }`，环移到
+>   `#composer:has(textarea:focus-visible) { box-shadow: var(--elevation), 0 0 0 2px var(--accent) }`。
+>   用 `:has()` 是因为胶囊/输入框与卡片是**兄弟**关系，没有后代选择器能表达。
+>   两处细节都是踩过的坑：`outline: none` 之后 computed `outline-width` 仍是
+>   `medium`(3px)，**只有 `outline-style` 决定画不画**（第一版探针就是被这个骗了）；
+>   环必须**追加**在 `--elevation` 之后，否则聚焦时卡片丢阴影。
+> - **B**：`#input` 的 padding 从 `4px 0` 改成 `4px 0 4px 8px`，与 `#model` 自己的
+>   8px 相加后同落 30px。
+> - **C**：胶囊高度/内缩提为令牌 `--pill-height: 26px` / `--pill-inset: 8px`，并新增
+>   `#stage:has(#earlier:not([hidden])) #transcript { padding-top: calc(var(--pill-inset) + var(--pill-height) + 6px) }`
+>   让滚动区**为它留位**。守卫是必需的：无条件留白会让每一段普通对话顶部多一条空带，
+>   那比原缺陷更糟。
+>
+> #### 三、给仪器补上「谁盖在谁上面」——并证明它真的会响
+>
+> `audit-in-page.js` 原有的 `overlaps` 检查只看 **flex row 内部**子元素挤不挤；
+> 绝对定位浮层盖住滚动区内容，**没有任何容器型断言能表达**。这就是 C 溜过 32 个
+> 场景的原因。新增第 7 项 `occlusions`，判据刻意收窄以免喊狼来了：
+>
+> - 候选只限 `position: absolute|fixed`（普通文档流永远不可能被报）；
+> - 目标只限滚动区**自己的子元素**（菜单盖住 composer 是菜单的本职，不报）；
+> - 矩形相交不够，还要用 `elementFromPoint` 问**浏览器谁真的画在最上面**；
+> - 覆盖超过视口 80% 的层排除（`#blocked` 这类整屏状态页本就该盖住一切）；
+> - **只有滚不出来的遮挡才算缺陷**（`scrollHeight > clientHeight + 2` 为假时）。
+>
+> 最后一条是**实测校准出来的**：同一块面板上，`more`（559=559）报永久 2617px²，
+> `earlier`（925>559）报可逃逸 1725px²。只报前者。
+>
+> **变异测试**（`.tmp-run/probe-occlusion-selftest.js`）：把留白改回 12px 放回缺陷，
+> 新检查**立刻报出 2617px²**——与修复前独立测得的数字**逐位相同**，
+> 且 `scrollerScrollHeight 559 = scrollerClientHeight 559` 佐证不可滚动。
+> 探针在 audit **之前**求值，所以变异能被随后的审计看到（`preview.mjs:776-809`）。
+>
+> 一个永远返回空数组的检查和一个真的干净的检查，输出**完全一样**——
+> 这正是 `coverage` 字段存在的理由，也是这里必须做变异测试的理由。
+>
+> #### 四、新增回归测试：`packages/dsh-browser-bridge/test/panel-geometry.test.js`
+>
+> 5 条，断言的是**结构性不变量**而不是像素值（面板还要改版）：
+> 编辑器自己不画环、环画在圆角卡片上且保留 elevation、composer 两行**文本起点必须相等**
+> （`cardLeft + editorLeft === cardLeft + modelLeft`，抽成等式而非硬编码数字）、
+> 胶囊高度只有**一个出处**（令牌）、留白规则**必须带 `:has()` 守卫**。
+>
+> 每条都做了变异测试，全部会变红：
+>
+> | 变异 | 变红的测试 |
+> |---|---|
+> | 把直角环放回 textarea | 「editor draws no focus ring」+「ring on the rounded card」 |
+> | 去掉 `#input` 的 8px 内缩 | 「two lines of the composer agree」 |
+> | 删掉 `#stage:has(...)` 留白规则 | 「pill states its height once」+「reservation is conditional」 |
+>
+> **测试数 525 → 530**（新增 5 条，41 个 suite）。
+>
+> #### 五、本轮验证读数（全部实测）
+>
+> - `node packages/dsh-browser-bridge/test/run.js` → **530 passed, 0 failed, 0 skipped**
+> - `node .tmp-run/audit-all.mjs` → **32 scenarios, 0 findings, 0 broken**
+> - 焦点环双向：`focused true / blurred false / refocused true`，且
+>   `ringIsTheOnlyDifference true`（环是唯一差异，其余阴影逐字不变）
+> - 负向探针 `probe-ring-snapshot.js` 的第一版**是错的**：`getComputedStyle()`
+>   返回**活对象**，先取 `blurred` 再 `focus()`，读到的已是聚焦后的值，
+>   于是报了一个不存在的缺陷。教训：**计算样式必须在读到的当下转成字符串快照**。
+> - 面板**不抢焦点**：`blur()` 后 `activeElement` 是 `body`；`send.focus()` 无效
+>   仅因 `sendDisabled: true`（正确行为）。此前一个探针疑似「面板抢焦点」，是探针误报。
+>
+> #### 六、顺带确认：设计系统没有漂移
+>
+> `probe-design-tokens.js` 从 `:root` 读令牌再逐节点比对：
+> `radiusDrift 0`（圆角全部落在 6/8/10/12/16/999）。`sizeDrift` 只报出
+> `#new` 的 15px 与 `code` 的 **12.88px**——后者经查是 `.answer :not(pre) > code`
+> 的 `font-size: .92em`（14 × 0.92），**刻意的相对字号**，注释里已写明它必须与
+> `pre code { font-size: 1em }` 分开，否则会掉到 11px（低于面板自己的字号下限）。
+> `spacingDrift` 报的 6/14/5/2 是面板惯例（`--spacing` 变量本身只被用过 1 次），
+> **不是缺陷**。结论：这三个不是漂移，是探针判据过严。
+>
+> #### 七、下一步（未做，留给下一轮）
+>
+> - 侧栏改动**只对扩展生效**：用户在 `chrome://extensions` 点一次「重新加载」即可看到，
+>   不需要重启 `dsh web`（`lib/*.js` 才需要）。
+> - `.tmp-run/` 被 `.gitignore` 忽略，所以 `occlusions` 检查**不随仓库交付**。
+>   若要让它成为交付物，得把 `preview.mjs` / `audit-all.mjs` / `audit-in-page.js`
+>   移出 `.tmp-run/` 并纳入版本控制——这是个独立决定，本轮没有擅自做。
+> - README §诚实的能力边界 与 §与 Codex 能力的差距 两节**未改动**。
+>
+> ### v66：本项目第一次让真实扩展操作真实页面（本轮新增能力）
+>
+> 前面 65 轮里，`extension/background.js` 从来**没有在真浏览器里跑过**。所有扩展测试都是
+> 假 `chrome` + 真 WebSocket 帧，只能证明**帧的形状**；CDP 参数名写错、`DOM.getBoxModel`
+> 的 quad 读错偏移、`Input.dispatchMouseEvent` 落在错误的坐标空间——在假 `chrome` 下
+> 全都**静默成功**：形状对，点落到别处。这一轮把这道口子堵上了。
+>
+> #### 一、被推翻的结论：`--load-extension` 并没有消失
+>
+> README:1423 / README:1674 / HANDOVER:1548-1550 / HANDOVER:3529 都记着同一句话：
+> 「Chrome 137 已移除 `--load-extension`（本机 Chrome 153 实测，有头与无头都不行），
+> 所以本项目测不了真 Chrome e2e」。**实测本身没错，结论推广过头了。**
+>
+> 该开关只在**稳定版渠道**被关掉——稳定版要保护用户不被侧载扩展打扰。而 Chromium 与
+> Chrome for Testing（两者是同一份 Chromium，只是渠道不同）必须保留它，因为所有浏览器
+> 自动化项目的扩展测试都靠它。`.tmp-run/probe-load-extension-matrix.mjs` 用三条独立证据
+> （内容脚本隔离世界 / `service_worker` target / 按路径哈希算出的扩展页能否打开）重测：
+>
+> | 二进制 | service worker | 扩展页 |
+> |---|---|---|
+> | Playwright Chromium 153.0.8010.12 | ✅ | ✅ |
+> | Puppeteer Chrome for Testing 148.0.7778.97 | ✅ | ✅ |
+> | `chrome-headless-shell` 153 | ❌ | ❌ |
+> | 稳定版 Chrome 153（含 `--disable-features=DisableLoadExtensionCommandLineSwitch` 重试） | ❌ | ❌ |
+>
+> 上一次之所以得出「不行」，是**只测了稳定版**，并且用了 `contentScriptCanSeeRuntime`
+> 这个**在主世界取值**的判据。扩展 API 只在**隔离世界**里存在（内容脚本注入的世界名 `DSH`），
+> 主世界读 `chrome.runtime` 拿到 `undefined` 是正常的——那不是「没注入」，是**判据错了**。
+>
+> #### 二、新建两个文件：装置与测试分开
+>
+> `packages/dsh-browser-bridge/test/extension-host.js`（装置，599 行）：
+> `findChromium()` / `extensionIdFor()` / `Cdp` / `ExtensionHost` / `FixtureServer` / `openTarget()`。
+> `packages/dsh-browser-bridge/test/real-browser.test.js`（4 条测试）。
+>
+> 起点是 `--load-extension=<repo>\extension --disable-extensions-except=<repo>\extension`，
+> 然后**让扩展自己 dial 到测试进程的假宿主**——不是直接调 `handleFrame`。写入
+> `chrome.storage.local` 的 port/token 触发扩展自己的 `storage.onChanged` 重连，
+> 于是**真实的 `connect()` 路径**被跑到了，这是假宿主永远无法自己走通的那一段。
+>
+> 四条测试：
+>
+> 1. 扩展 dial 上来并应答 `bridge.status`；版本与 `chrome.runtime.getManifest().version`
+>    **逐字比对**（不硬编码，否则下次改版本号测试还绿）；假宿主收到真实 `bridge/hello`。
+> 2. `page.snapshot` 在真实页面蒸馏出元素且**带实测 bounds**；`page.read` 读到页面自己的
+>    散文（`quick brown fox`）；`page.click` 按 selector 点击后，**回到页面里核对
+>    `#result` 由 `idle` 变成了 `clicked`**。最后这步是任何 mock 都做不到的。
+> 3. 受保护 CDP 域（`Browser.getVersion`）被拒且是 `cdp-denied`；未知方法被拒且是
+>    `unknown-method`——两种拒绝不能混为一谈。
+> 4. 扩展自己的页面（`options.html`）能打开、`chrome.storage` 真的能写能读能删；
+>    同时**反证**普通网页里 `chrome.storage` 必须是 `undefined`。
+>
+> #### 三、装置里挖出来的真实缺陷（都不是猜的，是实测）
+>
+> **1. `/json/new` 只接受 `PUT`，`GET` 返回 405。** 三个二进制全一样：
+> `405 Using unsafe HTTP verb GET to invoke /json/new. This action supports only PUT verb.`
+> 我原来的 `openPage()` / `openExtensionPage()` 用的是 `GET`——**一个标签页都开不出来**。
+> `.tmp-run/probe-json-new-verb.js` 实测：`GET` 后 fixture 标签页数 **0**，`PUT` 后 **1**。
+> 更糟的是失败形态：调用方随后按 URL 去 `/json/list` 找「刚开的页面」，
+> 要么等到超时，要么在该 URL 恰好已打开时**静默返回错误的标签页**。
+> 两种失败在一份全绿的测试报告里都看不出来。
+>
+> **2. 按 URL 匹配标签页是不可靠的。** fixture 页 URL 与被操作的那个标签页完全相同，
+> `targets().find(...)` 就在两个 URL 相同的 target 之间**任选一个**——一个读起来像
+> 随机失败的硬币。改成 `pageForTab(tabId)` 走 `chrome.debugger.getTargets()` 拿扩展自己的
+> tabId → targetId 映射，在源头消除歧义；`openPage` 用 `/json/new` 返回的 target id。
+>
+> **3. 连上 target ≠ 文档已解析。** target 一被创建就能连，此时 `document.title` 返回 `""`，
+> **不报错**，所以没有重试——断言会以「options 页没有 title」的形式失败，
+> 读起来像缺 `<title>`，实际是竞态。三个打开页面的方法都等 `document.readyState`。
+>
+> **4. 二进制的发现必须是动态的。** Playwright 与 Chrome for Testing 都装进**带版本号的
+> 目录**（`chromium-1243/`、`chrome/win64-148.0.7778.97/`）。我第一版写死了字面路径，
+> **在那台机器上正好命中**，任何一次升级都会让它静默全跳过。现在按安装根目录 + 正则 +
+> 版本号倒序发现。`DSH_BB_CHROMIUM=<路径>` 可覆盖；给了不存在的路径返回未找到而**不回退**，
+> 拿别的浏览器冒充被要求的那个比跳过更糟。
+>
+> **5. 全程 `--headless=new`（硬要求）。** 套件每次运行起若干浏览器实例，有头模式会在用户
+> 工作期间反复抢焦点——这条是用户当场提出来的，不是我自己想到的。改无头后 4 条全绿，
+> 且 Chrome 进程残留为 **0**。
+>
+> #### 四、防护力：三次故意破坏产品代码，恢复后逐字节一致
+>
+> 只让测试变绿不算数，得证明它**会红**。`extension/background.js` 每次改前先记 SHA-256
+> （`5BCEB8AC…EE92`），恢复后再比对：
+>
+> | 破坏 | 结果 |
+> |---|---|
+> | `pageClick` 坐标写死成 `(0, 0)` | 点击那条**变红**（页面里 `#result` 没变成 `clicked`） |
+> | `announce()` 事件名改成 `bridge/hello-disabled` | 握手那条**变红**（假宿主没收到 `bridge/hello`） |
+> | `CDP_DENIED_DOMAINS` 删掉 `Browser` | 拒绝那条**变红** |
+> | `/json/new` 打回 `GET` | 装置那条**变红** |
+>
+> 三次恢复后 `background.js` 均为 **byte-identical**，`node --check` 通过。
+>
+> #### 五、结果
+>
+> `npm test` **523 passed, 0 failed, 0 skipped**，exit 0，**34.1 秒**（含起 4 个浏览器实例）。
+> `npm run check:extension` exit 0。无残留 Chrome 进程。
+
+> ### v65：看不见屏幕的人，这个面板从头到尾没有对它说过一句话（本轮修复）
+
+> 用键盘的人上一轮（v45）被照顾到了，这一轮查的是**用屏幕阅读器的人**。
+> 结论是：面板里**一个 live region 都没有**（探针实测 `liveRegions: []`），
+> 于是 23 处错误提示、阻塞性的审批提问、以及回答本身，全都静默发生。
+>
+> #### 一、23 处失败提示写进了一个不会被播报的元素
+>
+> 每一条错误都走 `say()`，它写 `#toast`。而 `#toast` 既没有 `role` 也没有
+> `aria-live`，更要命的是它**在自己为空时带 `hidden`** —— 而那正是消息到达的时刻。
+> 实测（`.tmp-run/probe-toast-order.js`）：先写文本再解除 `hidden`，得到
+> `inTree: false` 且 `textLength: 24`，即**文本落地时元素不在无障碍树里**。
+> live region 必须**在变化发生之前**就在树里，否则没有节点让阅读器去「观察到变化」。
+>
+> **修法**：`#toast` 改为 `role="status" aria-live="polite"`，并且**永不 `hidden`**；
+> 它由样式表的 `#toast:not(:empty) { padding: … }` 控制占位，空时高度自然为 0。
+> 实测三个判据：有消息时 `inAccessibilityTree: true`、空时 `layoutHeight: 0`、
+> 清空后仍在树里（`stillObservableAfterClear: true`）。
+>
+> #### 二、transcript **不能**做 live region
+>
+> `transcript.replaceChildren(fragment)` 在 6 处出现，每次轮询重建整棵子树；
+> 而 `.live-body` 更是**每帧 `body.textContent = live.text` 重写整个累积答案**。
+> 把 transcript 设为 live region 会在每次重建时重播整段对话、每个 token 重播整个回答。
+> 所以新增一个独立的、视觉隐藏的 `#announcer`（`.sr-only`），只播报三件事：
+>
+> | 时机 | 播报内容 | 为什么需要 |
+> |---|---|---|
+> | 审批提问出现 | 「要在 … 上使用 browser_read」 | 它**阻塞整个回合**，而屏幕上只是一张卡 |
+> | 宿主不可达 / 无会话 | 「连不上 dsh web」/「还没有会话」 | 内容区空着，没有任何解释 |
+> | 回答结束（`kind === 'end'`） | 完整回答 | **唯一**文本已定稿的时刻 |
+>
+> #### 三、修这个缺陷时我自己造出的第三个缺陷（本轮最有价值的部分）
+>
+> 加上播报后，实测 `atProbeStart: "还没有会话"` —— 一个**健康启动**也会报这个。
+> 根因不是播报本身，而是 `refreshGroups` 里的顺序：
+>
+> ```js
+> const { payload, status } = await bridge('/browser-bridge/chat')
+> setHostReachable(status !== 0)   // ← 先重绘，此时 groups 还是上一轮的（空）
+> groups = understood ? payload.groups : []
+> ```
+>
+> `setHostReachable` 会重绘「没东西可显示」的面，而它**读 `groups` 来决定是哪种状态**。
+> 先重绘，就从**上一轮的空列表**画出了「还没有会话」，然后数据到达再自我纠正。
+> 屏幕阅读器**收不回已经播报出去的话**。修法是把赋值挪到重绘之前。
+>
+> 第二个自己造的问题：`renderOffline` 每次轮询都跑，宿主可能几分钟不可达，
+> 于是加了「只在状态**转变**时播报」的守卫（`announcedOffline`），
+> 以及在面消失时**清空播报区**（否则残留文本会让后来的读取者以为面板仍然不能用）。
+>
+> #### 四、测试这样写（因为两个显而易见的写法都测不到）
+>
+> 这个缺陷**用采样测不出来**，两个原因叠加：
+> 1. 误报**先写后清**，事后采样只看到干净的空值；
+> 2. `announce` 用 `setTimeout` 延迟写入，而它的回调**跑在 `setImmediate` 之前**，
+>    所以 `await settle()`（只清微任务）和轮询循环都看不见那一瞬。
+>
+> 最终写法：**拦截 `textContent` 的 setter**，在 import `sidepanel.js` **之前**装好，
+> 记录每一次写入；断言取的是**非空写入的完整历史**，而不是最终值。
+> 两处细节都要对：`startupAnnouncements` 必须是**函数**而不是加载时的快照（写入还没发生）。
+>
+> **防护力逐项实测**（回退 → 跑 → 还原 → SHA256 逐字节一致）：
+> 去掉审批播报 → 1 条红；去掉 `end` 的流式守卫 → 1 条红（报 `must be announced once, got: `）；
+> **把 `setHostReachable` 挪回 `groups` 之前 → 1 条红，消息精确指出
+> `said: ["还没有会话"]`**。
+>
+> #### 五、审计器因此要改一处（`.tmp-run/audit-in-page.js`）
+>
+> 新加的 `.sr-only` 区域让全量审计从 0 变成 **32 场景各 1-2 条**：
+> `overflow -1..0 vs 380 p#announcer.sr-only` 与 `clipped 20 > 1`。
+> 那是**这个技术本身的样子**（1×1、clip-path 裁掉），不是缺陷 ——
+> 而 `display:none` 不能用来隐藏 live region，否则它又不在树里了。
+> 已加 `isVisuallyHidden(element)` 豁免，**按计算样式判定而不是按类名**：
+> 必须同时满足 1×1、`overflow: hidden`、`clip-path`/`clip` 非 `none`。
+> **实测豁免是窄的**：塞一个真的 900px 宽元素进去，审计照旧报
+> `overflow 0..900 vs 380 div#probe-wide`。
+>
+> #### 验证（全绿）
+>
+> | 项目 | 结果 |
+> |---|---|
+> | `npm test` | **519 passed, 0 failed, 0 skipped**，exit 0（连续 2 次） |
+> | `npm run check:extension`（10 个脚本） | exit 0 |
+> | UI 审计 32 场景 × 深浅两配色 | **0 findings / 0 broken** |
+> | live region 实测 | 从 `[]` 变为 `#toast` + `#announcer` 两个 `role="status"` |
+> | 字典 | 84/84 / 37/37 键对齐，0 死键 |
+> | `chrome-profile-*` / `.bak` 残留 | 0 / 0 |
+> | 用户线上实例 `dsh web --port 3080`（PID 36172） | 全程未触碰 |
+>
+> #### 交付
+>
+> 截图：`.tmp-run/v65-approval-zh.png`（已 `read_image` 目视确认：审批卡三按钮同权、
+> 代码块与错误行正常、播报区按设计不可见）。
+> 探针：`probe-live-regions.js`、`probe-toast-order.js`、`probe-announcer.js`、
+> `probe-startup-silence.js`、`probe-announce-why.js`。
+> **只改 `extension/` 与测试 → 重载 Chrome 扩展即可，不需重启 `dsh web`。**
+
+> ### v64：状态浮层里那行「限制」永远不会出现，出现时又把浮层撑成 4 倍宽（历史轮）
+
+> 状态浮层（页脚那个小圆点）会为 `status.hello.limitations` 里的每一条画一行。
+> 那个数组**从来没被送到过**，而且就算送到，**那一行也画不对**。两个缺陷互相掩盖：
+> 前一个让行不出现，后一个让人看不出它出现了会怎样。
+>
+> #### 一、扩展从来不发送 limitations
+>
+> 扩展把 limitations 建在 `status()` 里（`extension/background.js`），那回答的是
+> **`bridge.status` 方法**，走 `browser_status` 工具——面板读的是另一条路。
+> 面板读 `health.status.hello.limitations`，而 hello 的载荷是**硬编码的 `{ version }`**：
+>
+> | 环节 | 位置 | 事实 |
+> |---|---|---|
+> | 扩展发送 | `extension/background.js`（连接时的 `bridge/hello`） | 只发 `{ version }` |
+> | 宿主保存 | `lib/index.js` 的 `StatusTracker.onHello` | 原样存，不加字段 |
+> | 卡片读取 | `lib/client.js:661`、`:685-688` | 读 `status.hello.limitations` |
+>
+> 探针 `.tmp-run/probe-limitations-reach.mjs` 从三个源文件直接读，报
+> `helloKeys: ["version"]`、`noteRowCanEverRender: false`。
+> **宿主读不到的东西，扩展就永远没说过。**
+>
+> #### 二、就算送到了，那一行也是拿段落当标签
+>
+> 那一行的标签用的是 `translate('note')`——而 `note` 是字段下面那段**整句话**
+> （「把令牌和端口……一起填进……选项页。其余设置……」）。
+> `.dshbb-line` 是 `display:flex`，标签 `flex:none`，于是渲染成
+> **1150px 的标签塞进 308px 的行**，实测：
+>
+> | 项目 | 数值 |
+> |---|---|
+> | 标签宽度 | 1150px（父容器的 **3.74 倍**） |
+> | 行高 | 1270px |
+> | 溢出视口 | 2 处（light 与 dark 都复现） |
+>
+> 只有当 limitations 真的出现时才会暴露——所以**这两个缺陷必须一起修**，
+> 修好第一个才会让第二个显形。
+>
+> #### 修法
+>
+> **`extension/background.js`**：新增 `limitations()` 与 `announce()`。连接时改发
+> `{ version, limitations }`。`limitations()` 里做了**真实检测**而不是无条件写死一句话：
+> 调 `chrome.extension.isAllowedFileSchemeAccess()`，**只有确定返回 `false` 才出这一条**
+> （API 不存在、调用失败、返回 `true` 都不出）。
+> 理由写进了注释：**一行不管有没有问题都显示，等于教人不要读它**。
+> 「查不出来」与「没问题」在这一行上的正确表达都是沉默。
+> 该函数**自己吞掉异常**，因为同一个帧还要运 version——一个 API 不可用不该让版本号一起消失。
+>
+> **`lib/client.js`**：新增字典键 `limitation`（中「限制」/英 `Limitation`），
+> 那一行改用它做标签；`note` 仍然只做段落。
+>
+> #### 新增测试（513 → 518）
+>
+> - **`packages/dsh-browser-bridge/test/hello-wire.test.js`（4 条，新文件）**：加载**真实的
+>   `extension/background.js`** 配假 chrome、走真 WebSocket 帧，断言 greeting 里真的带了
+>   limitations。四条的判据是「该出现的出现」+「**不该出现的绝不出现**」：
+>   文件访问关着→恰好一条且点名那个设置；开着→**空**；API 不存在→**空**；调用失败→**空**；
+>   以及失败时 version 仍要在。
+> - **`test/client-render.test.js` 加 1 条**：渲染真实组件，打开浮层，断言限制**真的有那一行**
+>   且**标签是「限制」而不是那段话**。
+>
+> **装置缺口（这一轮一半的价值）**：`test/service-worker.js` 的假宿主**把无人认领的帧丢掉了**
+> （只按 `id` 匹配请求）。而 `bridge/hello` 没有 id——所以**「扩展停了某个通知」和
+> 「扩展照常发」在测试里长得一模一样**。这是第二个缺陷能活下来的原因。
+> 现在它记录 `notifications`，这两个套件才能读到真实载荷。
+>
+> **防护力逐项实测**（回退 → 跑 → 还原 → SHA256 逐字节一致）：
+> 恢复「只发 version」→ **4 条红**；把 `allowed === false` 放宽成 `allowed !== true`
+> （即变回无条件提示）→ **2 条红**；标签换回 `note` → **1 条红**。
+>
+> #### 验证（全绿）
+>
+> | 项目 | 结果 |
+> |---|---|
+> | `npm test` | **518 passed, 0 failed, 0 skipped**，exit 0（连续 3 次） |
+> | `npm run check:extension`（10 个脚本） | exit 0 |
+> | 浮层 7 种状态 × 深浅两配色像素审计 | 全部 **0 findings / 0 broken** |
+> | `extension/locales.js` / `lib/client.js` 字典 | 84/84 / 36/36 键对齐，0 死键 |
+> | `chrome-profile-*` 残留 | 0 |
+> | 用户线上实例 `dsh web --port 3080`（PID 36172） | 全程未触碰 |
+>
+> #### 顺带修掉的装置缺陷（同一类问题第二次出现）
+>
+> `.tmp-run/card-preview.mjs` 的伪宿主 health 响应**自己编了字段**
+> （`chromeVersion`/`controlledTabs`/`extensionVersion`），既缺 `status` 也缺
+> `settingsRegistered`——于是卡片一直渲染「设置命名空间 / **未注册**」，
+> **一个正常安装永远看不到的状态**，而卡片真正读的那几个字段从来没被走到过。
+> 已按 `lib/index.js` 的真实响应体改写，并新增 `--state`
+> （`ok`/`hostDown`/`disabled`/`unregistered`/`lastError`/`limitations`/`tokenless`），
+> 让条件行第一次能被逐个渲染和测量。
+> **这是 v63 芯片 fixture 的同一类错误：fixture 的形状不是真实契约的形状，
+> 测试和审计量到的就是另一条代码路径。**
+>
+> #### 交付
+>
+> 截图（`.tmp-run/`）：`v64-note-fixed-light.png`、`v64-note-fixed-dark.png`（限制行）、
+> `v64-status-{ok,limitations,lastError}.png`、`v64-card-{ok,lastError,tokenless,...}.png`。
+> 探针：`.tmp-run/probe-limitations-reach.mjs`。
+> **只改 `extension/` 与 `lib/` → 重载 Chrome 扩展 + 重启 `dsh web`。**
+
+> ### v63：v62 改了浮层里的颜色，却从没渲染过浮层（历史轮）
+
+> v62 在设置卡片里量了 21 处文字，把 6 条颜色声明从 `label-tertiary` 提到
+> `secondary`——其中一条就在**页脚状态浮层**里。而那个浮层**只在点击之后才存在**，
+> v62 的预览工具 `--open` 写死点 `.dshbb-card-header`（卡片的折叠头），
+> 所以**浮层一次都没有被渲染过，v62 那条改动是未验证的**。本轮补上。
+>
+> #### 三个缺陷，都是「第一次看见」才暴露的
+>
+> | 症状 | 量出来的事实 |
+> |---|---|
+> | 浮层在窄侧栏里跑出屏幕 | `width:330px` 是**固定值**。300px 视口下浮层右边缘在 **362px**，里面 5 行字段跟着一起出界 |
+> | composer 芯片写着协议名 | 芯片渲染 `https://github.com · 选中内容 · 1234 字`，而宿主自己的 `describeAttachment` 对同一条记录说的是 `selected text from github.com` |
+>
+> 第二行不是笔误，是**同一份数据在同一个仓库里被两种写法描述**。`lib/context.js`
+> 的 `origin` 存的是**完整 origin**（`new URL(url).origin`，带 `https://`），
+> 宿主侧的 `describeAttachment` 注释里写明了「a label names a *site*」所以它 `new URL(v).host`
+> 把协议剥掉；而 `lib/client.js` 的 `chipLabel` 直接拿 `origin` 当 host 用。
+>
+> #### 为什么两个都逃过了测试
+>
+> `test/client-render.test.js` 的芯片 fixture 写的是 `origin: 'github.com'`——
+> **一个裸 host**，于是它走的是「origin 非空」分支，**`new URL()` 那条路径从未被执行**。
+> fixture 和真实记录形状不一致时，测试量的是另一条代码路径。
+> 已改为 `origin: 'https://github.com'`，并把宿主契约写在注释里。
+>
+> #### 修法
+>
+> - `lib/client.js` 的 `.dshbb-panel` 宽度 `330px` → **`min(330px, calc(100vw - 24px))`**；
+>   `.dshbb-chip` 的 `max-width: 340px` 同样加上钳制。**这是面板在 v36 就用过的写法**
+>   （`extension/sidepanel.html:454`、`:915`），同一个产品里两种做法，芯片与浮层是错的那边。
+> - `chipLabel` 新增 `hostOf()`，`origin` 与 `url` 都过它，与宿主 `describeAttachment` 对齐。
+>
+> #### 新增两条测试（512 → 513）
+>
+> - `no surface wider than the sidebar is pinned to a fixed width`：浮层与芯片必须
+>   同时满足「没有固定 px 宽度」与「含 `calc(100vw - Npx)` 钳制」。选择器列表计数锁死。
+> - 芯片那条测试补三句断言：不得含 `://`、仍须含 `github.com`。
+>
+> **防护力逐项实测**（回退 → 跑 → 还原 → SHA256 逐字节一致 `BA895AF6…3770`）：
+> 浮层宽度改回固定 330px → **1 条红**；`chipLabel` 改回直接用 `origin` → **1 条红**。
+>
+> #### 预览工具的两处修正（装置缺陷，不是产品缺陷）
+>
+> 1. **`--open` 写死了卡片的选择器**，所以浮层无法被打开。现在按表面选控件
+>    （card→`.dshbb-card-header`、status→`.dshbb-trigger`），chips 没有展开态就**明确报错**，
+>    而不是静默截一张没打开的图。
+> 2. **`#shell` 的 `margin: 0 auto` 把状态面居中了**，浮层锚点被推到 x=72，
+>    审计于是报出产品「溢出视口」——**那是装置造的假缺陷**。真实侧栏的页脚动作贴着左边缘，
+>    已改成 `margin: 0`。**修正前后都跑过审计，修正后 4 个组合（300/380 × 深浅）全部 0 findings。**
+> 3. **探针必须以 IIFE 收尾**。`--probe` 走 `Runtime.evaluate`，一个裸 `return`
+>    是语法错误，而 CDP **不会 reject、只会永不 settle**——症状是进程挂死而不是报错。
+>    已写进探针文件头注释。
+>
+> #### 验证（全绿）
+>
+> | 项目 | 结果 |
+> |---|---|
+> | `npm test` | **513 passed, 0 failed, 0 skipped**，exit 0 |
+> | `npm run check:extension`（10 个脚本） | exit 0 |
+> | 浮层：300/380px × 深浅两配色（`--open`） | **4 组全部 0 findings** |
+> | 芯片：440px 浅色 | **0 findings**，`chipShowsScheme: false` |
+> | 扩展 UI 审计 32 场景 × 双配色 | **0 findings / 0 broken**（无回归） |
+> | 字典 | 84/84 键对齐 |
+> | TEMP `card-preview-*` / `.tmp-run` `chrome-profile-*` | 0 / 0 |
+> | 用户线上实例 `dsh web --port 3080`（PID 36172） | 全程未触碰 |
+>
+> #### 交付截图
+>
+> `.tmp-run/v63-status-light-380.png`、`v63-status-light-300.png`、`v63-status-dark-380.png`、
+> `v63-status-dark-300.png`、`v63-chips-light.png`——中文界面，浮层完整可见（桥接/扩展/在途调用/
+> 站点规则/扩展令牌 + 复制令牌按钮），芯片显示 `github.com · 选中内容 · 1234 字`。均已目视确认。
+>
+> **本轮产品改动只有 `packages/dsh-browser-bridge/lib/client.js`（宽度钳制 ×2 + `chipLabel`）
+> → 刷新 DSH 页面即可，扩展无需重载，也不用重启 `dsh web`。**
+
+> ### v62：设置卡片终于能被截图了，而它第一次被拍到就露了色（本轮修复）
+>
+> v61 让这个浏览器端产物**第一次被渲染**，用的是自建的树形最小 React——它能断言
+> 「画了什么字」，但**画不出像素**：没有 DOM 元素、没有 CSS 引擎、没有布局。于是
+> v61 结尾留下的那句「设置卡片仍未被像素级审计过」就是本轮要拆的东西。它现在被拆掉了。
+>
+> #### 拆掉它的代价：这个产物比 `extension/` 那两个页面难渲染
+>
+> 它不是 HTML 文档，而是宿主 shell 加载并挂进自己 React 树的一个 bundle。要看到它
+> 真实的样子，三样缺一不可，而本机三样都不在位：
+>
+> 1. **真实的 bundle**——就是 `lib/client.js` 自己，不是副本。
+> 2. **一个 React**——本机**任何位置都没有装 React**（`@deepseek-ai/dsh`、
+>    `~/.dsh/profiles/node_modules`、仓库都没有；仓库根本没有 `node_modules`）。
+> 3. **真实设计 token**——卡片 CSS 全写成 `var(--dsw-alias-*)`，一个都不解析的话
+>    测出来的颜色和用户看到的毫无关系。
+>
+> 于是新建 `.tmp-run/card-preview.mjs`（`card` / `chips` / `status` 三个表面，
+> 支持 `--scheme` / `--locale` / `--open` / `--width` / `--audit` / `--probe`）与
+> `.tmp-run/card/card-boot.js`（自带 DOM 版最小 React：`createElement` / `useState` /
+> `useEffect` / `useRef` / `useMemo`，**渲染成真元素并执行 effect 清理**）。
+> token 由 `.tmp-run/extract-tokens.mjs` 从 `dsh-client-ui-theme` 的
+> `design_platform_css_default` 原文抽出（165 条定义，深/浅两套），
+> **不在 Node 侧解析 var() 链，交给浏览器自己解析**——手写正则解这条链只会得到半对的颜色。
+>
+> #### 三个装置的坑，每一个都足以让「干净的审计」变成谎言
+>
+> 1. **`ensureStyles()` 是在 `apply(ctx)` 里调的，不在模块加载时。** 只取组件导出的
+>    渲染方式会画出**一张没有样式表的卡片**（实测 `styleTagInjected: false`，
+>    高度 25px）。所以 boot 脚本改为**驱动真实的 `apply()`**，配一个假 ctx——
+>    顺带把三处 slot 注册也照宿主的方式跑了一遍（三处都带 `locale`，已断言）。
+> 2. **深色主题是 `body[data-ds-dark-theme]` 属性选择器，匹配「存在」而不是「值」。**
+>    我第一版写 `dataset.dsDarkTheme = 'false'`，属性照样存在，于是**浅色模式测的是
+>    深色 token**（`label-tertiary` 读出 `#adb2b8`）。必须 `removeAttribute`。
+> 3. **`props.t` 用的是产品自己的字典。** 我第一版手抄了一份 stub 字典，漏掉
+>    `copyToken` / `note` / `connectHint` 等键——**看起来就像产品没翻译**。
+>    改为从 bundle 自己的 `locale.register` 调用里捕获（36 键），
+>    手抄的字典会漂移，而缺键会静默回落英文。
+>
+> #### 抓到的最严重的东西是**审计器自己说谎**
+>
+> 第一版 harness 读 `parsed.findings`——**而 `audit-in-page.js` 从来不返回这个键**。
+> 它返回的是六个具名分类（`contrast` / `targets` / `overflow` / `clipped` /
+> `overlaps` / `tinyText`）。于是它在**一份躺着 10 条对比度失败的报表上打印
+> 「audit findings: 0」并以 exit 0 结束**。这是本项目已经写进文档的同一类错误
+> （v35 的正则认不出 `oklab()`、v49 的 `findings > 0` 算成功），**第三次了**。
+>
+> 同一轮里还有第二次：我在 CSS 模板串的注释里写了反引号（`` `label-tertiary` ``、
+> `` `.cardDesc` ``），**提前终止了模板字符串**，整个 bundle 语法错误、卡片挂不上；
+> 而空文档的审计同样是「0 findings」。为此 harness 现在有三道硬闸：
+> **`NOT MOUNTED`**（渲染出来是空的就当失败，不当作干净）、
+> **`NO STYLESHEET`**（没注入 CSS 时量到的颜色不是用户看到的）、
+> **`UNRESOLVED TOKENS`**（token 没解析就等于没量）。页面报错现在**打全文**而不是
+> 第一行——`TypeError: "` 这种一行报告正是把「样式表断掉」藏起来的原因。
+>
+> #### 卡片第一次被拍到，露出来的色
+>
+> 审计 21 处文字 / 2 个控件（真实覆盖率，不是 1），浅色下 **10 条对比度失败**，
+> 全部是 `--dsw-alias-label-tertiary` 在白底 **3.71:1**（12–13px 正文要求 4.5:1）。
+> 独立复算确认（`.tmp-run/verify-card-contrast.mjs` 用自己的 sRGB→相对亮度实现，
+> 不复用审计的数学）：3.71 属实。
+>
+> **但「谁该改」需要证据，不是 WCAG 说了算。** 于是查了宿主自己怎么用这个 token
+> （`.tmp-run/host-token-usage.mjs` / `host-field-convention.mjs` /
+> `host-trigger-chevron.mjs`，扫 65 个文件、760 条 label-token 规则），并在真实
+> token 下把宿主自己的规则和候选色**放在同一页里量**
+> （`.tmp-run/measure-host-contrast.mjs`）：
+>
+> | 角色 | 卡片原来 | 宿主的做法 | 实测（浅色） | 判定 |
+> |---|---|---|---|---|
+> | 卡片描述 | tertiary 13px | 宿主自己的 `.cardDesc` **就是 tertiary 13px** | 两边都是 **3.71:1** | **继承来的，不动** |
+> | 字段值（含令牌） | tertiary 12px | `entryValue` / `value` 是 **primary**；卡片自己的浮层也是 primary | secondary → **5.8:1** | **我们的错，已修** |
+> | 说明段（唯一的手工步骤） | tertiary 12px | 12px 的 `guideNote` / `help` 是 **secondary** | secondary → **5.8:1** | **已修** |
+> | 折叠箭头 | tertiary | 18 条 chevron 规则是 secondary，13 条 tertiary | secondary → **5.8:1** | **已修** |
+> | 页脚状态按钮 | tertiary 12px | 状态类 8 条 tertiary / 5 条 secondary | secondary → **5.8:1** | **已修** |
+> | 芯片移除 × | tertiary | 交互图标 8 条 secondary / 8 条 primary | secondary → **5.8:1** | **已修** |
+>
+> 字段值选了 `secondary` 而不是宿主的 `primary`：**标签是高亮的那一半，值不该盖过它**，
+> 而 secondary 已经过线（5.8:1）。描述那一行**故意保持 tertiary**——宿主自己所有
+> 插件卡片都这么画，把它加重只会让这张卡片在列表里显得不合群，而不是更可读。
+>
+> 结果（六种组合，真实覆盖率）：
+>
+> | 表面 | 浅色 | 深色 | 覆盖率 |
+> |---|---|---|---|
+> | settings card | **1 findings** | 0 | 21 文字 / 2 控件 |
+> | composer chips | 0 | 0 | 5 文字 / 2 控件 |
+> | footer status | 0 | 0 | 2 文字 / 1 控件 |
+>
+> 唯一剩下的一条就是那条**继承自宿主**的描述（宿主自己的 `.cardDesc` 同 token 同
+> 字号同比例），已作为具名豁免写进测试并计数。
+>
+> #### 新增一条测试（511 → 512）
+>
+> `packages/dsh-browser-bridge/test/client-render.test.js` 新增
+> **「no text in the card is painted in the weakest label level」**：扫 CSS 里所有
+> `color:var(--dsw-alias-label-tertiary)` 且带字号的行，豁免表点名
+> `dshbb-card-description` 并 `assert.equal(EXEMPT.length, 1)` 锁死。
+> **防护力逐项实测**（回退 → 跑 → 还原 → SHA256 与回退前逐字节一致）：
+> 回退 `field-value` → 1 红并点名 `.dshbb-field-value`；再回退 `note` → 点名两条；
+> 再回退 `chevron` + `trigger` → 点名 `.dshbb-trigger`。
+>
+> #### 验证（全绿）
+>
+> | 项目 | 结果 |
+> |---|---|
+> | `npm test` | **512 passed, 0 failed, 0 skipped**，exit 0 |
+> | `npm run check:extension`（10 个脚本） | exit 0 |
+> | 扩展 UI 审计 `--width 380`（32 场景 × 双配色） | **0 findings / 0 broken**（无回归） |
+> | 卡片六种组合（3 表面 × 双配色） | 见上表，唯一一条是继承来的 |
+> | `extension/locales.js` 字典 | 84/84 键对齐 |
+> | `chrome-profile-*` / TEMP 里 `card-preview-*` | 0 / 0 |
+> | 用户线上实例 `dsh web --port 3080` | 全程未触碰 |
+>
+> 交付截图：`.tmp-run/card-final-light.png`、`.tmp-run/card-final-dark.png`、
+> `.tmp-run/c-card-light.png`、`.tmp-run/c-chips-light.png`、`.tmp-run/c-status-light.png`。
+> **本轮产品改动只有 `packages/dsh-browser-bridge/lib/client.js` 的 6 条颜色声明
+> → 刷新 DSH 页面即可，扩展无需重载。**
+>
+
+> ### v61：设置卡片与 composer 芯片从没被渲染过，于是它们一直是英文的（那一轮修复）
+>
+> **缺陷一：`ContextChips` 的 slot 注册漏了 `locale`。** 另外两处贡献
+> （`settings.plugin.item`、`sidebar.footer.action`）都写了 `locale: LOCALE_NS`，
+> 只有 composer 芯片那一处没写。而 slot 只在注册声明了 `locale` 时才把 `t`
+> 翻译器传进 props——`lib/client.js` 自己的 `makeTranslator` 注释就是这么写的。
+> 后果：**中文界面上，芯片写着 `github.com · selected text · 1234 chars`**，
+> 而它就在输入框上方、每条消息都会经过的那个位置。
+>
+> **缺陷二：三处用户可见文案是硬编码英文**，绕过了字典：
+> `'Remove {x} from context'`（芯片 × 按钮的 `aria-label`）、
+> `'Remove before sending — nothing has been sent yet'`（同一个按钮的 `title`）、
+> 以及状态浮层的 `aria-label: 'Browser bridge status'`。
+> 前两个是屏读器念出来的内容，在纯文本遍历里根本看不见。
+>
+> **缺陷三：`statusPanel` 是死键。** 它在两个字典里都有译文，**没有任何地方画它**——
+> 原因正是上面第三条硬编码顶替了它。**「字典里有个没人用的键」和「该用它的地方写了硬编码」
+> 是同一个缺陷的两面**，这一轮才把它俩接上。
+>
+> **缺陷四：两处点击目标低于 WCAG 2.2 AA（2.5.8）的 24×24。**
+> `.dshbb-chip-x` 是 18×18，`.dshbb-btn` 没有 `min-height`（≈22px）。
+> 这两个数字与 v35 在面板里修掉的是同一个门槛，只是这个文件不在 UI 审计的覆盖范围内。
+> 已改为 24×24，并给 `-3px/-2px` 的负 margin 抵消，**布局不动**。
+>
+> **根因：这个文件从来没被渲染过。** `test/client-inject.test.js` 用
+> `new Function(source)()` 求值 bundle，但它的 `react` 桩对每个 `createElement`
+> 都返回 `{ type: 'stub', args }`——**任何组件体都没有执行过**。
+> 所以「卡片是英文的」这类事实在测试里不可见，而本机没有 React，
+> `.tmp-run/` 的 UI 审计渲染的是 `extension/` 的两个页面，也照不到它。
+>
+> **新增 `packages/dsh-browser-bridge/test/client-render.test.js`（8 条，503 → 511）**：
+> 自带一个最小 React 运行时（`useState` 有可用 setter、`useEffect` 会跑且**清理函数会被执行**、
+> 轮询 promise settle 后再重画一轮），把真实组件渲染成可遍历的树，然后断言**人看到的东西**：
+>
+> 1. 两个字典键对齐；
+> 2. **没有死键**（`statusPanel` 那类）；
+> 3. 卡片里没有任何绕过字典的 `aria-label`/`title`（先剥掉字典本身再扫，否则会匹配到字典条目）；
+> 4. **每一个画文案的 slot 都声明了 `locale`**（这一条直接抓住缺陷一）；
+> 5. 中文下芯片写「选中内容 / 1234 字」，且 `aria-label` 是「从上下文移除: …」；
+> 6. **没有 `t` 时回退到英文字典，而不是裸键**（`makeTranslator` 存在的理由）；
+> 7. 页脚状态触发器在中文下说「浏览器：已连接」；
+> 8. **四个可交互控件都 ≥24×24**（守缺陷四；之所以写在测试里而不是靠审计，
+>    是因为审计渲染不到这个文件）。
+>
+> **两个装置纪律（都是踩过的坑，注释里写明了）**：
+> * **effect 的清理函数必须执行**。`usePolled` 会 `setInterval`，我第一版的最小 React
+>   丢掉了清理，**定时器吊住事件循环 → 整个 runner 静默挂死**（不是失败，是停住）。
+>   现在清理收在 `unmount()`，测试用 `t.onCleanup` 注册。
+> * **全局要还原成原来的 descriptor，不能 `delete`**。我第一版 `delete globalThis.fetch`，
+>   而 `panel-stream.test.js` 已经装了自己的桩——删掉会让后面**无关的套件**炸掉。
+>
+> **顺带修掉一个会误导人的仪器**：`test/service-worker.js` 的 `awaitConnection`
+> 超时文案断言「usually a cached module URL, because two suites generated the same one」，
+> 把一种可能说成了结论。我在高负载下跑测试时它误报过一次，**把我推向排查缓存**，
+> 而真实原因是 5 秒死线太紧。已把死线放宽到 15 秒，并把文案改成列出**两种可能**
+> （缓存 URL / 机器太忙）让人自己分辨。**会误报的验证工具比慢的更糟**——这条本项目已经写过一次。
+>
+> **验证（全绿）**
+>
+> | 项目 | 结果 |
+> |---|---|
+> | `npm test` | **511 passed, 0 failed, 0 skipped**，exit 0（连跑 3 次一致） |
+> | `npm run check:extension` | exit 0 |
+> | UI 审计 `--width 380`（32 场景 × 深浅两配色） | **0 findings / 0 broken** |
+> | `lib/client.js` 字典 | 36/36 键对齐，0 死键 |
+> | `extension/locales.js` 字典 | 84/84 键对齐 |
+> | 用户线上实例 `dsh web --port 3080`（PID 36172） | 全程未触碰 |
+>
+> **防护力逐项实测**（回退 → 跑 → 还原 → SHA256 一致）：
+> 去掉 chips 的 `locale` → **1 条红**；芯片文案改回英文 → **1 条红**；
+> `aria-label` 改回硬编码 → **3 条红**（含死键检查）；
+> `statusPanel` 改回硬编码 → **1 条红**；`.dshbb-chip-x` 改回 18px → **1 条红**（同时报出宽与高）。
+>
+> **只改了 `packages/dsh-browser-bridge/lib/client.js`（宿主侧浏览器产物）→ 刷新 DSH 页面即可，扩展无需重载。**
+>
+> ### v60：标签页列表是唯一没有边界的页面内容出口（本轮修复）
+>
+> 规则是「网页来的文本必须说明它是数据不是指令」。`browser_tabs` 与
+> `browser_selection` 没有——而它们**读起来像浏览器在报告自己的状态**，
+> 实际标题列是 `document.title`（页面自己写）。它们是模型挑 `tab_id` 的唯一依据。
+>
+> **修法不套那句话**，那样会撒谎：这张表确实是浏览器的回答，只有几列来自页面。
+> 新增 `provenanceNote(what)` 说准确的那件事。见 `lib/tools.js:55`。
+>
+> **`provenanceNote` 用的地方**：`lib/tools.js` 的 `browser_tabs`（`:289` 附近）
+> 与 `lib/page-tools.js` 的 `browser_selection`（`:1058`）。
+>
+> **[已证伪，不要按它修] 「标题里放换行可伪造标签页行」不成立。**
+> `.tmp-run/probe-title-newline.mjs` 在真实 Chrome 量了三处（`<title>` 内的换行、
+> 运行时给 `document.title` 赋值、`Target.getTargets` 报的标题），**Chrome 自己把换行折成了空格**，
+> 渲染行数 = 1。
+> **但契约仍成立并已加防线**：新增 `squashOneLine(value, max)`（`lib/tools.js:78`），
+> `tabLine()` 的标题/URL/组名都过它（`:227`、`:231`）。
+> 防的是将来——**wire 格式由我们决定，「一行就是一行」这条规则不由我们决定**。
+> 探针 `.tmp-run/probe-tab-row-integrity.mjs` 直接喂带换行的 wire 行，不依赖 Chrome 折叠。
+>
+> **新增测试 5 条**：`test/tab-list-integrity.test.js`。
+> **防护力实测**：回退 `squashOneLine` → **3 条红**；关掉 `browser_selection` 的出处说明 → **1 条红**。
+>
+> **本轮验证**：`npm test` **503 passed / 0 failed**，exit 0；`check:extension` exit 0；
+> UI 审计 32 场景 × 双配色 0 findings；字典 84/84；`chrome-profile-*` 残留 0。
+
+> ### v59：`browser_cdp` 是唯一没有不可信边界的工具（本轮修复）
+>
+> 先查了中文用户必然遇到、英文开发者不会遇到的场景——**输入法**。
+> `extension/sidepanel.js:2392` 与 `:2409` 已有 `event.isComposing === true || event.keyCode === 229`
+> 双重守卫（mention 菜单的 Enter/Tab + 发送的 Enter），且注释写明了理由。**IME 已正确处理，不是缺陷。**
+>
+> 真问题：`browser_eval` 走 `untrusted(rendered, …)`，而**权限更高**的 `browser_cdp` 返回裸 JSON。
+> `Network.getResponseBody` 是服务器正文，`DOM.getOuterHTML` 是页面自己的 HTML，
+> 两者都是攻击者端到端控制的字符串。`browser_cdp` 是工具集里能力最强的一个
+> （要 Developer mode + 每次都问 + `full_cdp_access`），**最强通道成了唯一没有边界的通道**。
+>
+> **修法**（`lib/page-tools.js`）：`const marked = untrusted(body, { url: \`tab ${hole.tabId}\`, title: \`CDP ${args.method}\` })`，
+> 阈值比较与切割都改在 `marked` 上。
+> **关键设计：先包标记再切上限**——注释写明「a boundary that can be truncated away is not a boundary」。
+>
+> **探针 `.tmp-run/probe-cdp-untrusted.mjs`** 实测：cdp 两条路径 `hasUntrustedPrefix: false`、
+> 注入串原样带出；`browser_eval` 对照为 `true`。
+
+> ### v58：削减小了却不告知——把 v57 当模式扫了一遍，抓到一个更重的（本轮修复）
+>
+> v57 修好 `browser_cdp` 的静默截断后，正确的问题不是「还有别的地方这样吗」而是
+> 「**这个模式在别处长成了什么形状**」。扫完全部 `.slice(` / `maxBytes` / `oneLine`
+> 削减点后，两处有问题，第二处比 v57 更重。
+>
+> **缺陷一：`browser_read` 的链接被砍两次，两次都不说。**
+> `extension/background.js` 的 `pageRead` 是 `links.slice(0, 200)`，
+> `lib/page-tools.js` 的 `browser_read` 再 `page.links.slice(0, 60)`。
+> 探针 `.tmp-run/probe-link-truncation.mjs` 量的四档：
+>
+> | 页面真实链接数 | 返回给模型 | 丢掉 | 有没有说 |
+> |---|---|---|---|
+> | 30 | 30 | 0 | — |
+> | 60 | 60 | 0 | — |
+> | 61 | 60 | **1** | **没有** |
+> | 200 | 60 | **140** | **没有** |
+>
+> `browser_read` 正是模型用来回答「这页有什么可点」的工具，所以一个读到 60 条
+> 且没被告知的模型会说出「页面上没有结账入口」——而页面有 400 条。
+>
+> **这里有个隐蔽的坑，写在这里免得下次重踩：总数必须来自 wire，不能数数组。**
+> 扩展在宿主之前就砍到 200，宿主若用 `all.length` 就会把 200 报成页面真实大小。
+> 那比不报更糟：它把「我砍过」伪装成「页面就这么大」。所以扩展现在发 `linkCount`
+> （切割前的真实条数），宿主优先读它，`all.length` 只作回落。
+>
+> **缺陷二（更重）：`browser_snapshot` 渲染全部元素、只发前 400 个。**
+> `pageSnapshot` 用 `renderElements(elements, …)` 把**全部**元素写进文本，
+> 却只把 `elements.slice(0, 400)` 发到 wire 上。而 `resolveTarget` 正是在那个
+> **已切的数组**里 `find((candidate) => candidate.index === params.index)`。
+> 于是 450 个可交互元素的页面上：模型读到 `#450` 那一行，**永远点不动它**，
+> 而且收到的拒绝是「snapshot index 450 is not in this page any more; take a fresh
+> snapshot」——**把一个被砍掉的帧说成页面变了**，还让模型去做一件不会有用的事。
+> 修复前测试报出：`the text names index 400 but only 400 were shipped`。
+>
+> **修法不是加提示，而是让两半用同一个上限。**
+> 新增 `extension/background.js` 的 `const ELEMENT_MAX = 400`，
+> `const shippable = elements.slice(0, ELEMENT_MAX)`，
+> 渲染与发送都用 `shippable`；`elementCount` **保持「页面真实总数」的原义**
+> （宿主头部一直这么报告它），另加 `listedCount` ＝ 文本实际列出了几个，
+> `truncated` 在两者不等时也为 true。宿主头部在两者不同时同时报出：
+> `450 actionable element(s), 400 listed below, truncated`。
+> `browser_read` 侧同理：`LINK_LIST_MAX = 60` 抽成具名常量，超限时写出
+> `… (showing 60 of 400 links)`，`meta.links` 报真实总数。
+>
+> **新增测试 6 条**（498 条）：
+> - `packages/dsh-browser-bridge/test/link-list.test.js`（**新文件，5 条**）：
+>   全部装得下时不加提示、被砍时说真实总数、**正好等于上限不算被截断**（差一就会
+>   让每个正常的满页都变成谎言）、**总数取自 wire 而非数组**、老扩展不发总数时
+>   仍要有诚实计数。
+> - `packages/dsh-browser-bridge/test/target-index.test.js`（**加 1 条**）：
+>   450 个元素的页面，**不只断言计数，而是真的去点文本里最后一个编号**——
+>   因为「模型读得到的编号就是它会去用的编号」，断言字符串会漏掉真正的伤害。
+>   同时新增 `snapshotMany(count)` fixture（原来只有 `snapshotWith`，一个元素
+>   表达不出「超出上限」，两个上限只在超限后才分叉）。
+>
+> **防护力逐项实测（回退 → 跑 → 还原 → 校验 SHA256 一致）**：
+> 去掉 `showing` 提示 → **3 条红**；总数改用 `all.length` → **1 条红**；
+> 元素上限改回「渲染全部、只发 400」→ **1 条红**。
+>
+> **验证（全绿）**：`npm test` **498 passed / 0 failed**，exit 0；
+> `npm run check:extension` exit 0；UI 审计 32 场景 × 双配色 **0 findings**；
+> 字典 84/84 键对齐；`chrome-profile-*` 残留 0；
+> 用户线上实例 `dsh web --port 3080`（PID 36172）**全程未被触碰**。
+>
+> **本轮只改 `extension/background.js`、`lib/page-tools.js` 与测试 → 重载 Chrome 扩展 + 重启 `dsh web`。**
+>
+> ### v57：`browser_cdp` 的结果被砍断，而且不告诉你（本轮修复）
+>
+> 这一轮从「哪些权限申请了却没用」开始，一路证伪了四个方向（见本节末尾），
+> 最后落在一个**静默**的缺陷上：模型拿到的 CDP 结果可能是半截的，而它无从得知。
+>
+> **缺陷：`lib/page-tools.js` 的 `browser_cdp` 静默截断到 20000 字符。**
+> 原来的实现是一行：
+>
+> ```js
+> return { text: JSON.stringify(result ?? null, null, 2).slice(0, 20_000), meta: { method: args.method } }
+> ```
+>
+> `.slice()` 之后没有任何标记。被切掉的不是「更短的答案」，而是**一个语法上不成立的
+> JSON 文档**——文本在半途停住，读者无法分辨是浏览器就这么说的，还是上游不说话了。
+>
+> **这不是罕见调用。** 探针 `.tmp-run/probe-cdp-truncation.mjs` 用真实注册路径
+> （含审批门）量了五档 `DOMSnapshot.captureSnapshot` 响应：
+>
+> | CDP 响应总长 | 返回给模型 | 仍是合法 JSON | 有没有说被截断 |
+> |---|---|---|---|
+> | 2 411 字符 | 2 411（完整） | ✅ | — |
+> | 9 111 字符 | 9 111（完整） | ✅ | — |
+> | 27 111 字符 | 20 000（**截断**） | ❌ | **没有** |
+> | 68 111 字符 | 20 000（**截断**） | ❌ | **没有** |
+> | 183 111 字符 | 20 000（**截断**） | ❌ | **没有** |
+>
+> 被切断的位置是 `"string-number-446-`——连引号都没闭上。而
+> `Network.getResponseBody` 同样轻松越过这条线。
+>
+> **修法**：抽出常量 `CDP_RESULT_MAX = 20_000`，超限时在结果尾部追加一句说明，
+> 写明**真实总长**与「这只是前 20000 字符」，并提示怎么缩小调用范围；
+> `meta` 同时给出 `{ truncated: true, fullLength }`。上限本身没有变——它挡的是
+> 单次调用灌满上下文——变的是**上限不再撒谎**。
+>
+> **新增 `packages/dsh-browser-bridge/test/cdp-truncation.test.js`（4 条，488 → 492）。**
+> 四条分别守：小结果完整交回且不谎称截断；超限结果带标记、标记里的总长是真的、
+> 保留的前缀就是真实答案（不是重写）；**标记词不会被 payload 自己含有的
+> 「truncated」误判**（所以第三条用了一个特意不含该词的 fixture）；被策略拒绝的调用
+> **不会被描述成截断**（那条路径上根本没跑过 CDP）。
+> **防护力已实测**：把实现回退成旧的静默 `.slice()` → **490 passed / 2 failed**；
+> 还原后 SHA256 与改动前字节一致。
+>
+> **本轮证伪的四个方向**（记下来免得下次重跑）：
+> 1. **manifest 权限有冗余？** 没有。8 个权限逐个与代码交叉核对，全部是功能必需
+>    （`debugger` 7 处、`tabs` 37 处、`storage` 13 处、`contextMenus` 7 处，
+>    最少的 `scripting`/`tabGroups`/`alarms`/`sidePanel` 各 1–2 处，每一处都是
+>    真实路径而非防御性调用）。
+> 2. **右键菜单 `page` 与 `tab` 上下文重复？** 不重复。查 MDN 的
+>    `menus.ContextType` 定义：`page` 是页面上右键，`tab` 是标签栏上右键，
+>    出现在两个不同位置。
+> 3. **没粘令牌时不重连是个缺陷？** 不是。实测（`.tmp-run/probe-no-token-loop.mjs`）
+>    这种情况下 `socketAttempts: 0`、`timersScheduled: 0`、`keepaliveAlarmsCreated: 0`，
+>    worker 确实完全静默——但选项页保存令牌走 `chrome.storage.local.set`，
+>    而 `background.js:2246` 的 `storage.onChanged` 监听器会调 `connect()`，
+>    所以主路径是自愈的。重试一个没有令牌的连接本来就是无意义的。
+> 4. **宿主侧设置卡片的字典缺测试？** 部分成立但不是缺陷。探针
+>    `.tmp-run/probe-client-dict.mjs` 量出 30 个键、两语言键集完全对齐、占位符无错配；
+>    唯一真死的键是 `statusPanel`。
+>
+> **两个探针自身犯的错（值得记住）**：探针第一版把参数写成 `tabId`，而真实参数名是
+> **`tab_id`**（`tabIdOf` 对其它拼写一律返回诊断字符串）；第二版传的 `exec` 是 `{}`，
+> 而 `askApproval` 在 `input.exec?.agent === undefined` 时**按 fail-closed 返回
+> `unavailable`**，于是 CDP 调用根本没被执行到，探针报出的 121 字符「拒绝」文案
+> 看起来却像是截断数据。**两处都是我在猜接口，而不是读实现。**
+
+> ### v56：令牌写入失败会留下凭据残骸，而扩展从来没有图标（本轮修复）
+>
+> 这一轮把待办清单上最后一个零覆盖模块 `lib/token.js` 补上测试，并顺手检查了
+> 从第一轮起就没有人看过的那个表面：工具栏上的图标。
+>
+> **缺陷一：`writeTokenState` 失败时把令牌明文留在磁盘上。**
+> 原子写的形态是对的（临时文件 + rename，读方永远看不到截断的文档），但它**没有失败路径**：
+> `renameSync` 抛错时那个临时文件就留在原地，而临时文件里是**完整的 64 位令牌明文**。
+>
+> 这不是罕见场景。在 Windows 上，**rename 覆盖一个被别的句柄打开的文件会失败并报 `EPERM`**，
+> 而持有这种句柄的都是日常程序：杀毒软件、搜索索引器、编辑器。实测每失败一次就多一个
+> `dsh-browser-bridge.json.<pid>.tmp`，**且因为带 pid 后缀，它们互相不会覆盖，只会累积**。
+>
+> **修法**：`writeTokenState` 包上 try/catch，失败时先 `rmSync(temporary, { force: true })`
+> 再**把原错误抛出去**（错误仍然就地暴露，不吞掉）。清理本身也是 best-effort：
+> 若临时文件根本没建出来就没什么可删，若删除也失败则原始错误更值得报告。
+> 实测修复后连续 5 次失败，目录里仍只有 `state.json`，且**失败不会破坏已有令牌**。
+>
+> **顺带量清的一件不是缺陷的事**：`mode: 0o600` 在 Windows 上被静默忽略
+> （实测文件模式是 `100666`）。我一度把它记成安全缺陷，查了 ACL 之后撤回：
+> `C:\Users\hj\.dsh` 只授予 `SYSTEM` / `Administrators` / 用户本人，
+> **Windows 用户目录的默认 ACL 已经提供了与 0600 等价的保护**。
+> 所以这是文档准确性问题（HANDOVER §6 写着「0600」），不是漏洞。
+> 测试里按平台分别断言，避免任何一侧被当成理所当然。
+>
+> **缺陷二：扩展从来没有图标。**
+> `manifest.json` 没有 `icons`、`action` 里也没有 `default_icon`，整个 `extension/` 目录
+> **除 manifest 外零资源文件**——于是工具栏画的是 Chrome 的灰色占位方块，
+> 而 README 第 116 行明确写着「**点扩展图标**打开侧边面板」。
+> **为什么三十多轮没人发现**：图标不被任何代码引用，所以**没有任何测试会因为它的缺失而失败**，
+> 它也不产生任何报错，只是静默地显示成别的东西。
+>
+> **修法**：用 DSH 自己的美术资产（`dsh-web-frontend/dist/favicon.svg` 与
+> `@deepseek-ai/dsh-client-ui-primitives` 的 `FISH_LOGO_PATH`，同一条鱼的轮廓），
+> 生成 16/32/48/128 四个尺寸。**`manifest.icons` 不接受 SVG**——Chrome 官方文档原话是
+> 「WebP and SVG files are not supported」——所以由 Chrome 自己把 SVG 栅格化成 PNG 后再入 manifest。
+>
+> **几何是量出来的，不是挑出来的**：`.tmp-run/measure-icons.mjs` 在真实 16px 像素网格上
+> 统计「鱼覆盖多少像素」与「有多少像素落进徽章区」。所有候选的鱼尾都会进入徽章区
+> （尾巴本来就在右上角），所以判据是最小化重叠同时保持可读。
+> 又因为**不同尺寸的最优留白本来就不同**（像素越少，抗锯齿越吃掉边缘），
+> 最终每个尺寸一个缩放值：16→70%、32→74%、48→78%、128→80%。
+> `.tmp-run/icon-v2.png` 是带徽章的目视证据：16px 下鱼仍可辨（眼睛和尾巴都在），徽章不遮挡。
+>
+> > **⚠️ v69 更正：上面这段的徽章方位是错的。** 徽章在右**下**，不是右上；
+> > 16px 的 70% 是在错误前提下选的，已改为 84%。详见 v69 段。
+>
+> **测试（484 → 488，新增 `test/extension-icons.test.js` 4 条）**：断言两个声明都在、
+> manifest 引用的每个路径都真实存在、**每个文件是真的 PNG 且尺寸与声明相符**（读 IHDR 头）、
+> SVG 源件随 PNG 一起发布、以及**图标颜色 = 面板 `--accent` = 徽章 `BADGE_CONTROLLED_COLOR`**
+> （三处都画 DSH 蓝，漂移了徽章会像是渲染故障）。
+> **防护力逐项实测**：删 `icons` 声明 → **2 条红**；把 48px 声明成 128px → **1 条红**；
+> 颜色改成另一个蓝 → **2 条红**。
+>
+> **`test/token.test.js`（新增 8 条）**覆盖令牌的完整契约：路径在家目录而非用户设置、
+> 64 位小写十六进制的往返与稳定性、**畸形文件读作不存在而不是让启动失败**、
+> 比较只接受完全相等（大小写敏感、截断/超长都拒）、
+> **非字符串一律拒绝而不是抛错**（`timingSafeEqual` 遇非 Buffer 会抛，
+> 让恶意 peer 用一个数字就能制造拒绝服务）、失败写入零残留、以及按平台断言文件权限。
+> **防护力实测**：回退失败清理 → **2 条红**，失败信息精确指出泄漏的文件名。
+
+> ### v55：插件入口第一次被测试装载，立刻抓到两个真实缺陷（本轮修复）
+>
+> **为什么现在才抓到。** HANDOVER §5 一直记着「`lib/index.js` 从未被测试 import，
+> 历史上那里抓到过两个真实缺陷」——这一轮把这句话当成了待办，而不是备忘。
+> 新建 `packages/dsh-browser-bridge/test/entry.test.js`，用假 `ctx` **真的调用
+> `apply()`**，于是第三个和第四个缺陷立刻显形。
+>
+> **缺陷一：peer 加载是 `Promise.all`，冷缓存下 100% 失败。**
+> `apply()` 原来并发 import 三个 peer：
+>
+> ```js
+> const [schemasteryModule, toolsModule, llmModule] = await Promise.all([
+>   loadPeer('@deepseek-ai/schemastery'),
+>   loadPeer('@deepseek-ai/dsh-tools'),
+>   loadPeer('@deepseek-ai/dsh-llm'),
+> ])
+> ```
+>
+> 这三个包**互相依赖同一个 `cosmokit`**（`dsh-tools` 直接 import `schemastery`，
+> `dsh-llm` 也把它列为 dependency），而 `cosmokit` 同时发布 ESM 与 CJS 入口。
+> 并发导入时 CJS 那侧会 `require()` 还在求值中的 ESM 那侧，加载器直接抛：
+>
+> ```
+> Cannot require() ES Module ...\cosmokit\lib\index.js because it is not yet fully loaded.
+> This may be caused by a race condition if the module is simultaneously
+> dynamically import()-ed via Promise.all(). Try await-ing the import() sequentially.
+> ```
+>
+> **异常信息自己给出了修法，而它是确定性的、不是偶发的**：冷缓存下
+> `.tmp-run\probe-peer-time.mjs` 连跑 4 次**全部失败**，改成顺序 await 后连跑 4 次**全部成功**。
+>
+> **顺序加载没有可测代价**（这一点必须量，否则就是拿一个潜在故障换一个现实故障）：
+> 冷缓存下顺序形式 5 次是 **27.1 / 27.8 / 28.4 / 28.8 / 27.3 ms**，而**失败的并发形式
+> 是 28.3 / 29.1 / 29.6 ms** —— 模块加载在加载器内部本来就是串行的，
+> `Promise.all` 在这里从来没有买到并行，只买到了竞态。
+>
+> **热缓存会掩盖它，这是它活到今天的原因。** 真实 `dsh web` 进程在装载插件之前，
+> 宿主自己已经 import 过这些 peer，缓存命中就不会重入加载器——同一探针在**热缓存下
+> 4 次全过**。所以这不是「用户正在被伤害」，而是**一条潜伏路径**：任何 peer 未被预加载的
+> 场合（独立实例、测试、加载顺序变化）插件激活都是必然失败。
+> 修复已实测在冷、热两种缓存下都成立。
+>
+> **缺陷二：health 路由回显令牌前 8 位，而它自己写着「不含秘密」。**
+> `BRIDGE_HEALTH_PATH` 是四条路由里**唯一不做任何鉴权**的（客户端 UI 与扩展都要在
+> 拿到令牌之前轮询它，这是有意的），而它的注释写着：
+>
+> > Read-only and secret-free ... The token is deliberately absent
+>
+> 同一个响应体里却有 `tokenHint: token.slice(0, 8)`。探针
+> `.tmp-run\probe-route-auth.mjs` 从**非环回地址**请求四条路由，量出：
+>
+> | 路由 | 环回 | 网络 | 结果 |
+> |---|---|---|---|
+> | `/browser-bridge/health` | 200 | **200** | 无鉴权，且返回 `tokenHint` |
+> | `/browser-bridge/chat` | 200 | 403 | 正确 |
+> | `/api/browser-bridge/token` | 200 | 403 | 正确 |
+> | `/browser-bridge/context` | 200 | 200（GET）/ 403（DELETE） | 正确，读取有意开放 |
+>
+> **严重性要说清楚，不夸大**：泄露 8 个十六进制字符 = 32 bit，剩余 224 bit，
+> 按每秒 10 亿次猜测也要 10^50 年——**不能靠爆破**。真正的问题是**原则**：
+> 一个被刻意选定为「不鉴权」的路由，不该携带凭据的任何片段。
+> **而它没有任何消费方**：`lib/client.js` 读 health 的 15 个字段，`tokenHint` 一次都没出现；
+> 扩展侧的 `tokenHint` 是无关的字典键。已删除，`tokenLength` 保留（那是形状不是秘密，
+> 扩展的选项页正靠它做本地长度校验）。
+>
+> **测试（472 → 476，新增 `test/entry.test.js` 4 条）**：
+> 断言 5 条路由全部注册、25 个工具全部注册、peer 顺序加载（结构断言，
+> 因为本套件跑在已经热起来的进程里，冷缓存无法在进程内重现）、
+> health 响应体里**任何字段**都不匹配令牌形状、以及网络地址在读取用户数据的三条路由上被拒。
+> **防护力逐项实测**：加回 `tokenHint` → 475 passed / **1 failed**；
+> 恢复 `Promise.all` → 475 passed / **1 failed**（失败信息即竞态原因）。
+>
+> **这一轮的教训**：文档里「这里没测过」的记录不是免责声明，是待办清单。
+
+> ### v54：面板错过了这一轮的 `start`，就永远不知道它结束了（本轮修复）
+>
+> **缺陷**：`applyDelta`（`extension/sidepanel.js`）里那道 `if (live === null) return`
+> 守卫，把**没有 `start` 的 `end` 也一起丢掉**。而 `live` 只由 `start` 帧创建，
+> 关闭侧边栏会销毁它自己的 document，service worker 发的帧没人接 —— 于是
+> **在 turn 进行中打开/重开面板的人，永远收不到这一轮的 `end`**。
+>
+> `currentSessionRunning` 是驱动等待行（`.working`）与 composer 上「停止」按钮的
+> 唯一开关（`sidepanel.js:1286` 的 `wanted = view === 'chat' && (currentSessionRunning || sending) && !hasContent`），
+> 它只在 `start`、`end`、`failed` 三处被置位（`:1536`、`:1594`、`:1548`）。错过了 `start`，
+> 也丢掉了 `end`，它就**永远是 `true`**：turn 早就结束，面板还在画「思考中…」，
+> 按钮还是「停止」，直到下一次 `POLL_MS`（8 秒）轮询或用户自己切换会话。
+>
+> **本轮修的是这一半，不是别人以为的那一半。** 我先按「应该采纳增量、让流式继续」
+> 去改，结果被**项目自己既有的测试拦下**：
+>
+> ```
+> ✖ a panel opened mid-turn shows nothing live rather than a truncated tail
+>     a delta without a start invented a live block
+> ```
+>
+> 那条测试是对的，而且注释写明了理由：面板中途打开时错过的是**这一轮回答的开头**，
+> 渲染后来的增量等于**给人看一段截断的、看起来却像完整回答的片段** ——
+> 比「明显在加载」更糟。`lib/stream.js:24-26` 记着同一个取舍：丢一帧最多损失
+> 「本次动画的剩余部分」，因为**已提交的 transcript 才是事实来源**。
+> 所以丢弃增量是**有意的设计**，我改错了方向。
+>
+> **正确的修法**（`extension/sidepanel.js` 的 `if (live === null)` 分支）：不采纳增量，
+> 但**让 `end` 落地** —— `currentSessionRunning = false` 后 `renderWorking()`、
+> `refreshTranscript()`、`refreshGroups()`，让面板立刻知道自己空了。
+> 取消失败的 `failed` 分支早在本轮之前就被提到守卫之前（注释记着「否则会丢掉唯一
+> 说明这轮死掉的那个词」），本轮补的是它旁边同一个原因的另一半。
+>
+> **验证**（`.tmp-run/probe-reopen-midturn.mjs`，真实 headless Chrome + 真实面板）：
+> 修复前投 `text` 帧 `changed: false`（什么都没画，正确）；投 `end` 后
+> **等待行仍在**（缺陷）。修复后 `end` 使等待行消失。外来会话的帧始终不泄漏。
+>
+> | 项目 | 结果 |
+> |---|---|
+> | `npm test` | **472 passed, 0 failed, 0 skipped**，exit 0 |
+> | 防护力实测（把 `end` 分支改回 `if (live === null) return`） | **恰好 1 条变红**，消息 `the panel is still drawing a turn that is over` |
+> | `npm run check:extension` | exit 0 |
+> | 全量审计 32 场景 × 深浅两配色 | 0 findings / 0 broken |
+> | 字典 | 84/84 键对齐 |
+> | 预览残留 `chrome-profile-*` | 0 |
+>
+> **新增 2 条测试**（`packages/dsh-browser-bridge/test/panel-stream.test.js`）：
+> `a panel that missed the start still hears the turn end`（先确认等待行**真的存在**，
+> 否则「end 清掉了它」在什么都没画的面上也成立 —— 这条断言在写出正确装置前
+> 失败过三次）；`adopting a turn does not adopt somebody else's session`（会话守卫的对照）。
+>
+> **测试装置教训（本轮第三次踩到同一个坑）**：等待行由 `currentSessionRunning` 驱动，
+> 它只被 **groups 时钟**（`clockOf('groups')`）设置，**不是** `pollHealth()`
+> （health 时钟只管待批问题）。我先后猜错 `pollOnce`、`runningGroups()`、`host.running`
+> 三个名字，真实的是 `clockOf('groups')` 与 fixture 里已有的 `host.running` 字段。
+> **另外：`host.running` 必须在断言前用 `try/finally` 复原** —— 泄漏一次就让后面
+> **5 条无关测试**变红（：127 的默认 fixture 会读它）。
+
+> ### v53：页面里有 iframe 时，一半的行号是重号的
+
+> **缺陷**：CDP 快照是**每个 frame 一份 document**，而**每份 document 的节点都从 0 开始编号**。
+> `distillSnapshot`（`extension/page-distill.js`）把所有 document 的行混进同一个列表，
+> 报出的 `index` 却是**它在自己文档内的位置** —— 于是同一个 `#n` 对应两个不同元素。
+>
+> 在 `.tmp-run/probe-iframe.mjs` 上量出（一个结账页，卡号表单在 iframe 里）：
+>
+> | 项 | 值 |
+> |---|---|
+> | 重复的 index | `13`、`18` 各出现 2 次 |
+> | 歧义行占比 | **4 / 7 = 57%** |
+> | `#13` 的首个匹配 | `"Apply coupon"`（页面上的按钮） |
+> | `#13` 的另一个含义 | iframe 里的**卡号输入框** |
+>
+> `resolveTarget` 用 `find` 按 index 取值，**只返回第一个匹配**：模型说「填 #13 卡号」，
+> 扩展会去点「应用优惠券」。与 v52 同类 —— 静默点错元素。
+> iframe 不是边缘情况：登录框、支付表单、验证码、嵌入式编辑器都在里面。
+>
+> **修法**（`extension/page-distill.js`）：让 `index` 在**整份快照内全局唯一** ——
+> 每进入一个 document，加上前面所有 document 的节点数（`frameOffset`/`base`）。
+> 偏移量**无条件推进**（`frameOffset += nodeCount`，写在过滤之前），
+> 否则一个 frame 的行全被过滤掉时，它的编号会落回上一份 document。
+> 同时在行上保留 **`nodeIndex`**（它在本文档内的真实位置），供需要直接和那个文档说话的地方用。
+>
+> 修复后同一页面：`#13`（Apply coupon）与 `#34`（Card number）分离，
+> `duplicateIndices: []`、`ambiguousShare: 0`。
+>
+> **端到端验证**（`.tmp-run/probe-iframe-click.mjs`，真实 Chrome、两个文档各自记录谁被点到）：
+> 页面按钮 index **7**、iframe 按钮 index **22**；
+> 点 iframe 按钮 → `frame: ["frame"]`、**`page: []`**；
+> 点页面按钮 → `page: ["page"]`、**`frame: []`**。点击精确落在目标文档，无跨文档误点。
+> 「每行都解析到不同的活节点」也已核实（`indicesAreUnique: true`、`everyRowResolved: true`）。
+>
+> **新增 2 条测试**，468 → **470 条**。
+>
+> 第 1 条在 `packages/dsh-browser-bridge/test/chrome-e2e.test.js`：
+> `indices stay unique when the snapshot holds more than one document`。
+> 它同时断言**名字与行的配对**：只查编号唯一性的话，一个配错文档的偏移量照样能通过。
+> **防护力已实测**：把 `index: base + index` 回退成 `index` → 恰好 1 条红，
+> 消息就是缺陷本身：`indices collide across documents: [3,3]`。
+>
+> ---
+>
+> ### v53 附带修掉的第二个缺陷：frame 里的行，坐标是另一个空间
+>
+> 查编号时顺手量到：`resolveTarget` 的**坐标退化路径**（行上没有 `backendNodeId` 时用
+> `element.bounds` 直接算点）**在 frame 上是错的**。
+> `layout.bounds` 是相对**它自己那份 document 的 viewport** 量的，
+> 而合成点击用的是**页面坐标**。
+>
+> 实测（`.tmp-run/probe-frame-coords.mjs`）：iframe 位于页面 y=50，
+> 框内按钮只离 frame 顶 8px → 快照报 **y=8**；把它当页面坐标点下去，
+> 命中的是页面自己的「Apply coupon」。**不报错，只是点了另一个元素** ——
+> 与 v53 主缺陷同类，从另一扇门进来。`extension/background.js:1679-1680` 自己写着
+> 「点到模型没选的地方，比什么都没有更糟」。
+>
+> **关键在于主路径其实是对的**：`DOM.getBoxModel` **会**把 frame 内的节点换算成页面坐标
+> （实测给 `(96,74)`，正是 frame 原点 `(13,51)` 加上框内位置后的结果）。
+> 所以只有退化路径有问题。
+>
+> **退化的可达性也量过**（`.tmp-run/probe-backendid-coverage.mjs`，混合页面含表单、
+> shadow DOM 组件、iframe）：**11 行全部带 `backendNodeId`，11/11 都能解析**。
+> 也就是说这条路径在正常页面上根本走不到 —— 所以**改它比改坐标更该做**：
+> 修坐标需要为每行算出它所属 frame 的页面偏移，而这条路径本该几乎不被使用。
+>
+> **修法**：`page-distill.js` 的行上新增 **`inFrame`**（由 document 在列表中的位置推出），
+> `resolveTarget` 在 `inFrame === true` 时**拒绝**并说明原因，而不是点一个猜的位置。
+> 这个字段**不进渲染输出**（模型看到的仍是 `#n role "name"`），已核实。
+>
+> 第 2 条测试在 `packages/dsh-browser-bridge/test/target-index.test.js`：
+> `a frame-relative index is refused rather than clicked at the wrong point`。
+> 它断言**一次点击都没发出**（`chrome.__clicks.length === 0`）——
+> 只断言报错的话，一个「先点错再报错」的实现照样能过。
+> **防护力已实测**：把 `if (element.inFrame === true)` 改成 `if (false)` → 恰好 1 条红。
+>
+>
+> **写这条 fixture 时踩的两个坑**（都会让测试"通过"或"失败"得没有意义）：
+> 1. **CDP 的 `strings` 是整份快照共享的一张表**，不是每份 document 一张。
+>    我第一版给每个 document 各造了一张局部表，于是两行都读出**第一个文档的名字** ——
+>    失败信息 `the rows were paired with the wrong documents` 是对的，是我的 fixture 错了。
+> 2. 探针里的 `srcdoc` 必须转义 `</script>`：HTML 解析器在内联脚本块里遇到这个字面量就提前收尾，
+>    **iframe 会静默变成空的**，探针于是只读到一行、看起来像产品缺陷。
+>    症状与「产品真的漏掉 frame」完全一样 —— 是 `.tmp-run/diag-frame-rows.mjs`
+>    把两份 document 的原始节点都打印出来才分清的。
+>
+
+> 而 `resolveTarget`（`extension/background.js`）拿到 index 后**重新拍一张快照**，
+> 再在新快照里找这个序号。**页面在这中间变过任何一个节点，序号就全部错位。**
+>
+> 失败是**静默的**，而且比报错更糟：模型决定「点 #19，那个 Pay 按钮」，
+> 而扩展去点了当前第 19 号节点 —— **可能是完全不相干的元素**。
+>
+> **先量**（`.tmp-run/probe-index-drift.mjs`，一个内容延迟到达的结账页 ——
+> cookie 横幅和促销条在加载后 300ms 出现，这是网页的常态不是造出来的竞态）：
+>
+> | 项 | 值 |
+> |---|---|
+> | 快照时 Pay 的 index | **19** |
+> | 页面变化后 Pay 的 index | **29**（漂移 10） |
+> | 用旧 index 去点会命中 | **nothing**（什么都点不到） |
+> | `backendNodeId` | **21 → 21，稳定** |
+>
+> **修法**（`extension/background.js`）：`distillSnapshot` 的行上一直带着 `backendNodeId`
+> （v50 为 AX 合并加的），而它**在文档生命周期内稳定**。新增
+> `resolveBackendNode(tabId, backendNodeId)`：**先 `DOM.getDocument`**（不先取，
+> push 会报 `Document needs to be requested first` —— 这条是我**实测撞到**的，不是查文档得来的），
+> 再 `DOM.pushNodesByBackendIdsToFrontend` 换回活节点，最后 `DOM.getBoxModel` 取真实盒子中心。
+> `resolveTarget` 的 index 分支改为**优先走这条路**，拿不到时才退回按位置算 ——
+> **退回不是死代码**：一个没变的页面、一个 AX 被拒的快照，都还需要它。
+> 另外把「index 不在页面里了」的错误文案改成 `is not in this page any more; take a fresh snapshot`
+> （原文案说 `does not name an element with visible bounds`，读起来像渲染怪癖，而实际是页面已经变了）。
+>
+> **修复效果实测**（`.tmp-run/probe-index-fix.mjs`，真 Chrome，页面自己记录被点的是哪个按钮）：
+> | 路径 | 结果 |
+> |---|---|
+> | 旧 index（21）在新快照里 | **没有元素** → 点击落空 |
+> | 稳定 id（23）解析 | 坐标 (92,163) |
+> | 实际点击 | **`clicked:Pay`** ✅ |
+>
+> **新增测试 `packages/dsh-browser-bridge/test/target-index.test.js`（5 条，463 → 468）**：
+> 走 `test/service-worker.js` 装置（真 background.js + 假 chrome + 真 WS 帧）。
+> 五条守：按 index 点击走稳定 id 而非位置、**push 之前必须先取 document**、
+> **没有稳定 id 的元素仍能按 bounds 点**（退回路径）、**浏览器拒绝解析稳定 id 时退回而不是失败**、
+> index 已不在页面时报出「页面已经变了」。
+> **防护力逐项实测**：不解析稳定 id → **2 条红**；不先取 document → **1 条红**。
+>
+> **这一轮的意义**：`index` 从「一个关于位置的猜测」变成「一个持久的引用」。
+> 这类缺陷只有真实浏览器能暴露 —— 单元测试里快照不会变，所以永远看不到。
+>
+> **验证**：`npm test` **468 passed / 0 failed**，exit 0；`check:extension` exit 0；
+> 32 场景 × 双配色审计 **0 findings**。**只改 `extension/` → 重载扩展即可。**
+>
+> ### v51：快照里有 16% 的行，模型读了什么也得不到（本轮优化）
+>
+> **起点**：v50 之后，用一个像真网页的页面（`.tmp-run/probe-realistic-snapshot.mjs`）重新量输出，
+> 加了一项新指标：**完全空白的行**（名字、value、href、type 全无，渲染成 `#index role` 就没了）。
+>
+> 量出：**32 行里 5 行是空的（16%）**，而且要让模型找到「Pay now」得先读过 **22 行**。
+>
+> **根因一半是 v50 自己引入的**：把 `<label>` 的词给控件是**对的**（`#71 textbox "Email address"`），
+> 但**label 那一行留了下来**，变成 `#68 label` —— 信息已被搬走，只剩一行占位。
+> 实测 `derived` 版是 `#68 label "Email address"`，AX 覆盖后是 `#68 label`（名字空了）。
+>
+> **决定前先问 Chrome**（`.tmp-run/probe-ax-label.mjs`）：它的 AX 树里 `<label>` 是
+> `role: "LabelText"`、**`name: ""`**、`ignored: false` ——
+> **Chrome 也认为 label 本身没有名字，词已经归给它标注的控件了。**
+>
+> **修法**（`extension/page-distill.js`）：`applyAccessibleNames` 里新增
+> `isInformationless(row)` + **`PROXY_ROLES = new Set(['label', 'LabelText'])`**，
+> **同时满足两者才丢**。返回值新增 `dropped` 计数。
+>
+> **这个区分是刻意的，而且是本轮最要紧的一行**：`<label>` 是**代理**（词已归控件，丢掉不损失信息），
+> 而**无名 `<button>` 是真实目标** —— 它可点，列在表里却不显示名字，**丢掉它就等于隐藏了一个能力**。
+> 实测那一行留了下来，`emptyRows` 从 5 降到 1，剩下的正是它。
+>
+> **效果**（同一页面，同一探针）：
+> | 指标 | 修复前 | 修复后 |
+> |---|---|---|
+> | 元素数 | 32 | **28** |
+> | 空白行 | 5（16%） | **1（4%）** |
+> | 「Pay now」前的行数 | 22 | **18** |
+> | 渲染字符数 | 874 | **834** |
+>
+> **测试（改 1 条，463 条不变）**：`the browser names override the derived ones, and only where it helps`
+> 现在同时断言 `dropped === 1`、label 行不在结果里、**以及无名 button 必须仍在**。
+> **防护力双向实测**：不丢代理 → `an empty label proxy still occupies a row`；
+> 放宽成「无信息就丢」（不分 role）→ `expected exactly one dropped proxy, dropped 2`
+> —— 第二个 dropped 正是那个真实可点的无名按钮，**宽松规则会把它一起删掉**。
+>
+> **调研记录（本轮按新目标先看开源）**：Chrome 官方 MCP 的 `take_snapshot` 返回带 `uid` 的文本树
+> （[SKILL.md](https://github.com/ChromeDevTools/chrome-devtools-mcp/blob/main/skills/chrome-devtools/SKILL.md)），
+> Playwright 的 `ariaSnapshot` 是 YAML 树（`- role "name" [attr=value]`，
+> [文档](https://playwright.dev/docs/aria-snapshots)）。**两者都是树，本插件是平铺列表** ——
+> 树能让层级代替行数（一个 `<nav>` 下的 12 个链接不必各占一行）。**这是下一个方向，不是本轮改动**：
+> 本轮先解决「行本身有没有信息」这个更基础的问题。
+>
+> **验证**：`npm test` **463 passed / 0 failed**，exit 0；`check:extension` exit 0；
+> 32 场景 × 双配色审计 **0 findings**。**只改 `extension/` → 重载扩展即可。**
+>
+> ### v50：模型看不懂表单——可访问名是猜的（本轮重构）
+>
+> **缺陷**：`extension/page-distill.js` 自己推导「可访问名」——那是 **W3C 规范**
+> （AccName），有参考实现（`dom-accessibility-api`），而 **Chrome 本来就实现了它**
+> （屏幕阅读器读的就是它）。此前的快照测试全用**手写的小页面**（一个标题、两个输入框、一个按钮），
+> 只能证明字段名对，证明不了真实页面上读不读得懂。
+>
+> **先量**（`.tmp-run/probe-realistic-snapshot.mjs`，一个像真网页的页面：12 个导航链接、
+> 盖在内容上的 cookie 横幅、只有 aria-label 的图标按钮、带 `<label>` 的表单、价格表格）。
+> 同一批节点，自算 vs Chrome：
+>
+> | 元素 | 自算 | Chrome |
+> |---|---|---|
+> | `<label for>` + `<input>` | **（空）** | `Email address` |
+> | `<select>`（两个 option） | `ChinaJapanKorea` | `Country` |
+> | 包裹式 `<label>` + checkbox | `onI agree to the terms` | `I agree to the terms` |
+> | `aria-label` 图标按钮 | `Close the panel` | `Close the panel` |
+>
+> **空名字是最糟的**：模型分不出哪个输入框是邮箱、哪个是卡号，只能猜。
+>
+> **决定：不写完规范，去问已经实现的浏览器。**
+> `.tmp-run/probe-ax-name.mjs` 证实 `Accessibility.getFullAXTree` 一次调用覆盖全页
+> （**8ms / 16.6KB / 33 个 AX 节点**），且 `.tmp-run/probe-snapshot-fields.mjs` 证实
+> **CDP 快照本身就带 `backendNodeId`**（`snapshot.documents[].nodes.backendNodeId`），
+> 与 AX 的 `backendDOMNodeId` 直接 join。**这一步是实测的，不是凭记忆的** ——
+> join 键猜错会得到「全部未匹配」，而那看起来和「没什么可改进的」一模一样。
+>
+> **重构**（`extension/page-distill.js`）：
+> 1. `distillSnapshot` 的行上新增 `backendNodeId`（有才带）。
+> 2. 新增导出 `applyAccessibleNames(elements, tree)`：按 backend id join，**覆盖名字**。
+> 3. **`AX_ROLE_ALLOWLIST`** —— 第一版直接采用 Chrome 的 role，**结果更糟**：
+>    `<label>` 变成 `LabelText`、`<span>` 变成 `none`，都不是模型能用的词。
+>    实测发现后改为**白名单**：只在 Chrome 说得更准的地方采纳（无 `href` 的 `<a>` 不是链接、
+>    `<div role="button">` 是按钮），其余保留按标签推导的角色。
+> 4. `background.js` 的 `pageSnapshot` 调 `Accessibility.getFullAXTree` 并合并，
+>    返回值新增 `namesFrom: 'browser' | 'derived'`。**AX 失败不是快照失败** ——
+>    自算的名字仍在，只是不升级。
+> 5. **`skipControlValues` 修了两个真 bug**：`makeTextReader` 调用时**根本没传这个选项**
+>    （修复是死代码）；而且它若全局生效，会连「输入框自己的值就是它的名字」这条规则一起跳过。
+>    正确语义是**在向下遍历时跳过控件，根节点不跳**（`read(index, depth, isRoot)`）。
+>
+> **测试（新增 2 条，461 → 463）**：`the browser names override the derived ones, and only where it helps`
+> （含「没有 backend id 的元素不动」「AX 为 undefined/空时不抛且原样返回」）；
+> `a label does not take its control value as its own text`。
+> **防护力实测（含一次失败）**：AX 覆盖回退 → 1 条红；label 修复回退 → **第一次没红**。
+> 根因是 fixture 里 `inputValue` 是空的，而真实复选框报 `on` ——
+> **没有值就没有「值被当成标签」这回事，测试在坏代码上也能过**。
+> 给 fixture 补上值后，回退版报出 `the label absorbed its control's value: "onI agree to the terms"`，
+> 正是真实页面上看到的那个字符串。
+>
+> **验证**：`npm test` **463 passed / 0 failed**，exit 0；`check:extension` exit 0；
+> 32 场景 × 双配色审计 **0 findings**；真实页面复测 `axMatched: 32/32`，四个缺陷全部转正。
+> **只改 `extension/` → 重载扩展即可。**
+>
+> ### v49：页面弹一个 alert，所有浏览器工具都停摆（本轮修复）
+>
+> **缺陷**：扩展**完全没有处理网页自己的 JavaScript 对话框**（alert / confirm / prompt），
+> 而 `lib/tools.js` 的超时文案里早就写着「a dialog may be open」——**代码承认了这个可能性，
+> 却从不帮用户处理**。README 与 HANDOVER 里也从未提到过对话框（已核实：全文零命中）。
+>
+> **先量清，不推断**（`.tmp-run/probe-dialog.mjs`，真实 headless Chrome）：
+> | 命令 | 基线 | 对话框弹出时 |
+> |---|---|---|
+> | `Runtime.evaluate` | 4ms | **4014ms 超时** |
+> | `DOM.getDocument` | — | **阻塞**（快照工具全废） |
+> | `Page.captureScreenshot` | — | **阻塞**（截图工具全废） |
+> | `Page.handleJavaScriptDialog` | — | **2ms，可用** |
+>
+> 即：**页面弹一个 alert，几乎所有浏览器工具都会挂到超时**，而修复只需一条 2ms 的命令。
+> 根因是对话框会**挂起该标签页的整个命令队列**。
+>
+> **修法**（三处，缺一不可）：
+> 1. `extension/background.js` 新增模块级 `openDialogs` Map 与 `hasOpenDialog(tabId)`；
+>    `enableObservers` 补上 **`Page.enable`**（**这是订阅对话框事件的前提**，不启用则
+>    Chrome 根本不发 `Page.javascriptDialogOpening`）；`onEvent` 处理
+>    `Page.javascriptDialogOpening` / `Page.javascriptDialogClosed`；`onDetach` 与 `detach`
+>    都要清掉记录（**detach 时 Chrome 会替你应答，留着记录等于谎报标签页仍被阻塞**）。
+> 2. 新增两个方法：**`page.dialogs`**（只读报告）与 **`page.dismissDialog`**（应答）。
+>    `page.dialogs` **绝不能走 CDP** —— 它用 `chrome.tabs.get`（浏览器进程）而不是
+>    `pageInfo` 的 `Page.getLayoutMetrics`（渲染进程）。**被阻塞的标签页答不了 CDP，
+>    所以走 CDP 的报告会在它最该工作的时刻超时**。
+> 3. `dismissDialog` 默认 **`accept: false`（驳回）**：扩展没读过页面问用户的那个问题，
+>    替用户点「确定」是替别人做决定。页面于是走 "no" 分支。
+>
+> **两个等待点也改成先看对话框**：`waitForLoad` 直接返回、`pageWaitFor` 返回
+> `{ satisfied: false, blockedByDialog: { type, message } }`。**不这样改，
+> 它们会在一个不可能成功的标签页上把 15/20 秒预算跑满，然后报一个什么都没说的超时。**
+>
+> **宿主侧**：新增工具 **`browser_dialog`**（查看 / 应答）；`lib/tools.js` 的超时文案改为
+> **点名对话框并给出那一个能解决问题的调用**（「call browser_dialog with the tab id」），
+> 因为「check the tab」没给模型任何可做的事。`classifySensitivity` 新增该工具：
+> **查看是免费的，应答算敏感操作**（会再问用户一次）。
+>
+> **`browser_dialog` 从 README 工具表里漏掉了** —— 这是我实现完就发现的（工具表 24 行、
+> 代码 25 个）。已补，并**新增一条测试永久锁住这个不变量**：
+> `tool-schema.test.js` 的「every tool the plugin registers is in the README table」
+> **双向检查**（漏行 = 隐藏了能力；多行 = 承诺了不存在的工具）。
+> **防护力双向实测**：删掉 `browser_dialog` 那行 → 报 `these tools exist but are not in the README table: browser_dialog`；
+> 加一行假工具 → 报 `the README documents tools that do not exist: browser_teleport`。
+>
+> **项目自己的测试又拦了我一次**（对）：`bridge-e2e.test.js` 的
+> 「every host method the extension claims to implement is dispatched」报
+> `background.js does not mention: page.dialogs, page.dismissDialog`。
+> 根因是 `extension/background.js` **自己有一张 `METHODS` 常量表**（每个方法名以字面量出现），
+> 我只加进了 `lib/protocol.js`。已补进扩展侧那张表。
+>
+> **验证**：`npm test` **461 passed / 0 failed**，exit 0（455 → 461）；
+> `check:extension` exit 0；32 场景 × 双配色审计 **0 findings**；字典 84/84。
+> **修复效果也在真实 Chrome 里量过**（`.tmp-run/probe-dialog-fix.mjs`）：
+> 事件到达（`confirm` "delete everything?"）→ 应答前**确实阻塞** → `handleJavaScriptDialog accept:false`
+> **1ms** → 应答后 **2ms 恢复**且页面走到 `no` 分支 → `javascriptDialogClosed` 到达。
+> **同时改 `lib/` 与 `extension/`：前者需重启 `dsh web`，后者重载扩展。**
+>
+> ### v48：令牌粘错了，这一页什么也不说（本轮修复）
+>
+> **缺陷**：设置页的令牌输入框是 `type="password"`，而它**是整个产品最容易失败的一步** ——
+> 从另一个窗口复制 64 位十六进制字符、粘贴到一个看不见内容的框里。
+> 粘一半、粘成大写、从错误的字段复制，**页面上没有任何反馈**：用户点「保存并连接」，
+> 连接失败，**然后文案把责任推给 harness**（v42 才刚修好这件事的另一半）。
+>
+> **修法**（`extension/options.html` + `options.js` + `locales.js`）：
+> 1. **显示/隐藏开关**：`revealButton` 上 `aria-pressed` 记录状态（标签说按钮接下来做什么，
+>    pressed 说字段现在是什么，屏幕阅读器需要这一对）。
+> 2. **形状提示** `#shape`：粘贴即判定，**空字段不报错**（否则每次首次访问都被红字迎接）；
+>    长度不对时在句末附上**实际长度**，让人一眼看出是截断。
+> 3. **`TOKEN_LENGTH = 64` 写死在扩展里**，不依赖 harness 可达 —— 需要这条提示的时刻，
+>    恰恰是连接失败的时刻。宿主 health 路由确实返回 `tokenLength`，但那时可能读不到。
+>
+> **探针抓到我自己的一个真实缺陷**：第一版正则写了 `/^[0-9a-f]+$/i`，于是
+> **64 个大写 `A` 被判为 `good`**。令牌由 `lib/token.js` 的
+> `randomBytes(32).toString('hex')` 生成，**永远是小写**，宿主逐字节比较 ——
+> 64 位大写字符串从来不是令牌，而从错误字段复制的典型形状正是它。已去掉 `i` 标志。
+> **这是先写探针再断言的价值：`.tmp-run/probe-token-field.js` 把四种粘贴形态逐一打印出来，一眼看见 `good`。**
+>
+> **项目自己的测试拦了我两次**（都对）：
+> 1. `panel-i18n.test.js` 的「no dictionary entry is dead weight」报 `tokenHide` 定义了却从未被画出 ——
+>    因为我的写法是 `say(revealed ? 'tokenShow' : 'tokenHide')`，**三元表达式让字面量扫描看不见**。
+>    已改为 `revealed ? say('tokenShow') : say('tokenHide')`，两个字面量都在。
+> 2. `options.js` 的 `say('key')` 扫描是**字面量匹配**，计算出来的键它看不见 ——
+>    这正是那条测试存在的意义。
+>
+> **装置修复（`test/options.test.js`）**：
+> - `makeNode` 的 `setAttribute` 原本是**空函数**、`removeAttribute` 只动 `dataset` ——
+>   `aria-pressed` 的断言会变得毫无意义（「说了状态」与「从没说过」不可区分）。已改为真实存储。
+> - 新增 `fire(type)`，让 `input` 事件（粘贴真正触发的那个）可测。
+> - **从 `options.html` 读 `<input>` 的声明类型**，而不是硬编码：reveal 的分支问的是
+>   「字段现在是不是 `type: 'text'`」，fixture 让 `type` 保持 undefined 会让**第一次点击
+>   无论标记写没写 `password` 都看起来像 reveal**。这正是我第一版测试红掉的原因
+>   （`undefined !== 'password'`）。
+>
+> **新增测试 3 条**（`test/options.test.js`，452 → 455）：显示/隐藏与 `aria-pressed` 双向、
+> 四种粘贴形态（空/20 位/64 位合法/64 位大写）、**形状提示必须是建议性的**
+> （形状看着不对的令牌仍要能送去测试 —— 否则一个来自旧 harness、长度不同的令牌会变得无法验证）。
+> **防护力逐项实测**：去掉 `i` 标志的修复 → **1 条红**；reveal 不切换类型 → **1 条红**。
+>
+> **验证**：`npm test` **455 passed / 0 failed**，exit 0；`check:extension` exit 0；
+> 32 场景 × 双配色审计 **0 findings**（**options 页两个配色各 0**，22 项文字 / 6 个点击目标）；
+> 两个字典都对齐（**面板 84/84 键；options 38 → 42 键**，新增 `tokenShow`/`tokenHide`/`tokenShape`/`tokenShapeWrong`）。
+> **只改 `extension/` → 重载 Chrome 扩展即可**，不需重启 `dsh web`。
+>
+> ### v47：按下「停止」之后，浏览器还在动（本轮修复）
+>
+> **缺陷**：宿主取消调用时**只本地 reject**（`lib/bridge.js` 的 `onAbort`
+> → `settle(new BridgeError(cancelled))`），**从不告诉扩展**。对绝大多数方法无所谓，
+> 它们毫秒级就结束了；对「会等」的方法是错的：
+> `page.waitFor` 默认**轮询 15 秒**，`page.navigate` 与 `tabs.open` 等待加载**最多 20 秒**。
+> 用户按下停止，turn 结束了，**浏览器仍在替他操作页面**——这正是那个按钮承诺要终止的事。
+>
+> **修法**（三处，缺一不可）：
+> 1. `lib/protocol.js` 新增通知 **`callCancelled: 'call/cancelled'`**，载荷 `{ id }`。
+> 2. `lib/bridge.js` 的 `onAbort` 在 settle **之前**发这条通知（settle 会把知道 id 的
+>    条目删掉）。`bridge.js` 此前**没有任何 import**，新增的 `import { NOTIFICATIONS } from './protocol.js'`
+>    无循环风险——protocol.js 是零 import 的常量表。
+> 3. `extension/background.js` 新增模块级 `const cancelledCalls = new Set()` 与 `wasCancelled(id)`；
+>    `relayNotification` 处理 `call/cancelled`；`handleFrame` 把 id 传给 `dispatch(method, params, id)`，
+>    并在 **`finally` 里 `cancelledCalls.delete(id)`**（不论成功或抛错，这个请求都不再在途；
+>    留着一个已完成的 id，会被下一个复用了同一号码的请求继承）。
+>    三个等待点（`waitForLoad`、`pageWaitFor`、经 `tabsOpen` 的 `waitForLoad`）每轮循环检查一次。
+>
+> **设计选择**：`pageWaitFor` 被取消时返回 `{ satisfied: false, cancelled: true }` 而**不是抛错**——
+> 宿主已经放弃了这次调用，这个回答会被丢弃，但**测试能看见是哪条路径结束了等待**。
+> 未知 id 一律忽略（不记忆）：记一个没匹配上的 id 是缓慢泄漏，而且正是「后来的调用无故被停」的成因。
+>
+> **验证工具教训（本轮一半价值）**：`test/bridge.test.js` 的 `FakeSocket.send` 存的是
+> **原始 JSON 字符串**（`this.sent.push(text)`），不是对象。既有测试只用了 `sent.length`（计数），
+> 所以这个形状差异从未暴露；我第一版断言 `frame.notify` 读到 `undefined`，报「the extension was never told」。
+> **正确做法是 `socket.sent.map((t) => JSON.parse(t))`。**
+>
+> **测试（新增 6 条，446 → 452）**：
+> - `test/call-cancel.test.js`（**新文件，4 条**）：走 `test/service-worker.js` 的既有装置
+>   （真 worker + 假 chrome + 真 WS 帧）。**关键断言不是「发了通知」而是「轮询真的提前停了」**——
+>   只查 wire 的测试会放过一个「记下取消然后无视它」的实现。实测：答完后再等 500ms，`polls` 不再增长。
+>   另三条：取消一个 id 不停另一个、已完成的 id 被遗忘（同号复用仍能跑完）、未知 id 被忽略且 worker 仍健康。
+> - `test/bridge.test.js`（2 条）：`aborting mid-flight tells the extension to stop working`（断言通知到达 wire 且 id 正确）、
+>   `a call that is never aborted sends no cancellation`。
+> **防护力逐项实测**：扩展侧忽略 `call/cancelled` → **1 条红**；宿主侧不发通知 → **1 条红**。
+> 两道防线各自独立可测——因为取消测试直接驱动 worker，**绕过了宿主**，所以必须两边都测。
+>
+> **踩到的坑**：`call-cancel.test.js` 的假 `chrome` 最初缺 `runtime.onInstalled`/`onStartup`/
+> `storage.onChanged`/`tabs.onCreated`，报 `Cannot read properties of undefined (reading 'addListener')`，
+> 并**污染了后面 7 条无关测试**（套件共享一个进程）。比对 `chrome.*.*.addListener` 全量清单后补齐。
+> 另外 `'status'` 不是真方法名，是 **`'bridge.status'`**。
+>
+> **验证**：`npm test` **452 passed / 0 failed**，exit 0；`check:extension` exit 0；
+> 32 场景 × 双配色审计 **0 findings**；字典 84/84。
+> **改的是宿主 `lib/` → 需要重启 `dsh web` 才生效**（不是重载扩展）。
+>
+> ### v46：模型点不动元素时，你看不到为什么（本轮修复）
+>
+> **缺陷**：模型调用 `browser_*` 工具失败时，面板只画一个 `✕` 加参数摘要
+> （`✕ browser_click #save`），**失败原因被整条丢掉**。链路上分两处丢：宿主
+> `lib/chat.js` 的 `tool/result` 分支只取一个布尔值（`row.status = toolFailed(data) ? 'error' : 'ok'`），
+> 结果正文从没进过行数据。后果是**信息不对称**：模型读得到原因、能自我纠正；
+> 看着屏幕的人分不清是选择器没匹配、标签页被 DevTools 占住、还是页面根本没响应 ——
+> 也就无法判断该不该介入。
+>
+> **真实形状（关键，别猜）**：`tool/result` 的文本**不在 message.content 顶层**，而是嵌在
+> `{ type:'tool-result', toolCallId, content:[{type:'text', text, isError}] }` 里，`isError` 也在内层。
+> 宿主的 `collectImageRefs` 递归进去正是这个原因（见本文件 1644-1646 行）。
+> **所以 `toolFailed` 的浅层检查同样漏判**——一次失败的调用会被画成绿色成功。两处都已改递归
+> （`toolResultText` / `hasErrorBlock`，深度上限 4，防止畸形日志造成死循环）。
+>
+> **修法**：新增 `toolFailure(data)`（取自结果文本，退化到 `error.message`，再退化到 `error` 字符串，
+> 归一行并截到 `TOOL_FAILURE_MAX = 200`），行上带 `failure` 字段；失败行改为**真正的 `<button>`**，
+> 点击展开原因。
+> **`collapseToolRuns` 也必须带上 reason**：合并连续调用时原来只取 `previous.status = row.status`，
+> 失败原因会掉——合并行显示叉号却没有任何解释，正是同一个缺陷高一层复现。
+>
+> **截图又抓到两个审计没覆盖的缺陷**（本轮一半价值）：
+> 1. **重叠**：展开的原因与调用行**画在了一起**。根因与 `failed` 行当年完全相同 ——
+>    `.row` 是 flex row，两段内容并排而非堆叠。修法是 `.row[data-kind="tool"] { flex-direction: column }`。
+>    实测后果：调用行被压到**父容器宽度的 18%**（66px/360px），`.args` 的 `clientW=0 scrollW=33`（文字被切）。
+> 2. **点击目标 18px**：行变成可点控件后只有 **360x18**，低于 WCAG 2.2 AA 的 24px。
+>    用 `min-height: 24px; margin: -3px 0` 补到 24px（负 margin 抵消，布局不动）。
+> 3. **我自己引入的第三个问题**：第一版把 `div` 做成可点 —— **只有鼠标能到达**，没有 tab 停靠点、
+>    没有焦点环、没有 Enter。项目的 `reasoning` 行本来就是真 button，已改为同一做法
+>    （有原因才建 `<button>`，无原因仍是 `div`，避免给 tab 顺序塞一个无作用的停靠点），
+>    并补上 button 重置样式（`width:100%; padding:0; border:0; background:none; text-align:left`）。
+>
+> **审计器新增第 5 类检查（重叠/挤压）**：这是**截图发现、审计看不见**的那一类。
+> 关键教训：**第一版检查写错了，而且它会静默通过** —— 我按「兄弟节点矩形相交」写，
+> 但实测该行的 `children=1`，**这种检查永远不可能触发**。改成按「水平 flex 容器的子节点
+> 逃出容器 / 内部文字被切」判定后才真正生效。
+> 排除两类**有意为之**的截断，否则噪音会淹没真 findings：可滚动容器（transcript 本就该滚）、
+> `text-overflow: ellipsis`（有可见「…」宣告，是设计决定）。
+> **校准证据**：移除 CSS 规则 → 恰好 1 条 finding（定位到 `.tool.has-reason`，子元素宽度占比 0.15/1.3）；
+> 恢复 → 0 条。
+> **同时把 `toolFailure` 加进 `audit-all.mjs` 的场景表**：它此前不在列表里，而**折叠状态的行
+> 没有第二个子元素，任何默认场景都不可能暴露这个缺陷**。
+>
+> **验证**：`npm test` **446 passed / 0 failed**，exit 0（439 → 446）；
+> `check:extension` exit 0；32 场景 × 双配色审计 **0 findings**；字典 84/84。
+> 唯一改动 `extension/` → **重载扩展**即可，不需重启 `dsh web`。
+>
+> ### v45：用键盘的人走不进这个面板（扩展侧，本次修复）
+>
+> **起点**：性能方向先被量清了。`.tmp-run/probe-layout-scale.mjs` 测出每帧一次强制布局
+> 的代价随滚动容器里的文本量线性增长（5k 字符 0.92ms / 20k 1.89ms / 63k 5.20ms /
+> 135k 14.42ms），而宿主 `lib/stream.js:34` 的 `DEFAULT_FLUSH_MS = 80` 意味着最多
+> 12.5 帧/秒。**一个 20k 字符的答案每帧只占 80ms 预算的 2.4%，不是用户可感知的问题**，
+> 继续优化属于过度工程。三个候选修法全部被数据否决（见
+> `.tmp-run/FINDINGS-performance.md`），结论已存档，不要重开。
+>
+> **转向**：键盘与焦点。此前的键盘检查只问「聚焦时有没有可见焦点环」，从不问焦点
+> **去了哪里**。新建 `.tmp-run/probe-focus.js`（真实 headless Chrome + 真实面板）量出四个缺陷：
+>
+> | 行为 | 修复前 | 问题 |
+> |---|---|---|
+> | 面板打开时焦点 | `body` | 第一次按键落空，只能先点输入框 |
+> | 会话列表 `ArrowDown` | `moved: false` | 方向键在列表里完全无效 |
+> | 历史视图里按 `Escape` | `historyStillOpen: true` | 关不掉，只能找 `‹` 按钮 |
+> | 模型菜单打开时焦点 | 仍在 `#model` | 方向键选不了菜单项 |
+>
+> **修法**（`extension/sidepanel.js`，三处）：
+> 1. 新增 `focusComposer()`：`pendingApproval === null && surface.hidden` 时
+>    `input.focus({ preventScroll: true })`。两个排除都是有理由的：有待批问题时用户是
+>    跟着徽章进来的，目标不是打字框；`surface` 可见时没有可用的输入框，聚焦它会让
+>    `document.activeElement` 指向隐藏节点、下一次 Tab 不可预测。**提取成具名函数**是因为
+>    `start()` 只在 import 时跑一次，写成内联代码那两个排除分支在套件里不可达。
+> 2. 会话行加 `keydown`：`ArrowDown`/`ArrowUp` 用 `next.focus()` 移动（让浏览器自带的
+>    scroll-into-view 跟随，面板不必知道行落在哪）。**不循环**——从末行跳回首行会掩盖列表长度。
+> 3. 文档级 `Escape` 现在也关闭历史视图并把焦点还给 `#title`。**关闭而非切换**：
+>    `#title` 本身是开/关切换，让 Escape 也切换就意味着它能*打开*历史，那不是「关掉一层」的意思。
+>    `#model-menu` 早已正确处理 Escape，这次是让它成为一致的模式而非孤例。
+>
+> **装置缺口（本轮一半价值）**：`test/dom-shim.js` 的 `focus()` 是**空函数**、
+> document 的 `addEventListener` 是**空函数**——所以焦点行为在过去**根本无法被测试**。
+> 已补：`focus()`/`blur()` 维护 `document.activeElement`（分离节点不可聚焦，与浏览器一致）、
+> document 收 `listeners` 并带 `emit`、`Element.emit` 冒泡到 document（面板把 Escape 装在
+> document 上，不冒泡就测不到）、`getElementById` 取出的元素带 `documentRef` getter
+> （它们是孤立根节点，没有 `parentNode` 链，否则 `focus()` 又变回空操作）。
+>
+> **新增测试 3 条**（`test/panel-stream.test.js`）：方向键在会话间移动且不循环、
+> Escape 关历史并把焦点还给触发器、面板打开时光标已在输入框。
+> **防护力逐项实测**（回退一处→跑→还原→校验字节一致）：方向键 → 1 条红；
+> Escape 关历史 → 1 条红；`focusComposer()` 调用 → 1 条红。
+>
+> **验证**：`npm test` **439 passed / 0 failed**，exit 0（436 → 439）；
+> `check:extension` exit 0；30 场景 × 双配色审计 **0 findings**；字典 84/84 键对齐；
+> 真实 Chrome 复测四个量点全部转正（`onLoadFocus: textarea#input`、`moved: true`、
+> `historyStillOpen: false`、焦点回到 `#title`）。
+> 只改 `extension/` 与测试 → **重载扩展**即可，不需重启 `dsh web`。
+>
+> ### v44：侧边栏关着的时候，审批问题没有人接（扩展侧，本次修复）
+>
+> **症状**：turn 停在那里等一个批准，而屏幕上没有任何东西说得出这件事。用户看到的是模型不动了。
+>
+> **根因**：审批问题走 `approval/asked` 通知帧 → service worker 的 `relayNotification()` →
+> `chrome.runtime.sendMessage({ type: 'dsh-approval-asked' })` → 面板的 `chrome.runtime.onMessage`。
+> 最后一跳是空的：**侧边栏是一个独立 document，没打开时它的 JavaScript 根本没在运行**，
+> 那个监听器不存在。而侧边栏默认就是关着的。
+> 修复前实测（`.tmp-run/probe-offline-approval.js`，真实 `extension/background.js` + 假 chrome）：
+> `{ panelMessageAttempted: true, badgeCallsAfterApproval: 0, anythingTellsTheUser: false }`。
+>
+> **修法**：面板侧本来就有兜底（`extension/sidepanel.js` 每 5 秒轮询 `/browser-bridge/health`，
+> 读到 `approvalPending` 就接住未决问题），所以缺的不是恢复能力，是**让人知道该打开它的信号**。
+> 复用 v41 的工具栏徽章：`approval/asked` 点灯、`approval/settled` 熄灭。
+> 点扩展图标会开面板（`chrome.action.onClicked` → `chrome.sidePanel.open`），所以信号可点通。
+>
+> **四处决定**（都在 `extension/background.js`）：
+> 1. **计数而非圆点**：一轮可命中两个受控工具，徽章显示未决**数量**。
+> 2. **`approval/settled` 无条件重画**：id 见没见过都重画——worker 被回收期间 settle 掉的问题它没见过，
+>    宿主才是「还有什么没关」的唯一权威。
+> 3. **待批压过「正在控制」**：同一标签页上两件事可同时为真而徽章只放得下一个。看不见「有请求等你」
+>    就无法行动；看不见「正在被操作」只是少一行状态。受控页有待批时显示红色 `#d1453b` + 计数，
+>    清空后回到自己的圆点 `#4262f0`。
+> 4. **全局与按标签页都设**：「Chrome 优先显示哪一个」本项目**测不了**（Chrome 137 移除
+>    `--load-extension`），所以两处都设成该位置正确的值，按标签页那轮最后跑；断线时清空
+>    （问题只能从这条 socket 被回答，宿主走了 `approval/settled` 永远不来）。
+>
+> **测试**：新建 `packages/dsh-browser-bridge/test/approval-badge.test.js`（4 条），加载真实
+> `extension/background.js` + 假 chrome + 真 WS 帧。徽章是**截图照不到**的东西——`.tmp-run/` 全部工具
+> 都看不见它（同 v31 教训的反面）。
+> **防护力逐项实测**（回退一处→跑→还原→校验字节一致）：`markControlled` 不读未决数 → 1 条红；
+> `settled` 不重画 → 2 条红；断线不清空 → 1 条红。
+>
+> **验证**：`npm test` **436 passed / 0 failed**，exit 0；`check:extension` exit 0；
+> 30 场景 × 双配色审计 **0 findings**；字典 84/84 键对齐（新增 `action.awaiting`）。
+> 只改 `extension/` → **重载扩展**即可，不需重启 `dsh web`。
+>
+> ### v43：开了两个 Chrome 窗口，模型就看错了页面（扩展侧 + 宿主侧，本次修复）
+>
+> **症状**：用户开着两个以上 Chrome 窗口时问「这个页面……」，模型回答的是**另一个窗口**
+> 里的页面，语气上毫无迟疑。`browser_selection` 报的「当前标签页」取决于标签页列表的
+> 排序，而不是取决于用户在看哪个窗口。
+>
+> **根因**：Chrome 的 `active` 是**每个窗口各有一个**——三个窗口就有三行 `active: true`。
+> 宿主 `packages/dsh-browser-bridge/lib/page-tools.js` 写的是
+> `tabs.find((tab) => tab.active === true)`，`find` 返回列表里的第一个。
+> 探针 `.tmp-run/probe-active-tab.js`（三个窗口各一个活动页）实测
+> `activeTabCount: 3`、`hostPicksTheUsersWindow: false`。
+>
+> **同一个项目里两种做法**：面板 `extension/sidepanel.js:2223` 用的是
+> `chrome.tabs.query({ active: true, currentWindow: true })`——带窗口限定，**是对的**；
+> 宿主用裸 `find`——错的。侧边栏一直知道自己窗口的标签页，只有宿主不知道。
+> `windowId` 早就在传输层上（`tabRow` 一直在发），但 `lib/tools.js` 的 `tabLine()`
+> 不渲染它，模型只看得到 `[id] 标题 — url (active, detached)`。
+>
+> **修法**（只有扩展能问 Chrome「哪个窗口聚焦」，所以答案由扩展提供）：
+> - `extension/background.js` 新增 `focusedWindowId()`：`chrome.windows.getLastFocused()`，
+>   **失败一律返回 `undefined`**，不因拿不到就弄坏整个列表
+> - `tabRow(tab, dshGroupId, focusedWindowId)` 新增字段 `windowFocused`。**三态是刻意的**：
+>   `true` 在聚焦窗口 / `false` 不在 / `undefined` 问不到。用 `false` 冒充「问不到」
+>   是在断言一件不知道的事
+> - `tabsList` 每次列表算一次聚焦窗口（不是每行算一次）；`tabsSelect`/`tabsClaim`/`tabsRelease`
+>   三处单行调用点也补上
+> - `lib/tools.js` 的 `tabLine()` marks 加 `focused window`——这是模型挑 `tab_id` 时
+>   唯一读的东西，值得这点宽度
+> - `lib/page-tools.js` 新增 `activeTabOf(tabs)`，按 `windowFocused` 选并返回依据 `via`
+> - 答不上来时**明说是猜的**：`via === 'first-active'` 且存在多个 active 行时，正文加一句
+>   「Several windows are open and this extension could not tell which one you are looking
+>   at… Confirm it with browser_tabs」。只有一个窗口时不加（不存在歧义，加了是噪音）。
+>   `windowFocused` 自相矛盾（多于一行命中）时也退回旧行为而不是任选。
+>
+> **`browser_selection` 此前零测试覆盖**——这正是跨窗口的 `find` 能活下来的原因。
+> 新增两个文件分守两半：`test/active-tab.test.js`（6 条，给定 wire 行时宿主挑得对不对）、
+> `test/tab-wire.test.js`（4 条，**真实 `extension/background.js`** 配假 chrome 走真
+> WebSocket 帧，断言 `windowFocused` 真的发出去了、问不到时发 `undefined` 而非 `false`）。
+>
+> **顺手抽出的共享装置 `test/service-worker.js`**：`badge.test.js` 那套「加载真实 service
+> worker」的代码现在两个套件共用。抽取时踩到一个真实的坑：`loadServiceWorker` 靠给源码追加
+> 唯一标记让 `data:` URL 不同（**`data:` URL 按整段文本匹配，`import()` 会缓存**），两个
+> 套件各从 0 计数就生成同一个 URL——第二个套件拿到缓存模块，`connect()` 不再执行，测试永远
+> 等不到连接。**症状是整轮静默挂死而不是失败**（runner 在一个进程里跑完所有套件，一个 suite
+> 停住后面 400 多条全不跑）。修法：计数器收进共享模块（只有一个），并给等待加超时，现在
+> 它会以 `the service worker never connected to the fake host on port … usually a cached
+> module URL` 失败而不是拖住整轮。
+>
+> **验证**：`npm test` **432 passed / 0 failed**，exit 0，连跑 3 次一致；
+> 三层防护力都实测（回退宿主侧选择 → 1 条红；回退 `tabLine` mark → 1 条红；
+> 回退扩展侧 `windowFocused` → 2 条红）；`npm run check:extension` exit 0；
+> 30 场景 × 深浅两配色审计 0 findings；字典 83/83 键对齐。
+>
+> ### v42：令牌填错了，设置页却让你去检查 dsh web 有没有在跑（扩展侧，本次修复）
+>
+> **症状**：首次安装时把令牌粘错，设置页显示的是「连不上 <端口>」加三条检查，
+> 第一条是「harness 在运行（dsh web），且端口与它的网址一致」。用户于是去重启一个
+> 运行得好好的进程。而代码里那句专为这种情况写的「harness 拒绝了连接——最常见的原因是
+> 令牌不对或已过期」**从未显示过**。
+>
+> **根因**：WebSocket API **不暴露 HTTP 状态码**。宿主对坏令牌回 401，浏览器只把它变成
+> `error` 事件 + code `1006` 的 `close`；`error` 总是先到，而 `probe()` 的 `finish()`
+> 有「第一个结果胜出」守卫，于是 `close` 分支（写 `refused`）成了死代码。
+> 实测两种情形的**事件顺序完全相同**（`error` → `close:1006`），所以「令牌错」与
+> 「harness 没跑」在界面上不可区分。探针：`.tmp-run/probe-token-reject.js`。
+>
+> **修法**：加 `portAnswers(port)`——一次 `fetch(url, { mode: 'no-cors' })`，
+> 有人应答（哪怕 404）说明端口上有监听者，那么是令牌被拒；连接被拒说明 harness 没跑。
+> **故意用 opaque 响应**：只取「有没有东西应答」这一个事实，读不到内容，
+> 因此**宿主不需要加 CORS 头**——health 正文带着 harness 内部状态，这页面不该读它。
+> `answered` 分支的检查项里**有意去掉**了 `check1`（端口已应答，再让人去查它是在
+> 把人推向已被证明没问题的方向），保留 `check2`/`check3`（后者覆盖「端口上监听的是
+> 别的东西」）。`close` 分支也做了同样判别，以防某些浏览器不发 `error`。
+>
+> **验证**：本机 Chrome/Node 实测判据成立（`.tmp-run/probe-nocors.js`：
+> up → `{type:'opaque', status:0}` resolve；down → `TypeError: Failed to fetch`）。
+> 新建 `packages/dsh-browser-bridge/test/options.test.js`（**4 条**），加载**真实的
+> `extension/options.js`**，配假 `chrome` + 真会回 401 的 HTTP 服务 + 真的没人监听的端口，
+> 点按钮后断言出现哪一句。判定是**双向**的：既断言该出现的句子，也断言**不该出现**的
+> 句子（只断言「有错误提示」的测试在修复前也是绿的）。
+> **防护力已实测**：把 `refused` 分支改回永远报「连不上端口」→ **2 条变红**，
+> 失败信息正是旧行为那段文字；恢复 → 全绿。
+>
+> **踩到的坑（与 v41 徽章测试同一个）**：`options.js` 在 `save()` **被调用时**才解析
+> `chrome`，所以「import 完就还原全局」会让点击时抛
+> `Cannot read properties of undefined (reading 'storage')`，且错误来自一段 `data:` URL，
+> 满屏 base64 什么也说明不了。还原必须挂在 `t.onCleanup`（测试结束），不是 import 结束。
+>
+> **更重要的坑：套件间全局污染。** 这条测试单独跑 4 条全过，`npm test` 里却红 1 条
+> （`expected the cannot-connect diagnosis, got: The harness refused the connection`）。
+> 根因：**`test/panel-stream.test.js:197` 在模块顶层把 `globalThis.fetch` 换成桩且从不还原**，
+> 而 `test/run.js` 是**先 import 全部套件、再统一跑测试** —— 所以测试体运行时全局 `fetch`
+> 已是它的桩，对**已关闭的端口**也 resolve，判据整个翻转。
+> 顺带修掉一个真实脆弱性：`options.js` 原先直接调 `fetch(...)`，改为在**调用时**经
+> `globalThis.fetch` 解析并容忍其不存在（与面板 `globalThis.navigator?.clipboard` 同风格）。
+> 测试侧在 import 阶段抓住真 `fetch`，并加**哨兵**（import 时对确认关闭的端口发一次请求，
+> 未 reject 就抛错指名道姓），使套件顺序被改动时**响亮失败**而非静默测错分支。
+> `closedPort()` 也从「绑定再释放」改为「固定高位端口 + 真实连接确认」：本机
+> **Windows 动态端口范围是 1024-15000**（`netsh int ipv4 show dynamicport tcp`），
+> 所以 `listen(0)` 会把刚释放的号重新发出去；而**绑定不释放也不行——被绑定的端口就是会应答**。
+>
+> **顺带确认过、有意不改**：`extension/background.js:319-326` 的 `close` 分支说
+> 「可能是 harness 停了，**或者**令牌错了」——那是诚实的表述（面板侧**确实**无法区分），
+> 且它把用户引向设置页拿到精确答案，链路完整。
+>
+> **改动文件**：`extension/options.js`（新增 `portAnswers`，重写 `probe` 的两个失败分支）、
+> `packages/dsh-browser-bridge/test/options.test.js`（新建）、`README.md`、`HANDOVER.md`。
+> **只改了 `extension/` 与测试 → 重载 Chrome 扩展即可生效，不需重启 `dsh web`。**
+
+> ### v41：上一轮做的高亮只有 24 毫秒，人根本看不见；另外补上「这个标签页正在被控制」（扩展侧，本次修复 + 新增）
+>
+> **这是对 v40 的自我纠错，教训比改动本身重要。**
+>
+> #### 一、量出来的缺陷：高亮只存在 24ms
+>
+> v40 把高亮接进了 `pageClick`，顺序是
+> `highlightTarget → mousePressed → mouseReleased → clearHighlight`。
+> 我写了功能，**但没有量过它在屏幕上存在多久**。
+>
+> `.tmp-run/probe-highlight-dwell.js` 按这个顺序驱动一遍并计时：
+>
+> | 阶段 | 耗时 |
+> |---|---|
+> | `Overlay.enable` + `highlightNode` | 9ms |
+> | 派发 pressed/released | 22ms |
+> | `hideHighlight` | 2ms |
+> | **从画出到撤掉（= 用户能看到的全部时间）** | **24ms** |
+>
+> 人眼要「感觉到闪了一下」需要约 **100ms**，要看清是哪个元素需要 200-400ms。
+> **24ms 的功能对用户等于不存在。** 我上一轮把一个自己没量过的功能说成了能用。
+>
+> #### 二、修法：不阻塞动作，但保证可见时长
+>
+> 新增 `HIGHLIGHT_DWELL_MS = 900` 与 `scheduleHighlightClear(tabId)`：
+> 动作返回后**不再等待撤除**，而是排一个定时器；下一个动作重画并**重新计时**，
+> 所以连续点击是「框跟着走」而不是「闪一下又闪一下」。
+>
+> 修后实测（`.tmp-run/probe-highlight-dwell2.js`）：
+>
+> | 指标 | 修复前 | 修复后 |
+> |---|---|---|
+> | 动作返回耗时 | 24ms（含撤除） | **26ms**（不含撤除，没变慢） |
+> | 高亮可见时长 | **24ms** | **≥900ms**（400ms 时采样仍在） |
+> | 到期后 | — | 干净撤除（`goneAfterDwell: true`） |
+> | 连续动作 | — | 重画并重新计时 |
+>
+> 两个定时器清理点：`chrome.debugger.onDetach` 与 `chrome.tabs.onRemoved` 都调
+> `cancelHighlightClear(tabId)`。**这里有个坑值得记**：定时器到期会走 `clearHighlight`
+> → `raw()`，而 `raw()` 会**按需 attach**，所以 detach 之后若定时器还在，
+> 它会悄悄把一个刚被用户/DevTools 收走的调试会话重新打开。
+> `cancelHighlightClear` 的注释写明了这一点。
+>
+> #### 三、新增：工具栏徽章 = 持续的「这个标签页正在被控制」
+>
+> 高亮回答的是「**刚刚**动的是哪个元素」，它该来该走。但它答不了用户在
+> 一连串工具调用中真正会问的那个问题：「**它现在还在动这个页面吗**」——
+> 连点二十次就是闪二十下，没有一个持续信号。
+>
+> 徽章补上这一格。它画在**浏览器自己的 UI chrome 里**，网页无法遮挡、无法改样式，
+> 且**按 tab 设置**（不是全局），所以它显示在它所说的那个标签页上。
+> 它挂在**真实的 debugger attach 状态**上，而不是某个定时器上，所以它不可能
+> 宣称一个不存在的控制。
+>
+> 实现：`markControlled(tabId, controlled)`，接线在 `attach()`（亮）、
+> `detach()`（灭）、以及 `chrome.debugger.onDetach`（灭）。
+> **第三个接线点是关键**：那是**用户自己**打开 DevTools 夺回标签页的路径，
+> 徽章若在那里不灭，就恰好变成了这个徽章存在的意义所要防止的那个谎。
+>
+> tooltip 用 `browserTranslator()`，**不是** `chrome.i18n.getMessage()`：
+> `extension/locales.js:16-22` 记录了 MV3 的 `_locales/` 机制被否决的理由
+> （无法从 Node 套件验证）。用错的话会在**每种语言下都静默返回空 tooltip**。
+> 新字典键 `action.controlled`（中：「DSH 正在操作这个标签页」/ 英：`DSH is operating this tab`）。
+>
+> #### 四、徽章是截图照不到的东西——所以测试怎么写
+>
+> `.tmp-run` 里所有工具（无头渲染、审计、像素比对）**都看不见徽章**，
+> 因为它画在页面之上、浏览器自己的 UI 里。这正是 v31 那条教训的另一面。
+>
+> **先试真实 Chrome，走不通，且原因已量清**：Chrome **137 已移除
+> `--load-extension`**（本机 Chrome 153），有头与无头两种模式都加载不了
+> （`.tmp-run/diag-extension-load.js` 实测：`contentScriptCanSeeRuntime: NO EXTENSION API`、
+> options 页打不开、算出的扩展 id 不存在）。我没有在 headless 上继续硬撑。
+>
+> ⚠️ **v66 修订：那个实测对，结论推广过头了。** 该开关只在**稳定版渠道**被关掉；
+> Chromium 与 Chrome for Testing 保留着它（两者都是同一份 Chromium，只是渠道不同）。
+> `.tmp-run/probe-load-extension-matrix.mjs` 三条独立证据重测：Playwright Chromium 153 ✅、
+> Puppeteer Chrome for Testing 148 ✅、`chrome-headless-shell` ❌、稳定版 Chrome 153 ❌。
+> 所以真浏览器 e2e **能做**，`test/extension-host.js` + `test/real-browser.test.js` 已经做成了。
+> 上面那次探针之所以得出「不行」，是因为**只测了稳定版**，并且用了
+> `contentScriptCanSeeRuntime` 这个**在主世界取值的判据**——扩展 API 只在隔离世界里存在，
+> 主世界读不到是正常的，那不是「没注入」。今天徽章仍然要单独测，但理由变了：
+> 不可读的是**渲染结果**（`chrome.action` 交给浏览器 UI 画，DOM 与 CDP 都拿不到），
+> 不是「扩展装不上」。
+>
+> **改为新建 `packages/dsh-browser-bridge/test/badge.test.js`**：用假 `chrome`
+> 加载**真实的 `extension/background.js`**，并走**真实入口**——
+> 起一个假宿主 WebSocket，把 port/token 写进 storage，让模块自己的顶层
+> `connect()` 连上来，再从宿主侧发 `debugger.attach` / `debugger.detach` 帧，
+> 最后断言 `chrome.action.*` 的**调用参数**。
+> 断言按 `tabId` 校验（徽章设错标签页比不设更糟），并按 tooltip 校验可读性。
+>
+> **这条测试有防护力（已实测）**：把 `setBadgeText` 的清除分支拆掉
+> （改成永远 `'•'`）→ **416 passed, 2 failed**，两条都红；
+> 恢复 → **418 passed**。
+>
+> #### 五、写这条测试时踩到的三个坑（都值得留在 HANDOVER）
+>
+> 1. **`import()` 按 URL 缓存**：第二条测试拿到了第一条测试的模块实例
+>    （还持有第一条的 `chrome`），报出的却是「worker 从没注册过 detach 监听」——
+>    症状与原因完全不同。修法是给 `data:` URL 追加唯一的尾语句。
+> 2. **定时器让进程不退出**：模块的重连 `setTimeout` 在 Node 里会吊住事件循环，
+>    于是套件打印完结果**永不退出**。修法是给加载的源码追加一个 teardown 钩子
+>    （纯测试侧，不改产品文件）。
+> 3. **污染 `globalThis.chrome`**：套件共享一个进程且按文件名顺序跑，
+>    `badge.test.js` 排在 `panel-stream.test.js` 之前，我的桩把后面那个套件的桩
+>    顶掉了——表现为 **7 条毫不相关的面板测试**失败在 `openOptionsPage is not a function`。
+>    修法是在 teardown 里恢复原值。
+>
+> #### 六、另一处被项目自己的测试抓到的错
+>
+> 我最初把 tooltip 写成 `browserTranslator()('action.controlled')`，
+> 被 `panel-i18n.test.js:323` 的 **「no dictionary entry is dead weight」判红**——
+> 它扫描的是字面量 `t('key')`，末尾的 `(...)` 让正则匹配不到。
+> **测试是对的，我的写法偏离了项目约定**。改为先 `const t = browserTranslator()`
+> 再 `t('action.controlled')`。
+>
+> #### 验证结果（全绿）
+> | 项目 | 结果 |
+> |---|---|
+> | `npm test` | **418 passed, 0 failed, 0 skipped**，**exit 0**（用 `WaitForExit` 证明自行退出） |
+> | `npm run check:extension`（10 个脚本） | exit 0 |
+> | 字典 | 83/83 键对齐，无占位符不匹配 |
+> | `--width 380` 全量审计 | **30 场景 0 findings / 0 broken** |
+> | 预览残留 `chrome-profile-*` | 0 |
+>
+> #### 文档
+> - `HANDOVER.md:3` 顶部改为「当前状态：**v41 已交付**」，在 v40 段前插入本段
+> - `README.md` 在 v40 段前新增 v41 段；测试计数 415 → 418
+>   （**只改当前状态**的表述，历史段里的旧计数保持原样）
+>
+> #### 教训（写给自己）
+> **做了功能不等于做了可用的功能。** v40 的代码是对的、测试是绿的、
+> 截图里框画得清清楚楚——但它在真实使用中只存在 24 毫秒。
+> 我只验证了「它出现」，没有验证「它待得够久」。**任何与时间有关的界面行为，
+> 都必须量出时长，而不是假设它「应该够」**。
+
+> ### v40：模型在你浏览器里操作时，页面上什么都看不见（扩展侧，本次新增功能）
+>
+> **这是本轮唯一一个「新增能力」而不是「修缺陷」的版本**，起点是问：
+> 「`debugger` 权限意味着这个扩展能读写你登录的所有站点，那么**缓解措施都在哪里**？」
+> 答案是：**全都在侧边栏里**——令牌、每域名审批、敏感动作二次确认。
+> 而**网页本身什么提示都没有**。一次点击落下、一个字段被填上，
+> 用户唯一的线索是回到面板读那一行工具记录，再自己对着页面找。
+>
+> **技术可行性先验证，再动手**（`.tmp-run/probe-overlay.js`）：
+> CDP 的 `Overlay` 域**不在** `CDP_DENIED_DOMAINS` 里（被拒的是
+> Browser/Target/Storage/SystemInfo/Extensions/ServiceWorker/WebAuthn/Cast），
+> 而它正是 DevTools 自己高亮元素用的机制。实测：
+> `Overlay.enable` / `highlightNode` / `hideHighlight` 全部可用，
+> 像素确实变化（12204 → 19816 字节），`hideHighlight` **完全还原**。
+>
+> **效果比预期好**：`showInfo: true` 会让 DevTools 自己画出标注浮层——
+> 元素选择器、尺寸、无障碍角色（`button#save  120 × 60` / `Role: button`），
+> 这是一个用户已经会读的界面，不需要教学。
+>
+> **实现**（`extension/background.js`）：
+> - 新增 `HIGHLIGHT_CONFIG`（accent 蓝 40% 填充 + 90% 边框，`showInfo: true`）
+>   与 `HIGHLIGHT_RECT`（无法命名元素时的兜底框）
+> - 新增 `highlightTarget(tabId, {nodeId?, backendNodeId?, x, y})`：
+>   优先 `backendNodeId`，退化到 `nodeId → DOM.describeNode`，
+>   再退化到 `DOM.getNodeForLocation` 按坐标换节点（**这是让两条寻址路径
+>   共用一条高亮路径的关键**），最后退化到 `highlightRect`
+> - 新增 `clearHighlight(tabId)` 与 `highlightSelector(tabId, selector)`
+>   （`pageFill` 走 `Runtime.evaluate`，没有坐标可复用）
+> - 接入点：`pageClick`（**画在按下之前**，否则点击可能已经改了页面）、
+>   `page.type` 的 selector 分支、`page.fill`
+> - `resolveTarget` 现在返回 `nodeId`
+> - **`highlightTarget` 里的每个失败都被吞掉**，注解写明了理由：
+>   高亮是**解释**，不是动作的一步。一个没有可命名节点的目标仍然要能点，
+>   一个已被关掉的标签仍然要能返回结果。否则「打开一个视觉辅助」
+>   会变成「点击停止工作」。
+>
+> **测试（这里有一个重要教训）**：
+> 在 `test/chrome-e2e.test.js` 新增一条真 Chrome 端到端。
+> **第一版只断言「截图变了」，我把它拿去验证防护力时发现它证明不了任何东西**——
+> 把 `contentColor`/`borderColor` 都改成 `a: 0`（全透明），测试**依然通过**，
+> 因为 `showInfo` 的浮层本身就在重绘页面。
+> 第二版改为**只比较元素自身的矩形区域**，并断言其中**超过一半的像素**发生变化。
+> 现在再灌同样的全透明改动 → **414 passed, 1 failed**（`696/3960` 像素变了，
+> 元素本体没被覆盖），恢复 → **415 passed**。
+>
+> **同时踩到并记录的一个工具缺陷**：`Page.captureScreenshot({clip})` 的裁切截图
+> **不含 overlay 合成层**——同一个被高亮的按钮，裁切截图与未高亮时**逐字节相同**，
+> 而全页截图明确显示框画在上面。这正是我第一版测试失败的原因（不是产品缺陷）。
+> 最终做法：取全页截图，在**页面内的 canvas** 里解码并逐像素比对矩形区域——
+> Node 没有 PNG 解码器，而页面本来就能回答这个问题。
+>
+> **验证结果（全绿）**
+> | 项目 | 结果 |
+> |---|---|
+> | `npm test` | **415 passed, 0 failed, 0 skipped**，exit 0 |
+> | `npm run check:extension`（10 个脚本） | exit 0 |
+> | `--width 380` 全量审计 | **30 场景 0 findings / 0 broken** |
+> | 预览残留 `chrome-profile-*` | 0 |
+>
+> **README 同步**：「与 Codex 能力的差距」表里那条
+> 「元素高亮 / 『正在被控制』提示 ❌ 未实现」已改为 ✅ **已实现**，
+> 并注明「官方是否有此 UI 未确证；这是本插件自己的选择」——
+> 不把本插件的设计说成是对官方的复刻。测试计数 412 → 415（只改**当前状态**的
+> 表述；`#### v11` 等历史段里的 412 是那一版的结果，保持原样）。
+
+> ### v39：设置页从未进过批量审计，于是它一直带着两种问题（工具 + 设置页，本次修复）
+>
+> **这一轮的起点是「还有什么用户可见的表面从未被审计」**——答案是设置页
+> （`extension/options.html`）。它是用户必须过的那道门（粘贴令牌），
+> 但 `audit-all.mjs` 只认侧边栏的 28 个场景，**从未渲染过它**。
+>
+> **查出三件事，其中两件是审计器自己的缺陷**：
+>
+> **1. 审计器在浅色下把整页判成 `ratio: 1`（黑字压黑底）。** 截图立刻证伪：
+> 浅色下文字清晰可读。根因链条：
+> - `options.html` 在 `html`/`body` 上都是透明背景，所以
+>   `backgroundStack(element)` 返回**空数组**；
+> - `rasterize([])` 只 `clearRect` 后读像素，得到**透明黑** (0,0,0)；
+> - 于是每个元素都对着黑色合成。深色下**碰巧正确**，浅色下就报出整页不可能
+>   存在的 1:1。
+> - `pageBackdrop` 这个兜底值确实存在，但**从未被用于空栈**——它只在
+>   `opacity < 1` 的合成分支里被读到。
+> 修法：空栈时用 `pageBackdrop`。注意**不能**在审计脚本里直接
+> `rasterize(['Canvas'])`——那个 canvas 节点**不在文档里**，不继承
+> `color-scheme`，系统色永远解析成浅色（我踩过：改成 `'Canvas'` 后深色反而全红）。
+> `pageBackdrop` 走的是一张真正插进文档的临时元素，所以是对的。
+>
+> **2. 复选框被报成 13×13 的点击目标，是误报。**
+> `options.html` 的 checkbox 包在自己的 `<label>` 里，整行才是手指要打的地方。
+> 审计器现在量 `label.htmlFor === element.id` 的包装 label，并在发现里标注
+> `measured: 'wrapping label'`，这样读报告的人不会去截图里找一个 13px 的盒子。
+> 改成量 label 之后，**它立刻暴露出一个真实缺陷**：那行是 **298×22**，
+> 高度低于 WCAG 2.2 AA (2.5.8) 要求的 24px。已加 `label.check { padding: 3px 0 }`
+> 补到 28px，文字位置不变。
+>
+> **3. 预览把伪宿主的临时端口画进了端口框**（截图上是 `5758`，而紧挨着的说明
+> 写着「通常是 3080」）。那是**预览自身的**矛盾，不是产品缺陷（`options.js:56`
+> 默认值本来就是 `3080`）。原因：`chromeStub` 让注入端口压过一切，
+> 这对**作为客户端的侧边栏**是必需的（否则预览会去连用户线上的 3080），
+> 但设置页是**表单**，它显示字段里存的东西。已改为按 `location.pathname`
+> 区分：设置页用存储值/默认值。
+>
+> **工具改动**（都在 `.tmp-run/`）：
+> - `audit-all.mjs` 新增 `--page` 维度，默认同时审计**侧边栏与设置页**。
+>   设置页没有场景（它不随面板状态变化），所以每个配色只渲染一次，
+>   而不是把同一页渲 28 遍充数。
+> - 新增探针 `probe-options-page.js`（量端口字段与页面文字是否自相矛盾、
+>   复选框的可点区域）与 `probe-canvas-color.js`（证实 `Canvas` 系统色
+>   在浅色下确实返回 `rgb(255,255,255)`，把嫌疑从「取色」排除到「合成」）。
+>
+> **验证**：设置页深浅两配色均 **0 findings**；`npm test` **414 passed, exit 0**；
+> `npm run check:extension` exit 0。
+>
+> **交付要求**：只改了 `extension/` → **重载 Chrome 扩展**即可。
+
+> ### v38：一个会话都没有时，面板中央是 559px 的空白（扩展侧，本次修复）
+>
+> **这一轮问的是「全新用户第一次打开面板看到什么」的下一层**：装了扩展、宿主在跑、
+> 令牌也对，但**一个会话都没有**。此前 28 个预览场景里没有一个覆盖它。
+>
+> **量出来的**（探针 `.tmp-run/probe-empty-state.js`，380x720）：
+> - `#transcript` 占了 **380×559px**，`childCount: 0`，`visibleTextInStage: []`
+>   —— **整片空白，一个字都没有**；
+> - 输入框占位符是「问点什么…」，**在邀请用户打字**，而 `send.disabled: true`，
+>   屏幕上没有任何东西解释为什么；
+> - 用户打完字按发送**不可能成功**（`sendMessage()` 见 `currentSessionId` 为空就
+>   只弹一个「先选择一个会话」的 toast）。**而这正是首次使用最容易走的一条路。**
+> - 唯一的出路是页头那个 `＋`（`title` 为「在当前工作区新建会话」），渲染成一个
+>   无标签的字形。
+>
+> **修法**：复用已经验证过的 `#blocked` 状态面（标题 + 一句说明 + 一个按钮），
+> 让它承载**两种**状态——宿主不可达，和没有会话。两者都是「内容区没有东西可显示」
+> 的同一个位置，新造第二个面板只会与它漂移。按钮的语义由状态决定，
+> 所以它在 `sidepanel.js` 的点击处理里**回读 `hostReachable`**，而不是靠哪条分支
+> 最后设的旗标。
+>
+> **顺带修掉一个我自己引入的「口吃」**：`renderTitle()` 原来在 `currentSessionId`
+> 为空时显示「还没有会话」，于是**页头和中间的标题说了同一句话**。这与 v4 记过的
+> 同类错误一致（当时是宿主不可达时页头谎报「还没有会话」），已按同一决策处理：
+> 没有会话可命名时页头回落到产品名 `DSH`。
+>
+> **两个测试工具的真实缺陷，一并修掉**：
+> - `preview.mjs` 的伪宿主答完 `create` 后**仍然返回空列表**，于是「新建会话」
+>   按钮看起来没反应。真实的宿主会把新会话加进列表，已改成忠实模拟。
+>   这个 fixture 缺陷差点让我把**功能正常**误判成**功能坏了**。
+> - `panel-stream.test.js` 的 `groupsPayload()` **无条件返回硬编码的两个会话**，
+>   所以「一个会话都没有」在这个测试套件里**根本无法表达**。已改为可被
+>   `host.groups` 覆盖（并在用完后 `finally` 恢复——该套件共享一个面板实例，
+>   不复原会污染后面所有测试，这一条我踩到过：43 条测试变红）。
+>
+> **测试**：新增一条（断言状态面出现、标题不与页头重复、按钮文案、
+> **点击真的发出了 create 请求**、新会话出现后状态面自清）。
+> **已验证有防护力**：把 `noSessions` 强制为 `false` → **413 passed, 1 failed**；
+> 恢复后 **414 passed**。
+> 同时 `panel-i18n.test.js` 的「no dictionary entry is a sentence」豁免表由 2 条
+> 扩到 4 条（同**一个**状态面），并保留 `assert.equal(ALLOWED.length, 4)` 的锁。
+>
+> **验证**：`--width 320/380` × 28 场景 × 深浅两配色，空状态两种配色各 **0 findings**；
+> `npm test` **414 passed, exit 0**；`node --check extension/sidepanel.js` exit 0；
+> 字典键对齐。端到端已量：按下「新建会话」→ 发出 create → 状态面消失
+> （`blockedHidden: true`）→ 页头变成「新会话」→ **输入框自动获得焦点**。
+>
+> **交付要求**：只改了 `extension/` → **重载 Chrome 扩展**即可，不需要重启 `dsh web`。
+
+> ### v37：装了扩展但没粘令牌的人，被面板卡在那里（扩展侧，本次修复）
+>
+> **这一轮的起点是问「全新用户第一次打开面板看到什么」。** 此前的 28 个场景全部是
+> 「宿主在跑、桥已连上」，而**第一次真的会遇到的中间状态从未被渲染过**：
+> `dsh web` 在跑、扩展已装、令牌还没粘。
+>
+> **关键事实（决定了修法）：这个状态下对话是能用的。** 令牌只保护 WebSocket
+> 升级（`lib/index.js:388-390` 的 `authorizeBridgeRequest`），而面板发消息走的是
+> HTTP `/browser-bridge/chat`（`lib/index.js:434` 起的 `register`），
+> **不经过那道校验**。所以此时：转录正常渲染、composer 正常、能正常聊天，
+> **只有浏览器工具用不了**。
+>
+> **缺陷**：面板用一个 48×22px 的灰药丸写「未连接」来概括这一切。量出来的：
+> - 该药丸 **不是按钮、不可点击**（`isButton: false`, `clickable: false`），
+>   `title` 就是「未连接」本身，悬停也不多说一个字；
+> - **屏幕上没有任何地方出现「令牌」或「设置」**（`bodyMentionsToken: false`,
+>   `bodyMentionsSettings: false`）——而这两件正是唯一的出路；
+> - 设置入口只存在于**历史视图的页脚**（`sidepanel.js` 的 `session-foot`），
+>   要先把标题点开、再滚到底才看得到，聊天视图里 `settingsButtonInChatView: false`；
+> - `background.js:161` **早就有准确的诊断**（`no token saved — open the extension
+>   options and paste the token`），但它只进 `lastError`，面板从不显示。
+>
+> 于是「未连接」既没说清是什么没连上（用户会以为整个面板坏了），也没给下一步。
+>
+> **修法**：把这个状态从「一句事实」改成「一个出口」。
+> - 措辞改为**点名什么不可用**：「浏览器工具未连接」（en: `Browser tools offline`），
+>   并明确对话本身是好的；
+> - 同一个 chip 上加一个 **「设置」按钮**，点击 `chrome.runtime.openOptionsPage()`；
+> - 状态**自清**：桥连上后 chip 变回正常形态，不需要用户去关掉它——需要手动
+>   关掉的东西是警告，不是对当前状态的陈述。
+>
+> **顺带修掉一个我自己引入的对比度缺陷，由审计当场抓到**：那个「设置」按钮最初用
+> `var(--accent)` 作文字色，实测**深色 2.82:1、浅色 3.86:1**（正文需 4.5:1）。
+> 根因是 `--accent` 是给**填充背景**校准的（白字压其上），当**文字色**用就不达标——
+> 与 v35 修 `--ok`/`--bad` 是同一类问题。新增 `--accent-text`
+> （`color-mix(in oklab, var(--accent) 62%, CanvasText)`），混合 `CanvasText`
+> 使其在白底自动加深、黑底自动变亮，一个声明服务两种配色。62% 是量出来的：
+> 78% 时深色仍只有 4.28:1。
+>
+> **同时修掉一处语义串台**：`context.offline` 原本还被 `model.failed` 当作
+> 「连不上宿主」的原因复用。改名后那句会变成「切换失败：浏览器工具未连接」，
+> 而真实原因是整个宿主不可达。新增独立的 `error.unreachable`（连不上 dsh web）。
+>
+> **测试**：新增一条（`panel-stream.test.js`，在 `host.health = { connected: false }`
+> 下断言 chip 的 `data-warn`、标签文案、按钮存在、**点下去确实调了
+> `openOptionsPage()`**、以及重连后 chip 自清）。该测试**验证过有防护力**：
+> 把修复回退成「未连接」后它立刻变红（411 passed, 2 failed），恢复后 413 全绿。
+> 测试桩原本把 `openOptionsPage` 写成空函数，现改为计数器——空函数分不出
+> 「按钮生效」和「按钮什么也没做」。
+>
+> **验证**：`--width 320/380` × 28 场景 × 深浅两配色 **全部 0 findings / 0 broken**；
+> `npm test` **413 passed, exit 0**；`node --check extension/sidepanel.js` exit 0；
+> 字典 78/78 键对齐。截图：`.tmp-run/shot-offline-zh.png`、`shot-offline-en.png`。
+>
+> **交付要求**：只改了 `extension/` → **重载 Chrome 扩展**即可，不需要重启 `dsh web`。
+
+> ### v36：窄面板下发送按钮会掉出屏幕，以及设置页没被渲染过（扩展侧，本次修复）
+>
+> **这一轮的起点是「把宽度压到真实极限」。** v35 只量了 380 与 300，
+> 这一轮把视口压到 200（≈200% 文本缩放的等效宽度）与 320（WCAG 1.4.10 重排要求），
+> 立刻掉出三类缺陷 —— **全部是同一类：只用「够宽」验证过。**
+>
+> **一、`#model` 不肯收缩，把发送按钮挤出视口。** 200px 视口下 `#send` 的右边缘
+> 落在 **233px**，即**发送按钮完全不在屏幕上**（这是面板里最不能消失的按钮）。
+> 根因不是宽度写死，而是 flex 默认值：`#model` 是 flex item 却只给了 `max-width`，
+> 其 `min-width` 取默认的 `auto` = min-content（实测 171px）并**拒绝收缩**，
+> 于是 `flex: 0 0 auto` 的 `#send` 被顶出去。
+> 修法：给 `#model` 加 `min-width: 0`。`#model-text` 本来就有 `min-width: 0` +
+> ellipsis，所以退化成「模型名缩写」，这个代价是对的。
+> 实测 140/160/200/240/380 五档，`#send` 右边缘全在视口内。
+>
+> **二、两个浮层菜单的 `min-width` 打赢了 `max-width`。** `#at-menu` 写
+> `min-width: 200px`、`max-width: min(320px, calc(100vw - 24px))`；两者冲突时
+> **CSS 判 min 赢**，所以在 200px 视口里菜单被钉在 200px 宽并挂到屏幕外
+> （实测 right=208）。`#model-menu` 的 `min-width: 180px` 是同一个错。
+> 修法：两处都改成 `min-width: min(<原值>, calc(100vw - 24px))` —— 保留下限，但让窗口更小时能退。
+>
+> **三、设置页（`extension/options.html`）此前从未被渲染、也从未被审计。** 本轮给
+> `preview.mjs` 加了 `--page options`，第一次把它截出来看，就发现它仍用
+> `--accent: #4d6bfe` —— 正是 v35 从面板改掉的那个值。白字压在其上约 4.1:1，
+> 低于正文所需的 4.5:1；而且**同一个产品里同一个主操作有两种蓝**。已对齐为 `#4262f0`。
+> 教训：把 `--page` 做成开关之前，我默认「面板 = 全部可见表面」，而设置页才是
+> 用户为了粘贴令牌必须先过的那道门。
+>
+> **四、这一轮也修了验证工具本身（不改产品，但决定以后每轮快慢）。**
+> `preview.mjs` 单次跑 21.8 秒，而实测内部工作只占 **1.8 秒**：
+> `server.close()` **只停止接受新连接，不关闭已建立的 keep-alive 连接**，面板自己
+> 打到这两个服务的连接就是这种，事件循环因此空转约 20 秒等它们超时。
+> 加 `closeAllConnections()` 后单次 **21.8s → 2.0s**。
+> 同时 `audit-all.mjs` 由串行改为并发（`--concurrency`，默认 **2**）：全量 56 次渲染
+> **约 20 分钟 → 约 30 秒**。并发数特意只取 2 —— 试过 4，机器过载导致 CDP
+> `Page.captureScreenshot` 超时，**审计把自身资源竞争报成了产品缺陷**。
+> 另外把 CDP 超时从 20s 放宽到 60s（同一个原因），并修掉三处仪器缺陷：
+> ①`main()` 的 `finally` 里 `process.exit` 会吞掉异常，把「Chrome 没起来」
+> 报成 `no audit output (exit 0, 0B)` —— 异常现在显式 emit 并置 exit 1；
+> ②`audit-all.mjs` 原先只在 `broken` 时非零退出，**findings > 0 竟然算成功**，
+> 只是因为第一个量的视口恰好 0 findings 才没暴露；
+> ③输出改为「先缓冲、结束前统一异步写一次再退出」——直接 `process.exit`
+> 会截断管道里未写完的几 KB JSON（表现为约 1/3 的运行随机缺一条结果）。
+> 调试端口也从 `Math.random()` 改为按 pid 分带：并发时两次抽到同号会让一个
+> Chrome 去连另一个的调试端口（表现为 157 秒的运行）。
+>
+> **验证**：`--width 200/320/380` 三档 × 28 场景 × 深浅两配色 **全部 0 findings / 0 broken**；
+> `npm test` **412 passed, exit 0**；`node --check extension/sidepanel.js` exit 0。
+> 截图目视确认：200px 下模型名缩写为 `deepseek-v4-…`、发送按钮完整可见。
+>
+> **交付要求**：只改了 `extension/` → **重载 Chrome 扩展**即可，不需要重启 `dsh web`。
+
+> ### v35：面板的配色与审批按钮层级（扩展侧，本次修复）
+>
+> **这一轮换了验证方式：不读代码，量像素。** 用 `.tmp-run/preview.mjs` 起真实
+> headless Chrome 渲染**真实的 `extension/sidepanel.html`**（不是测试用的 DOM 桩
+> ——那个桩没有 CSS 引擎、不渲染、截不了图），再用 `.tmp-run/audit-in-page.js`
+> 在页面内量对比度、点击目标尺寸与横向溢出。
+>
+> **教训（本轮最重要的一条）：审计器自己会骗人。** 旧的对比度检查用正则解析
+> `rgba?()`，**认不出 `oklab()`**，而面板的调色板全是 `color-mix` —— 于是每个元素
+> 都解析失败并 `continue`。**此前那句「对比度 0 项」的真实含义是「什么都没测」。**
+> 改用 1×1 canvas 栅格化取色后，同一份代码立刻报出浅色 164 项 / 深色 97 项。
+> 仪器必须能自曝健康度：新增 `coverage` 字段（测了几个、跳了几个、几个色读不出来）。
+>
+> **一、配色只在深色下校准过。** 三档次要文字用一份百分比服务两种配色，
+> 但 **alpha 合成在 sRGB 里线性、WCAG 对比度不是**：45% `CanvasText` 在白底 3.4:1、
+> 在近黑底 4.5:1。修法：深浅各一套（深 68/52/56%，浅 74/60/64%），
+> `--accent` `#4d6bfe`→`#4262f0`，`--ok`/`--bad` 改为与 `CanvasText` 混合以随配色自动加深/变亮。
+> 数值留余量不贴阈值——背景是 `--lift` 压 `Canvas` 压窗口的叠层。
+> 顺带：`.copy` 22px→**24px**，`.reasoning-toggle` 60×18 与 `.chip button` 19×18
+> 用 `min-height: 24px` + 负 margin 补到 24×24（**布局不动**）；11px 硬编码统一到 `var(--text-xs)`。
+> **一个静默失效的坑**：`pre code, .answer code { .92em }` 让 `pre` 内代码掉到 11.04px，
+> 想用 `pre code { 1em }` 盖掉是没用的（`.answer code` 特异性更高），
+> 必须写成两条不重叠的选择器。
+>
+> **二、审批卡把最宽的授权画成了主按钮。** `Allow this session` 是实心 accent，
+> `Allow once` 是灰的，`Deny` 是白描边 —— **视觉顺序成了「宽授权 > 拒绝 > 最小授权」**。
+> 修法是三个按钮**完全同权**：**Chrome 的 UX 团队对同问题做过测试**，一次性权限
+> 最终定为垂直三按钮、无一强调（「提供更安全的结果」）；把同意界面一侧做醒目
+> 是有名字的 dark pattern（asymmetric buttons）。按钮顺序不变（最窄在前）。
+> 顺带加 `flex-wrap: wrap` 与 `padding: 0 10px`，让三个中文标签在 300px 宽也一行放下。
+>
+> **量出来的（探针，四种组合）**：三按钮 `background` 全 `rgb(18,18,18)`、高全 28px、
+> 溢出全 false；仅 en@300 折行，中文不折。
+>
+> **验证**：26 次真实渲染审计 **0 findings**（修复前 浅164+深97）；`npm test` **412 passed**；
+> `check:extension` exit 0。测试全按 `className` 取按钮，不依赖样式。
+>
+> **交付要求**：只改了 `extension/` → **重载 Chrome 扩展**即可，不需要重启 `dsh web`。
 
 > ### v34：按钮写着「允许一次」，实际给了整个会话（宿主 + 扩展，本次修复）
 >
@@ -1279,7 +3641,7 @@
 三件套：
 - **宿主插件** `packages/dsh-browser-bridge/` —— WebSocket 桥接、`browser_*` 工具、站点策略与审批、上下文附件、浏览器端 UI
 - **Chrome 扩展** `extension/` —— MV3，纯 JS，无构建；CDP 执行器 + 右键菜单 + 选区上报 + 侧栏面板
-- **测试** `packages/dsh-browser-bridge/test/` —— **288 条 / 19 个 suite**，零依赖，全新克隆直接可跑
+- **测试** `packages/dsh-browser-bridge/test/` —— **519 条 / 39 个 suite**，零依赖，全新克隆直接可跑
 
 ### 目录
 
@@ -1305,7 +3667,7 @@
 │  │  ├─ deps.js                 peer 依赖双路解析
 │  │  ├─ chat.js                 侧栏对话（列表/读消息/发送）
 │  │  └─ client.js               ★ 浏览器端 UI：设置卡片 + 侧栏状态/令牌行
-│  └─ test\                      run.js harness.js + 19 个 suite
+│  └─ test\                      run.js harness.js + 37 个 suite
 └─ extension\
    ├─ manifest.json              MV3；debugger/tabs/tabGroups/storage/alarms/scripting/contextMenus/sidePanel
    ├─ background.js              service worker：桥接客户端 + CDP 执行器 + 页面工具
@@ -1618,11 +3980,34 @@ dsh --profile web --dump-config | Select-String "browser-bridge" -Context 2,2
 
 ```powershell
 cd <repo>
-npm test              # 288 条，19 个 suite（不需要 pnpm install）
+npm test              # 519 条，39 个 suite（不需要 pnpm install）
 npm run check:extension
 ```
 
 Chrome 端到端是**真的**：会起 headless Chrome（`C:\Program Files\Google\Chrome\Application\chrome.exe`）跑真实 CDP —— 快照蒸馏、按 bounds 派发鼠标事件**真的触发页面 click 监听器**、`Input.insertText`、截图魔数、控制台事件。找不到 Chrome 时**跳过而非失败**。
+
+**扩展侧的真 Chrome e2e：v66 起已经能做，而且做了。** 原文写的是「没有真 Chrome e2e 可用：Chrome 137 已移除 `--load-extension`」——那个实测对，结论推广过头了：该开关只在**稳定版渠道**被移除，Chromium 与 Chrome for Testing 一直保留。现在的分工是：
+
+- `test/service-worker.js` + 假 `chrome`：加载**真实 `extension/background.js`**，走真 WebSocket 帧。测**帧的形状**、协议契约、徽章 API 的调用参数。快，无浏览器。
+- `test/extension-host.js` + `test/real-browser.test.js`：**真实 Chromium 载入真实扩展**，扩展自己 dial 到测试进程的假宿主。测**CDP 参数在真浏览器里是否成立**——这是假 `chrome` 结构上测不到的：参数名写错、quad 读错偏移、坐标空间搞错，在假 `chrome` 下全都静默成功。
+
+**全程 `--headless=new`**，因为套件每次运行会起若干浏览器实例，有头会在用户工作期间反复抢焦点。
+
+`test/badge.test.js`（工具栏徽章）与 `test/tab-wire.test.js`（标签页 wire 形状）仍然走假 `chrome`，这是对的：徽章**渲染结果**读不到（浏览器 UI 绘制），只能断言传给 API 的参数。
+
+真浏览器装置里几个实测出来的坑，写在这里免得重踩：
+
+1. **`/json/new` 只接受 `PUT`**（三个二进制全一样，`GET` → `405`）。用 `GET` 时一个标签页都开不出来，而按 URL 去 `/json/list` 找「刚开的页面」要么超时、要么在该 URL 恰好已打开时**静默返回错误的标签页**——两种失败在全绿的测试报告里都看不见。
+2. **不要按 URL 匹配标签页**。fixture 页 URL 与被操作标签页相同，`find()` 就在两个 target 之间任选。用 `chrome.debugger.getTargets()` 拿 tabId → targetId 映射，或用 `/json/new` 返回的 target id。
+3. **连上 target ≠ 文档已解析**。`document.title` 会返回 `""` 且不报错。三个打开页面的方法都等 `document.readyState`。
+4. **扩展 API 只在隔离世界里**（内容脚本注入的世界名 `DSH`）。在主世界读 `chrome.runtime` 得到「没有」是误判，不是没注入——上一版就是栽在这里。
+5. **二进制的发现要动态**：Playwright 与 Chrome for Testing 都装进带版本号的目录，写死路径会在一台机器上碰巧命中、升级后静默全跳过。`DSH_BB_CHROMIUM` 可覆盖；给了不存在的路径返回未找到而**不回退**——拿别的浏览器冒充被要求的那个比跳过更糟。
+6. **只认 Chromium / Chrome for Testing**，不认稳定版：稳定版跑起来会得到「0 条、全跳过」这种看起来健康的假象。找不到时跳过并说明原因。
+
+两个必须记住的坑（假 `chrome` 那条路，仍然有效）：
+
+1. **`data:` URL 按整段文本匹配，`import()` 会缓存**——两次加载必须生成不同的 URL，否则第二次拿到的是缓存模块（还持有上一次的 `chrome`，且已过监听器注册）。计数器已收进 `service-worker.js` 共享，**不要再在测试文件里自建一个从 0 开始的**。
+2. **等待连接必须有超时**（`awaitConnection`）。runner 在**一个进程里跑完所有套件**，一个 suite 的 promise 永不 settle 就是整轮静默挂死——后面的测试一条都不跑，而且不像失败那样显眼。`host.connected` 是裸 promise，别直接 `await` 它。
 
 ---
 
@@ -1634,16 +4019,19 @@ Chrome 端到端是**真的**：会起 headless Chrome（`C:\Program Files\Googl
 - `browser_history`/`browser_eval`/`browser_cdp`/`browser_upload` **每次都重新问**
 - `browser_eval`+`browser_cdp` 需要 `developerMode`（默认 false）；CDP 永久拒绝 `Browser, Target, Storage, SystemInfo, Cast, Extensions, ServiceWorker, WebAuthn`（**两端都查**）
 - **上下文附件不在选区产生时注入**：选区变成待发附件 + composer 里可移除的 chip；在会话的 `user/message` 事件（且 `event.data.source.kind === 'user'`）上注入 `createUserMessage({... source:{kind:'plugin', plugin:'browser-bridge', form:'notice', summary: boundContextSummary(...)}})`，落在**同一个 pre-step**，不改写用户原话。`contextAutoPush` 默认 **false**
-- 传输：单条环回 WS `/api/browser-bridge/ws`；令牌（query 参数优先于 `Sec-WebSocket-Protocol: dsh-bridge-token.<t>`）+ `Origin` 必须是 `chrome-extension://<32 个 a-p 字符>`（存在时）+ 绑定更宽时的环回 peer 检查。令牌在 `$DSH_HOME/storages/dsh-browser-bridge.json`（0600，原子写），`timingSafeEqual` 比较
+- 传输：单条环回 WS `/api/browser-bridge/ws`；令牌（query 参数优先于 `Sec-WebSocket-Protocol: dsh-bridge-token.<t>`）+ `Origin` 必须是 `chrome-extension://<32 个 a-p 字符>`（存在时）+ 绑定更宽时的环回 peer 检查。令牌在 `$DSH_HOME/storages/dsh-browser-bridge.json`（`timingSafeEqual` 比较，原子写且**失败时清理临时文件**——临时文件里是明文，v56 修的）。**注意 `mode: 0o600` 在 Windows 上被忽略**（实测 `100666`），那里的保护来自用户目录继承的 ACL（只有 SYSTEM/Administrators/本人），不是 mode —— 不要把它当成唯一防线
 - **请求方向只有一条**（扩展→宿主），宿主从不回调扩展。聊天走 HTTP 路由而非反向 RPC，让浏览器半边保持纯执行器
 - 侧栏会话由**用户选择**，不猜 —— 「最近活跃」会偶尔把提示词投进用户没在看的会话
+- **标签页行必须带 `windowFocused`**（v43）。Chrome 的 `active` 是**每个窗口各一个**，所以「用户在看哪个标签页」不能靠 `tabs.find(tab => tab.active)` 回答——那只是列表顺序。该字段是**三态**：`true`/`false`/`undefined`（问不到）。**不要用 `false` 代替 `undefined`**，那是在断言一件不知道的事；也不要把它简化成布尔。宿主侧取用一律走 `lib/page-tools.js` 的 `activeTabOf()`，它会一并给出依据 `via`，答不上来时正文要**明说是猜的**
+- 扩展侧 `getLastFocused` 失败**必须容忍**（返回 `undefined` 而不是抛错）：一个拿不到窗口信息的浏览器应该退化成旧行为，而不是让标签页列表整个不可用。manifest 里**没有也不需要** `windows` 权限
 
 ---
 
 ## 7. README 里已有的诚实边界（别删）
 
 - auto-review 的**独立 reviewer agent 未实现**（需要第二条模型路由 + 断路器），只做了 `autoReview` 开关的语义等价物
-- 多浏览器（Edge/Brave/Opera/Vivaldi）、内建浏览器、书签、云浏览器/手动接管、元素高亮：均未实现
+- 多浏览器（Edge/Brave/Opera/Vivaldi）、内建浏览器、书签、云浏览器/手动接管：均未实现
+- 元素高亮与「正在被控制」提示：**v40/v41 已实现**（`Overlay` 域浮层 + 925ms dwell + 工具栏徽章；徽章按 tab 设置，`chrome.debugger.onDetach` 也会撤下）
 - 未确证：`allowed-once` → 「该站点本会话免问」的映射；5 分钟 turn 近似；chip 的确切视觉、发送后是否留存、`@` 提及标签页的交互细节（上游无文档）
 - 官方文档自身矛盾：内建浏览器是否支持登录（`browser.md` 说不支持，`chrome-extension.md` 说支持）
 
@@ -1656,8 +4044,8 @@ git clone https://github.com/LessXi/dsh-browser-bridge.git
 cd dsh-browser-bridge
 
 # 1. 不需要任何安装。测试是零依赖的自建 runner。
-npm test                 # 288 条，19 个 suite
-npm run check:extension  # 8 个扩展脚本的语法预检
+npm test                 # 519 条，39 个 suite
+npm run check:extension  # 10 个扩展脚本的语法预检
 
 # 2. 起探针做实测（用户的线上实例在 3080，绝不要动它）
 dsh web --port 3199 --no-open

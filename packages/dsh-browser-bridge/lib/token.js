@@ -16,7 +16,7 @@
  */
 
 import { randomBytes, timingSafeEqual } from 'node:crypto'
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
 import { dshHome } from './deps.js'
@@ -58,14 +58,34 @@ export function readTokenState(path = tokenStatePath()) {
  * rename. A reader therefore sees either the previous state or the new one,
  * never a truncated document.
  *
+ * The temporary file holds the token in the clear, so a failed rename must not
+ * leave it behind. That is not hypothetical on Windows: renaming over a file
+ * another handle has open fails with `EPERM`, and the handles that do this are
+ * ordinary — a virus scanner, the search indexer, an editor. Each failure used
+ * to leak one more copy of the credential under a pid-suffixed name, and the
+ * names differ per process, so they accumulate rather than overwrite.
+ *
  * @param {string} token - The token to store.
  * @param {string} [path] - State file path; defaults to {@link tokenStatePath}.
  */
 export function writeTokenState(token, path = tokenStatePath()) {
   mkdirSync(dirname(path), { recursive: true })
   const temporary = `${path}.${process.pid}.tmp`
-  writeFileSync(temporary, `${JSON.stringify({ token }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 })
-  renameSync(temporary, path)
+  try {
+    writeFileSync(temporary, `${JSON.stringify({ token }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 })
+    renameSync(temporary, path)
+  } catch (error) {
+    // Unlink is best effort: if the temporary was never created there is
+    // nothing to remove, and if the removal itself fails the original error is
+    // still the one worth reporting. Either way the caller sees why the write
+    // failed rather than a half-written state.
+    try {
+      rmSync(temporary, { force: true })
+    } catch {
+      // Reporting the write failure matters more than reporting this one.
+    }
+    throw error
+  }
 }
 
 /**

@@ -74,6 +74,23 @@ export const METHODS = Object.freeze({
   debuggerDetach: 'debugger.detach',
   /** Browser history search. Params: `{ query?, limit? }`. */
   historySearch: 'history.search',
+  /**
+   * The JavaScript dialog blocking a tab, if any. Params: `{ tabId }`.
+   *
+   * A read, so it is safe to call when other tools are failing: it answers from
+   * the worker's own record of what Chrome reported, and never touches the page
+   * — which matters, because a page with a dialog up cannot answer anything.
+   */
+  pageDialogs: 'page.dialogs',
+  /**
+   * Answer the JavaScript dialog blocking a tab. Params: `{ tabId, promptText? }`.
+   *
+   * Exists because a dialog stops the tab it belongs to: Chrome suspends the
+   * renderer's command queue while one is up, so nothing else can be asked of
+   * that tab until it is answered. This is the only command that still works,
+   * which is what makes it the way out.
+   */
+  pageDismissDialog: 'page.dismissDialog',
 
   /**
    * Sessions the side panel may continue, newest first. No parameters.
@@ -99,6 +116,21 @@ export const EVENTS = Object.freeze({
   debuggerDetached: 'debugger/detached',
   /** One console entry, for live tails. Payload: `{ tabId, entry }`. */
   consoleEntry: 'console/entry',
+  /**
+   * A `alert`/`confirm`/`prompt` the page opened, which blocks its tab.
+   *
+   * Worth an event rather than a quiet entry in a map because of what it does to
+   * everything else: a JavaScript dialog suspends the tab's command queue, so
+   * every tool aimed at that tab stops answering until the dialog is answered.
+   * Measured in a real Chrome, `Runtime.evaluate`, `DOM.getDocument` and
+   * `Page.captureScreenshot` each went from a 4ms baseline to not answering at
+   * all within four seconds of an `alert()` appearing.
+   *
+   * Payload: `{ tabId, type, message }`.
+   */
+  dialogOpened: 'dialog/opened',
+  /** That dialog is gone, so the tab's command queue is moving again. Payload: `{ tabId }`. */
+  dialogClosed: 'dialog/closed',
   /** The user highlighted text. Payload: `{ text, url, title, favicon, ts }`. */
   selection: 'selection/captured',
   /** The user picked a context-menu action. Payload: `{ action, tabId, text?, url?, title? }`. */
@@ -154,6 +186,24 @@ export const NOTIFICATIONS = Object.freeze({
    * literal `answered-elsewhere`.
    */
   approvalSettled: 'approval/settled',
+
+  /**
+   * A call the host has stopped waiting for, so the extension can stop working.
+   *
+   * The host rejects a cancelled call locally and immediately, but the extension
+   * has no way to know: it keeps running whatever it was asked to do. For most
+   * methods that is invisible, because they are over in milliseconds. It is not
+   * invisible for the ones that wait — `page.waitFor` polls until its timeout,
+   * and `page.navigate` and `page.click` wait up to 20 seconds for a load — so
+   * pressing Stop left the browser still driving the page, which is the exact
+   * thing the button promises to end.
+   *
+   * Payload: `{ id }` — the request id, the same number the call carried, so the
+   * extension can match it against the work it still has in flight. An id it
+   * does not recognise is ignored rather than guessed at: the call may have
+   * finished between the host giving up and this arriving.
+   */
+  callCancelled: 'call/cancelled',
 })
 
 /**

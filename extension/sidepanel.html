@@ -23,6 +23,18 @@
        * theme happened to be active. `Canvas`/`CanvasText` track the browser's
        * own light and dark schemes instead, and the accent stays DSH's.
        */
+      /*
+       * The three text strengths are set per scheme, not once.
+       *
+       * Alpha compositing is linear in sRGB but WCAG contrast is not, so the
+       * same `color-mix` percentage lands at a different ratio on a light
+       * backdrop than on a dark one. Measured on the painted panel, 45%
+       * `CanvasText` is 3.4:1 on white and 4.5:1 on near-black — the single
+       * value used before this was tuned against the dark side only, and
+       * quietly failed every secondary line in light mode. The overrides below
+       * give each scheme the percentage its own backdrop needs, which is why
+       * they are not one value.
+       */
       :root {
         color-scheme: light dark;
 
@@ -37,21 +49,52 @@
         --radius-xl: 12px;
         --radius-2xl: 16px;
 
+        /* The floating pill that sits at the top of the scroll area, and the gap
+           between it and the edge. Both are named because the transcript has to
+           reserve exactly this much room — see the `padding-top` rule below. A
+           number written twice is a number that drifts apart. */
+        --pill-height: 26px;
+        --pill-inset: 8px;
+
+        /* WCAG 2.2 AA needs 4.5:1 for body text, so every text token here is
+           held above that against the surface it is actually painted on —
+           including the tinted chips and code cards, which are not the canvas.
+           The values carry headroom rather than sitting on the threshold: the
+           backdrop varies (`--lift` over `Canvas` over the window), and a token
+           that passes at 4.51 in one card fails in the next. */
         --line: color-mix(in oklab, CanvasText 14%, transparent);
         --line-soft: color-mix(in oklab, CanvasText 8%, transparent);
-        --muted: color-mix(in oklab, CanvasText 62%, transparent);
-        --faint: color-mix(in oklab, CanvasText 45%, transparent);
+        --muted: color-mix(in oklab, CanvasText 68%, transparent);
+        --faint: color-mix(in oklab, CanvasText 52%, transparent);
         /* Codex calls this `--color-codex-description`: half-strength text, used
            for labels and times. It is a colour, not a component, which is the
            whole reason their panel has no "hint" style class to copy. */
-        --tertiary: color-mix(in oklab, CanvasText 50%, transparent);
+        --tertiary: color-mix(in oklab, CanvasText 56%, transparent);
         --hover: color-mix(in oklab, CanvasText 7%, transparent);
         --lift: color-mix(in oklab, CanvasText 11%, transparent);
-        --accent: #4d6bfe;
+        --accent: #4262f0;
         --accent-soft: color-mix(in oklab, var(--accent) 15%, transparent);
-        --ok: #2f9e63;
-        --bad: #d1453b;
+        /* `--accent` is calibrated as a *fill* — white text sits on it. Used as
+           text colour it fails in both schemes (measured 2.82:1 on the dark
+           backdrop, 3.86:1 on the light one, against the 4.5:1 body text needs).
+           Same fix as the status colours below: mix toward `CanvasText` so one
+           declaration darkens on light and lightens on dark. `.answer a` still
+           uses the raw accent and is a separate question from this one. */
+        --accent-text: color-mix(in oklab, var(--accent) 62%, CanvasText);
+        /* Blending the status colours toward `CanvasText` is what keeps them
+           legible in both schemes from one declaration: mixed with black on a
+           light backdrop they darken, mixed with white on a dark one they
+           lighten. A fixed red is too bright on white and too dim on black. */
+        --ok: color-mix(in oklab, #2f9e63 78%, CanvasText);
+        --bad: color-mix(in oklab, #d1453b 78%, CanvasText);
         --elevation: 0 0 0 1px #0000000a, 0 2px 8px 0 #0000000a, 0 4px 40px 8px #00000006;
+      }
+      @media (prefers-color-scheme: light) {
+        :root {
+          --muted: color-mix(in oklab, CanvasText 74%, transparent);
+          --faint: color-mix(in oklab, CanvasText 60%, transparent);
+          --tertiary: color-mix(in oklab, CanvasText 64%, transparent);
+        }
       }
       * { box-sizing: border-box; }
       html, body { height: 100%; }
@@ -66,9 +109,21 @@
       }
       button, textarea { font: inherit; color: inherit; }
       button { background: transparent; border: 0; cursor: pointer; padding: 0; }
-      button:focus-visible, textarea:focus-visible, a:focus-visible {
+      button:focus-visible, a:focus-visible {
         outline: 2px solid var(--accent);
         outline-offset: 1px;
+      }
+      /* The editor is the one box in the panel with no radius of its own — a
+         bare text box inside a 16px rounded card — so a ring drawn on it is a
+         square accent rectangle inside a round one. Measured, `#input` was the
+         only painted element at radius 0 while its card sat at 16, and it is the
+         first thing a reader sees, because the composer takes focus as the panel
+         opens. The indicator moves out to the card, where it follows the radius
+         the card already has. Keyboard users still get a 2px accent ring; the
+         caret still says where the text will go. */
+      textarea:focus-visible { outline: none; }
+      #composer:has(textarea:focus-visible) {
+        box-shadow: var(--elevation), 0 0 0 2px var(--accent);
       }
       [hidden] { display: none !important; }
 
@@ -97,7 +152,7 @@
       }
       #title:hover { background: var(--hover); }
       #title-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      #title .caret { flex: none; color: var(--faint); font-size: 11px; }
+      #title .caret { flex: none; color: var(--faint); font-size: var(--text-xs); }
       .icon {
         flex: none;
         width: 28px;
@@ -130,6 +185,18 @@
         flex-direction: column;
         gap: 14px;
         font-size: var(--text-base);
+      }
+      /* Room for the floating pill, so it covers empty air instead of the first
+         message. Only while the pill is actually up: an unconditional reserved
+         strip would be a visible gap at the top of every ordinary conversation,
+         which is a worse defect than the one being fixed.
+         `:has()` is doing what it is good at here — the pill lives beside the
+         scroller, not inside it, so there is no descendant selector that could
+         express this, and the alternative is a class the renderer keeps in step
+         with `hidden`. The two call sites that set that flag are the only ones
+         that can change the pill's visibility. */
+      #stage:has(#earlier:not([hidden])) #transcript {
+        padding-top: calc(var(--pill-inset) + var(--pill-height) + 6px);
       }
       #history { padding: 4px 6px 12px; }
 
@@ -173,7 +240,19 @@
         font-size: var(--text-xs);
         line-height: 1.5;
       }
-      pre code, .answer code {
+      /* Monospace needs no reduction inside a fenced block: `pre` is already at
+         the smallest step, so `.92em` on top of it paints 11px — below the
+         scale's own floor, and the only text in the panel that did. Inline code
+         sits in 14px prose, where the reduction still lands at 12.88px and keeps
+         the run of code visually distinct from the sentence around it.
+         These two rules must not both match one element: `.answer code` is more
+         specific than a bare `pre code`, so an override written the obvious way
+         loses silently and the block stays at 11px. */
+      pre code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 1em;
+      }
+      .answer :not(pre) > code {
         font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
         font-size: .92em;
       }
@@ -211,9 +290,12 @@
         text-overflow: ellipsis;
         white-space: nowrap;
       }
+      /* WCAG 2.2 AA wants 24x24 CSS px (2.5.8). The pill was 22px tall — close
+         enough to look deliberate and small enough to fail, which is the kind
+         of gap only a measurement catches. */
       .copy {
         flex: none;
-        height: 22px;
+        height: 24px;
         padding: 0 8px;
         border: 0;
         border-radius: 999px;
@@ -265,11 +347,18 @@
          person came to the panel for, and printing it unconditionally is exactly
          the "为什么跳出来这么多莫名其妙的东西" this replaces. */
       .reasoning { display: flex; flex-direction: column; gap: 6px; }
+      /* Minus the padding that makes up the 24px target, the row is 18px tall:
+         a control that is easy to read and awkward to hit. The negative margin
+         keeps the extra height from opening a gap in the transcript, so the
+         target grows without the layout moving. */
       .reasoning-toggle {
         display: inline-flex;
         align-items: center;
         gap: 4px;
         width: fit-content;
+        min-height: 24px;
+        margin: -3px 0;
+        padding: 0 2px;
         color: var(--tertiary);
         font-size: var(--text-xs);
       }
@@ -304,6 +393,56 @@
       .tool[data-status="error"] .mark { color: var(--bad); }
       .tool[data-status="ok"] .mark { color: var(--ok); }
 
+      /* A failed call that has a reason behind it is a control, and it has to
+         look like one: the cross alone said "something went wrong" without
+         offering the explanation the tool already produced. Pointer plus a
+         hover colour, because a row that opens on click and does not react to
+         the pointer reads as inert text.
+         The column layout is load-bearing and is the same fix the `failed` row
+         needed: `.row` is a flex row, so the call and its reason are laid out
+         side by side and the two overlap instead of stacking.
+         Applied to every tool row rather than only the ones with a reason: with
+         a single child the two directions render identically, so the
+         unconditional rule cannot be wrong, and it avoids a `:has()` that has
+         to stay in step with the class the renderer sets. */
+      .row[data-kind="tool"] { flex-direction: column; }
+      /* A clickable row is a target, and 18px is below the 24px WCAG 2.2 AA
+         minimum the rest of this panel is held to — measured at 360x18 once the
+         row became a control. The negative margin cancels the extra height so
+         the transcript's rhythm does not move; only the hit area grows.
+         The button reset matters as much as the size: this is a real `<button>`
+         so it is reachable by keyboard, and a button arrives with its own
+         background, border, padding and centred text — none of which a row of
+         monospace text wants. */
+      .tool.has-reason {
+        cursor: pointer;
+        min-height: 24px;
+        margin: -3px 0;
+        width: 100%;
+        padding: 0;
+        border: 0;
+        background: none;
+        text-align: left;
+        color: inherit;
+      }
+      .tool.has-reason:hover .args { color: var(--muted); }
+      /* The reason is the tool's own diagnostic, so it keeps the monospace face
+         of the row it belongs to, indented under the same left rule the
+         reasoning body uses — the two are the same kind of thing: text the
+         panel was told, quoted rather than spoken. */
+      .tool-failure {
+        border-left: 2px solid var(--line-soft);
+        margin-top: 2px;
+        padding-left: 10px;
+        color: var(--muted);
+        font-size: var(--text-xs);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        max-height: 168px;
+        overflow-y: auto;
+      }
+
       .notice { color: var(--tertiary); font-size: var(--text-xs); }
 
       /* A turn that died leaves this behind. It is deliberately not a bubble and
@@ -337,7 +476,13 @@
       #at-menu {
         position: fixed;
         z-index: 30;
-        min-width: 200px;
+        /* Both bounds have to respect the viewport. A flat `min-width: 200px`
+           beats `max-width` when the two conflict — CSS resolves that clash in
+           favour of the minimum — so in a panel narrower than 224px the menu
+           was pinned at 200px wide and hung off the right edge (measured: right
+           edge at 208px in a 200px panel). `min()` keeps the floor, but lets it
+           yield when the window itself is the smaller constraint. */
+        min-width: min(200px, calc(100vw - 24px));
         max-width: min(320px, calc(100vw - 24px));
         max-height: min(280px, 50vh);
         overflow-y: auto;
@@ -411,15 +556,21 @@
       /* The host's own wording, kept reachable and kept out of the way: the same
          treatment a failure's detail line gets, for the same reason. */
       .approval-detail {
-        font-size: 11px;
+        font-size: var(--text-xs);
         line-height: 1.4;
         color: var(--faint);
         overflow-wrap: anywhere;
       }
-      .approval-actions { display: flex; gap: 6px; }
+      /* `wrap` because the three labels are the longest strings in the panel and
+         a narrow side panel is a normal way to run this: wrapping costs a row,
+         overflowing costs the third answer. */
+      .approval-actions { display: flex; flex-wrap: wrap; gap: 6px; }
       .approval-actions button {
         height: 28px;
-        padding: 0 12px;
+        /* 10px rather than 12px: 「只允许一次」/「本会话允许」/「拒绝」 are the
+           longest control labels in the panel, and the three of them plus gaps
+           have to clear the narrowest side panel worth supporting. */
+        padding: 0 10px;
         border: 1px solid var(--line);
         border-radius: 999px;
         background: Canvas;
@@ -430,15 +581,17 @@
       }
       .approval-actions button:hover:not(:disabled) { background: var(--hover); }
       .approval-actions button:disabled { color: var(--faint); cursor: default; }
-      .approval-allow {
-        border-color: transparent !important;
-        background: var(--accent) !important;
-        color: #fff !important;
-      }
-      .approval-allow:hover:not(:disabled) { opacity: .9; }
-      /* The narrow grant takes the outline treatment, so the wider one reads as
-         the primary action without the small one looking disabled. */
-      .approval-once { color: var(--muted); }
+      /* Three answers, three buttons of equal weight. None of them is the
+         primary action: this is a security decision, so the card lays the
+         options out and the reader chooses — it does not choose for them by
+         making one option louder. Chrome's UX team arrived at the same place
+         for one-time permissions and shipped a flat, unemphasised three-button
+         layout, because a weighted one "provides safer results"; weighting one
+         side of a consent screen is a documented dark pattern. It is also the
+         button half of the rule the labels already follow: a button says what
+         happens, and no more. Painting 「本会话允许」 solid accent made the
+         widest grant the default-looking one, which is exactly the nudge this
+         card exists to avoid. */
 
       /* Waiting feedback: the text itself sweeps, the way the original does,
          but as one gradient-clipped element instead of two stacked copies with
@@ -564,13 +717,18 @@
       /* ---- the way back up, into the part of the conversation not loaded ---- */
       /* A pill at the top of the scroll area rather than a row inside it: a row
          scrolls away exactly when it is needed, and the reader who has just
-         scrolled up is looking at the top of the viewport. */
+         scrolled up is looking at the top of the viewport.
+         It used to be a floating pill *over* the first row, which measured as a
+         2617px² occlusion of the first message — and because that row is only
+         drawn when the scroll area does not overflow, there was no scrolling
+         that could bring the covered line back. The transcript now reserves the
+         pill's height instead (rule below), so the pill floats over empty air. */
       #earlier {
         position: absolute;
         left: 50%;
-        top: 8px;
+        top: var(--pill-inset);
         transform: translateX(-50%);
-        height: 26px;
+        height: var(--pill-height);
         padding: 0 12px;
         border-radius: 999px;
         background: Canvas;
@@ -636,10 +794,32 @@
       #toast {
         flex: none;
         margin: 0;
-        padding: 0 12px 4px;
         font-size: var(--text-xs);
         color: var(--bad);
         overflow-wrap: anywhere;
+      }
+      /* Kept out of the layout by `:empty` rather than by the `hidden` attribute.
+         `hidden` takes the element out of the accessibility tree, and a live
+         region that is not in the tree when its text lands has nothing for a
+         screen reader to have observed a change in — the twenty-odd failures the
+         panel reports through here were announced unreliably or not at all. An
+         empty element has no height, so dropping the padding is all it takes to
+         keep this invisible while leaving it observable. */
+      #toast:not(:empty) { padding: 0 12px 4px; }
+      /* Available to a screen reader, invisible on screen, and never
+         `display:none` — a live region outside the accessibility tree announces
+         nothing. Clipped to a single pixel rather than removed, which is the
+         only way to keep it observable while it stays out of the layout. */
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        margin: -1px;
+        padding: 0;
+        border: 0;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
       }
       /* The unreachable-host state lives in #blocked, above. It used to be one
          quiet line here, which put the explanation of why nothing works in the
@@ -672,8 +852,26 @@
         border-radius: 3px;
         object-fit: contain;
       }
-      .chip button { padding: 0 5px; color: var(--faint); border-radius: 999px; }
+      /* The chip's own controls had no height of their own, so they collapsed to
+         the text line — 19x18 for a dismiss button. A minimum box gives them the
+         same 24px target as every other control without changing the pill. */
+      .chip button {
+        display: grid;
+        place-items: center;
+        min-width: 24px;
+        min-height: 24px;
+        margin: -3px 0;
+        padding: 0 5px;
+        color: var(--faint);
+        border-radius: 999px;
+      }
       .chip button:hover { color: CanvasText; }
+      /* The offline chip carries the way out of its own state, so it is the one
+         chip that is a control rather than a fact. Coloured like the accent so
+         it reads as the action, and it inherits the 24px target above. */
+      .chip[data-warn="true"] { color: CanvasText; }
+      .chip[data-warn="true"] .label { color: var(--faint); }
+      .chip[data-warn="true"] button { color: var(--accent-text); font-weight: 600; }
       /* The selection chip is the one line in the panel that answers "will my
          highlight be sent?", so it is styled as an active decision rather than
          as another standing fact — and it disappears when the highlight does. */
@@ -709,6 +907,14 @@
         display: inline-flex;
         align-items: center;
         gap: 4px;
+        /* A flex item's `min-width` defaults to `auto`, which is its min-content
+           size — and that refused to shrink, so in a narrow panel the model name
+           kept its full width and pushed the send button out of the viewport
+           entirely (measured: send's right edge at 233px in a 200px panel). The
+           button that sends the message is the last thing that may leave the
+           screen. `#model-text` below already ellipsises, so yielding here
+           degrades to an abbreviated model name, which is the right trade. */
+        min-width: 0;
         max-width: 224px;
         height: 28px;
         padding: 0 6px 0 8px;
@@ -721,7 +927,7 @@
       #model:hover:not(:disabled) { background: var(--hover); }
       #model:disabled { color: var(--faint); cursor: default; }
       #model-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      #model .caret { flex: none; color: var(--faint); font-size: 11px; transition: transform .12s; }
+      #model .caret { flex: none; color: var(--faint); font-size: var(--text-xs); transition: transform .12s; }
       #model[aria-expanded="true"] .caret { transform: rotate(180deg); }
       #input {
         flex: none;
@@ -729,7 +935,13 @@
         resize: none;
         border: 0;
         background: transparent;
-        padding: 4px 0;
+        /* The card's own padding is 12px on the left, and the toolbar's first
+           control adds its own 8px, so the model name has always started at 30.
+           The editor started at the card's edge, 22 — the two lines of a
+           two-row composer disagreed about where "left" is by 8px, which is
+           measurable and looks like a mistake because it is one. The editor's
+           text is inset to the same line the toolbar's text uses. */
+        padding: 4px 0 4px 8px;
         min-height: 28px;
         max-height: 140px;
         line-height: 20px;
@@ -761,7 +973,10 @@
       #model-menu {
         position: fixed;
         z-index: 30;
-        min-width: 180px;
+        /* The same viewport-respecting floor as `#at-menu`, and for the same
+           reason: a flat minimum wins against `max-width` in a narrow panel and
+           pushed the menu past the right edge. */
+        min-width: min(180px, calc(100vw - 24px));
         max-width: min(280px, calc(100vw - 24px));
         max-height: min(316px, 60vh);
         overflow-y: auto;
@@ -837,7 +1052,28 @@
       </div>
     </div>
 
-    <p id="toast" hidden></p>
+    <!--
+      Every failure the panel reports is written here by `say()`, and nothing
+      announced it: a screen reader user pressed send, got no reply, and had no
+      way to learn why. `role="status"` is the smallest thing that fixes it —
+      polite, so it waits for the reader to finish the sentence it is on, which
+      is what a transient notice beside the composer should do.
+
+      Deliberately never `hidden`. A live region has to be in the accessibility
+      tree *before* the change it should announce, and `hidden` takes it out; the
+      element is kept in the layout's flow and hidden by `:empty` in the
+      stylesheet instead.
+    -->
+    <p id="toast" role="status" aria-live="polite"></p>
+    <!--
+      The transcript is rebuilt from scratch on every poll, so it cannot be a live
+      region itself: assembling a fresh subtree would re-announce the whole
+      conversation each time. This carries the two things that arrive on their own
+      and stop everything until they are seen — an approval question, and the
+      panel losing its host — plus the answer itself once a turn is done, which is
+      the one moment its text is final.
+    -->
+    <p id="announcer" class="sr-only" role="status" aria-live="polite"></p>
     <footer>
       <div id="contexts" hidden></div>
       <div id="composer">

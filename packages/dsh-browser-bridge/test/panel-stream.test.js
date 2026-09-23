@@ -113,7 +113,10 @@ const host = {
 }
 
 const groupsPayload = () => ({
-  groups: [
+  // Overridable so "no sessions at all" is reachable. It is the state a new
+  // reader starts in, and a fixture that can only ever answer with two sessions
+  // made it untestable — the empty surface could not be driven from here.
+  groups: host.groups ?? [
     {
       id: 'workspace-1',
       // Overridable so the ungrouped bucket — the host's `title: ''` — is
@@ -149,6 +152,10 @@ globalThis.document = document
 // focus listeners are recorded rather than dropped so a test can fire one.
 /** @type {(() => unknown)[]} */
 const focusListeners = []
+// Counted rather than ignored: the offline chip's whole purpose is to open the
+// settings page, and a no-op stub cannot tell that from a button that does
+// nothing.
+let openedOptions = 0
 globalThis.window = {
   addEventListener: (type, listener) => {
     if (type === 'focus') focusListeners.push(listener)
@@ -161,7 +168,7 @@ globalThis.chrome = {
   runtime: {
     onMessage: { addListener: (listener) => inbox.push(listener) },
     sendMessage: async () => {},
-    openOptionsPage: async () => {},
+    openOptionsPage: async () => { openedOptions += 1 },
     getManifest: () => ({ version: '0.3.0' }),
     lastError: undefined,
   },
@@ -268,6 +275,19 @@ async function pollHealth() {
 /** Let the panel's promise chains run to a standstill. */
 async function settle(turns = 40) {
   for (let index = 0; index < turns; index += 1) await Promise.resolve()
+}
+
+/**
+ * Wait for a whole macrotask, not just the microtask queue.
+ *
+ * The announcer writes its sentence on a later task on purpose (see `announce`),
+ * so `settle` — which only drains microtasks — reads the region while it is
+ * still empty. Waiting for a timer is what makes that write observable here.
+ *
+ * @returns {Promise<void>} Resolves after the next macrotask turn.
+ */
+function settleMacrotask() {
+  return new Promise((resolve) => setTimeout(resolve, 0))
 }
 
 /** Hand the panel a message, the way the service worker would. */
@@ -473,6 +493,8 @@ let transcript
 let sendButton
 let input
 let toast
+/** The live region carrying what a screen reader has no other way to learn. */
+let announcer
 let newButton
 let contexts
 let turn = 0
@@ -495,6 +517,39 @@ async function idle() {
   await settle()
 }
 
+/**
+ * Every value ever written to the announcer, in order.
+ *
+ * Recorded by intercepting the element's `textContent` setter rather than by
+ * sampling it, because the mistake worth catching is a sentence that is written
+ * *and then withdrawn*: the panel's first paint happens before any request has
+ * answered, so an implementation that repaints the surface before it knows the
+ * session list announces 「还没有会话」 on every ordinary start and clears it a
+ * moment later. Two things make sampling miss that. The value is gone by the time
+ * anything can look, and the write is queued on `setTimeout`, whose callbacks run
+ * before the `setImmediate` turns a wait loop would use. Interception is installed
+ * before the module is imported, so it sees the write whatever phase it lands in.
+ */
+const announcerWrites = []
+{
+  // The shim creates elements on demand from `getElementById`, so the announcer
+  // does not exist until the panel asks for it — which is after this runs. Asking
+  // for it here creates it, and the panel's own lookup then returns this same
+  // element with the interceptor already installed.
+  const element = document.getElementById('announcer')
+  assert.ok(element, 'the announcer region must be creatable for this suite to observe it')
+  const descriptor = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), 'textContent')
+  assert.ok(descriptor?.set, 'the announcer element must expose a textContent setter to intercept')
+  Object.defineProperty(element, 'textContent', {
+    configurable: true,
+    get: () => descriptor.get.call(element),
+    set: (value) => {
+      announcerWrites.push(String(value))
+      descriptor.set.call(element, value)
+    },
+  })
+}
+
 await import(pathToFileURL(join(extensionDir, 'sidepanel.js')).href)
 // `start` arms its intervals only after its opening round of fetches resolves,
 // which takes macrotask turns, not just microtask ones. Waiting for the count
@@ -506,10 +561,40 @@ globalThis.setInterval = realSetInterval
 /** Whatever `start` reported on its way up, captured before tests overwrite it. */
 const startupToast = registry.get('toast')?.textContent ?? ''
 const startupClocks = clocks.length
+/**
+ * Everything the announcer said while the panel was starting.
+ *
+ * Non-empty entries are what a screen reader would have heard, and on a healthy
+ * start there must be none: see {@link announcerWrites} for why the writes are
+ * intercepted rather than sampled.
+ */
+/**
+ * Everything the announcer has said since the panel loaded.
+ *
+ * A function rather than a snapshot: the writes arrive on their own timers, so a
+ * filtered copy taken at this point would miss every one that has not landed yet
+ * — which is all of them during a startup that is still in flight. Reading it
+ * inside the test is what makes the ordering mistake observable.
+ *
+ * @returns {string[]} The non-empty sentences written so far.
+ */
+function startupAnnouncements() {
+  return announcerWrites.filter((said) => said !== '')
+}
+/**
+ * Where focus landed when the panel finished opening.
+ *
+ * Captured here rather than asserted later because `start` runs once on import:
+ * every test that moves focus would otherwise erase the evidence, and the state
+ * cannot be re-entered.
+ */
+const startupFocus = document.activeElement
 transcript = registry.get('transcript')
 sendButton = registry.get('send')
 input = registry.get('input')
 toast = registry.get('toast')
+/** Where the panel says what a screen reader cannot see. */
+announcer = registry.get('announcer')
 newButton = registry.get('new')
 contexts = registry.get('contexts')
 
@@ -550,6 +635,47 @@ test('with nothing listening, the panel says so once, and offers a way out', asy
   assert.equal(registry.get('title-text').textContent, 'DSH', 'the header claimed there were no sessions')
 })
 
+test('a built panel whose bridge is not attached still offers the way to fix it', async () => {
+  // The fresh-install state, and it is not the same as the host being down: the
+  // chat routes answer without a token, so the transcript renders and the
+  // composer works, while only the websocket — and with it every browser tool —
+  // is missing. The panel showed 「未连接」 in a pill that was not a button and
+  // named neither the token nor the settings page, so the one thing the reader
+  // had to do was the one thing the panel would not say. Reaching the settings
+  // page meant opening the history view and scrolling to its footer.
+  host.down = false
+  host.health = { connected: false }
+  openedOptions = 0
+  await clocks[1]()
+  await settle()
+
+  const row = registry.get('contexts')
+  assert.equal(row.hidden, false, 'the offline chip row hid itself, so nothing said the tools were missing')
+
+  const chips = row.querySelectorAll('span').filter((node) => node.className.includes('chip'))
+  assert.equal(chips.length, 1, `expected exactly the offline chip, got ${chips.length}`)
+
+  const chip = chips[0]
+  assert.equal(chip.dataset.warn, 'true', 'the offline chip lost its warning state')
+  const label = chip.querySelectorAll('span').find((node) => node.className === 'label')
+  assert.equal(label.textContent, '浏览器工具未连接', 'the chip still says only 「未连接」, without naming what is offline')
+
+  const button = chip.querySelector('button')
+  assert.ok(button, 'the offline chip is not a control, so there is no way out of the state')
+  assert.equal(button.textContent, '设置')
+  button.click()
+  await settle()
+  assert.equal(openedOptions, 1, 'pressing it did not open the settings page')
+
+  // And the state clears on its own: a chip that had to be dismissed would be a
+  // warning, not a reading of the current state.
+  host.health = { connected: true }
+  await clocks[1]()
+  await settle()
+  const after = row.querySelectorAll('span').filter((node) => node.className.includes('chip'))
+  assert.equal(after.some((node) => node.dataset.warn === 'true'), false, 'the chip outlived the reconnect')
+})
+
 test('the blocked surface clears itself the moment the host answers', async () => {
   host.down = true
   await clocks[0]()
@@ -567,6 +693,54 @@ test('the blocked surface clears itself the moment the host answers', async () =
     host.requests.some((request) => request.url.includes('/browser-bridge/chat')),
     'the retry never asked the host anything',
   )
+})
+
+test('with no sessions at all, the panel says how to start one, and the button does it', async () => {
+  // The first thing a new reader sees. Measured at 380x720 the transcript was
+  // 559px of nothing at all — `childCount: 0`, no visible text anywhere in the
+  // stage — while the composer still invited 「问点什么…」 and the send button sat
+  // disabled with nothing on screen explaining why. Typing a first message and
+  // pressing send could not work, and that is the most likely thing to try. The
+  // only answer on screen was an unlabelled `＋`.
+  host.down = false
+  host.groups = []
+  // This suite shares one panel instance and one fixture, so leaving the
+  // listing empty would poison every test after it. The `finally` is what makes
+  // the test a test rather than a reconfiguration.
+  try {
+    await clockOf('groups')
+    await settle()
+
+    const surface = registry.get('blocked')
+    assert.equal(surface.hidden, false, 'the content area was left blank with no sessions to show')
+    assert.equal(registry.get('blocked-title').textContent, '还没有会话')
+    assert.equal(registry.get('blocked-body').textContent, '新建一个，就可以开始问了。')
+
+    // The header names the conversation on screen, and there is none. It must not
+    // repeat the surface's sentence: the same claim twice on one screen reads as
+    // a stutter.
+    assert.equal(registry.get('title-text').textContent, 'DSH', 'the header repeated the empty-state sentence')
+
+    const action = registry.get('blocked-action')
+    assert.equal(action.textContent, '新建会话')
+    host.created.length = 0
+    action.emit('click')
+    await settle()
+
+    assert.equal(host.created.length, 1, 'the button did not ask the host for a session')
+
+    // And the surface is a state, not a warning: a session now exists, so it goes
+    // away on its own.
+    host.groups = [{ id: null, title: '', sessions: [{ id: 'session-created', title: '新会话', updatedAt: 1, running: false, blank: true, model: null }] }]
+    await clockOf('groups')
+    await settle()
+    assert.equal(registry.get('blocked').hidden, true, 'the empty surface outlived the first session')
+    assert.equal(registry.get('title-text').textContent, '新会话')
+  } finally {
+    host.groups = undefined
+    await clockOf('groups')
+    await settle()
+  }
 })
 
 test('a conversation longer than one window offers a way back up, and takes it', async () => {
@@ -1069,6 +1243,81 @@ async function show(messages) {
 function copyButtonIn(scope) {
   return transcript.querySelector(scope).querySelector('.copy')
 }
+
+test('a failed browser call opens to show why it failed', async () => {
+  // The row used to be a bare cross next to the arguments: `✕ browser_click
+  // #save` with nothing about the cause. The model could read the tool's own
+  // diagnostic and correct itself while the person watching could not tell a
+  // missed selector from a tab that DevTools had taken back — so they could not
+  // tell whether to intervene.
+  await show([
+    { kind: 'tool', name: 'browser_click', summary: '#save', status: 'error', failure: 'no element matches #save' },
+  ])
+
+  const line = transcript.querySelector('.tool')
+  assert.equal(line.dataset.status, 'error')
+
+  // A real button, not a clickable div: a div is a control only a mouse can
+  // reach, and this panel is held to keyboard access everywhere else. The
+  // element name is the assertion because that is what carries the tab stop,
+  // the focus ring and Enter/Space with it.
+  assert.equal(line.tagName, 'BUTTON', 'the row that opens on click is not reachable by keyboard')
+
+  // Closed by default: the transcript stays scannable, and the reason is one
+  // click away rather than always on screen.
+  assert.equal(transcript.querySelector('.tool-failure'), null, 'the reason was open before anyone asked')
+  assert.equal(line.getAttribute('aria-expanded'), 'false', 'a row that opens on click has to say so')
+
+  line.emit('click', {})
+  await settle()
+
+  const detail = transcript.querySelector('.tool-failure')
+  assert.notEqual(detail, null, 'clicking the row did not reveal the reason')
+  assert.equal(detail.textContent, 'no element matches #save')
+  assert.equal(transcript.querySelector('.tool').getAttribute('aria-expanded'), 'true')
+
+  // Closed again before the test ends, and asserted closed. The suite shares one
+  // panel, so an open row here is state the next test starts with: leaving it
+  // open made a later test's click *close* a row it expected to open, and the
+  // failure surfaced there rather than here.
+  transcript.querySelector('.tool').emit('click', {})
+  await settle()
+  assert.equal(transcript.querySelector('.tool-failure'), null, 'a second click did not close the row')
+  assert.equal(transcript.querySelector('.tool').getAttribute('aria-expanded'), 'false')
+})
+
+test('a successful tool call is not a control', async () => {
+  // No reason to show means nothing to open: a clickable row that does nothing
+  // is worse than plain text, because it invites a click and then ignores it —
+  // and a button would also put an inert stop in the tab order.
+  await show([{ kind: 'tool', name: 'browser_snapshot', summary: 'example.com', status: 'ok' }])
+
+  const line = transcript.querySelector('.tool')
+  assert.equal(line.dataset.status, 'ok')
+  assert.equal(line.tagName, 'DIV', 'a row with nothing to reveal became a focusable control')
+  assert.equal(line.classList.contains('has-reason'), false)
+  assert.equal(line.getAttribute('aria-expanded'), null, 'a row with nothing to reveal claimed to be expandable')
+})
+
+test('switching sessions forgets which failures were open', async () => {
+  // The open set is keyed by row index, and a new session's rows reuse the same
+  // indices. Carrying the set across would open a row nobody touched, which
+  // looks like the panel remembering a conversation the person just left.
+  await show([
+    { kind: 'tool', name: 'browser_click', summary: '#save', status: 'error', failure: 'no element matches #save' },
+  ])
+  transcript.querySelector('.tool').emit('click', {})
+  await settle()
+  assert.notEqual(transcript.querySelector('.tool-failure'), null, 'the row never opened, so nothing below is proved')
+
+  await switchTo(OTHER)
+  await switchTo(SESSION)
+  await show([
+    { kind: 'tool', name: 'browser_click', summary: '#save', status: 'error', failure: 'no element matches #save' },
+  ])
+
+  assert.equal(transcript.querySelector('.tool-failure'), null, 'a row was open in a session the user had left')
+})
 
 test('a failed turn is still visible after the panel is reloaded', async () => {
   // The live toast is gone the moment the panel is rebuilt. The host puts the
@@ -1690,6 +1939,21 @@ test('the panel finishes starting up, with every poll armed', async () => {
   assert.equal(focusListeners.length, 1, 'the focus listener that refreshes the chip was not registered')
 })
 
+test('the panel opens with the caret already in the composer', async () => {
+  // "Open the panel and type" is the whole interaction, and it did not work:
+  // measured in a real browser, focus landed on `body`, so the first keystroke
+  // went nowhere and the only way to start was to click the box.
+  //
+  // Asserted against the element itself rather than its id, so a panel that
+  // focused a different node with the same name would not pass.
+  assert.equal(
+    startupFocus,
+    registry.get('input'),
+    'the panel opened without putting the caret anywhere the person can type',
+  )
+  assert.notEqual(startupFocus, null, 'focus was never set, which is what `body` looks like from here')
+})
+
 test('a turn that died says so, rather than going quiet', async () => {
   await onStoppedClock(async () => {
     await settleToIdle()
@@ -1760,6 +2024,68 @@ test('a panel that missed the start is still told the turn died', async () => {
       zh['error.turnFailed'],
       `a panel that missed the start was told nothing (toast was "${toast.textContent}")`,
     )
+  })
+})
+
+test('a panel that missed the start still hears the turn end', async () => {
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    // The sibling of the failure case above, and the half that was actually
+    // missing. A panel opened, reloaded, or reconnected mid-turn never saw
+    // `start`, so dropping deltas is right — they are the tail of an answer whose
+    // opening this panel does not have, and `a panel opened mid-turn shows
+    // nothing live` pins that. But `end` was dropped by the same guard, and the
+    // waiting line is driven by the host's `running` flag: a turn that finished
+    // while nobody was watching left the panel animating it for up to POLL_MS.
+    //
+    // The waiting line has to exist first, or this test would pass against a
+    // panel that drew nothing at all and prove nothing. It is drawn from
+    // `currentSessionRunning`, which the *groups* read sets — one of the four
+    // clocks `start` arms, and the only one that touches this flag. Polling
+    // health instead would leave the flag alone and the assertion below would
+    // fail on a panel that is behaving correctly.
+    //
+    // No `start` frame is delivered here on purpose: this is the panel that
+    // missed it, which is the whole point.
+    host.running = true
+    try {
+      await clockOf('groups')
+      assert.notEqual(
+        transcript.querySelector('.working'),
+        null,
+        'the waiting line is absent, so this test cannot tell whether end cleared it',
+      )
+    } finally {
+      // Restored before the assertions below can throw: a flag left set here is
+      // read by every later test in the file, and five unrelated ones went red
+      // the first time this test leaked it.
+      host.running = false
+    }
+
+    deliver({ sessionId: SESSION, kind: 'end' })
+    await settle()
+
+    assert.equal(
+      transcript.querySelector('.working'),
+      null,
+      'the panel is still drawing a turn that is over',
+    )
+  })
+})
+
+test('adopting a turn does not adopt somebody else’s session', async () => {
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    // The guard that drops a foreign session sits above every branch, and this is
+    // what says so. It is the control for the two tests around it: whatever the
+    // panel does about a missed `start`, it may only ever do it to the
+    // conversation on screen.
+    deliver({ sessionId: OTHER, kind: 'text', text: 'SHOULD NOT APPEAR' })
+    deliver({ sessionId: OTHER, kind: 'end' })
+    await settle()
+
+    assert.equal(liveNode(), null, 'another session’s tokens were drawn into this one')
+    assert.ok(!transcript.textContent.includes('SHOULD NOT APPEAR'))
   })
 })
 
@@ -2152,4 +2478,150 @@ test('the ungrouped bucket is named, instead of borrowing the heading above it',
       await settle()
     }
   })
+})
+
+test('the arrow keys move between sessions, and the bottom of the list is the end of it', async (t) => {
+  // Measured in a real browser before this existed: ArrowDown on a session row
+  // left focus exactly where it was, so the only way through the list was Tab or
+  // the mouse. Nothing in the suite could have caught it, because the DOM shim's
+  // `focus()` was a no-op and the document had no focusable state at all.
+  await clockOf('groups')
+  if (currentViewInPanel() === 'chat') {
+    registry.get('title').click()
+    await settle()
+  }
+
+  const rows = registry.get('history').querySelectorAll('button').filter((node) => node.className === 'session')
+  assert.ok(rows.length >= 2, `expected a list to walk, got ${rows.length} rows`)
+
+  // `preventDefault` is counted rather than stubbed: an arrow key that moves
+  // focus and also scrolls the list is two behaviours fighting over a keystroke.
+  const key = (node, name) => {
+    let prevented = 0
+    node.emit('keydown', { key: name, preventDefault: () => { prevented += 1 } })
+    return prevented
+  }
+
+  rows[0].focus()
+  assert.equal(document.activeElement, rows[0], 'the row could not take focus, so nothing below is proved')
+  assert.equal(key(rows[0], 'ArrowDown'), 1, 'the list moved focus without claiming the keystroke')
+  assert.equal(document.activeElement, rows[1], 'ArrowDown did not move to the next session')
+
+  assert.equal(key(rows[1], 'ArrowUp'), 1)
+  assert.equal(document.activeElement, rows[0], 'ArrowUp did not move back')
+
+  // No wrapping. Stepping up from the first row is a no-op rather than a jump to
+  // the far end, which would hide how long the list is from anyone walking it.
+  key(rows[0], 'ArrowUp')
+  assert.equal(document.activeElement, rows[0], 'ArrowUp from the first row wrapped to the last')
+
+  const last = rows[rows.length - 1]
+  last.focus()
+  key(last, 'ArrowDown')
+  assert.equal(document.activeElement, last, 'ArrowDown from the last row wrapped to the first')
+
+  // Other keys still belong to the list: Home and End are the list's own, and a
+  // plain letter is not navigation at all.
+  assert.equal(key(rows[0], 'Home'), 0, 'the list claimed a key it does not act on')
+
+  if (currentViewInPanel() === 'history') {
+    registry.get('title').click()
+    await settle()
+  }
+  t.onCleanup(() => {
+    if (currentViewInPanel() === 'history') registry.get('title').click()
+  })
+})
+
+test('Escape closes the history and hands focus back to the control that opened it', async (t) => {
+  // The layer-with-a-dismiss-key contract, and the same one the model menu
+  // already honoured. Before this, Escape did nothing here: the only way out of
+  // the history was to find the `‹` button by mouse or by tabbing to it.
+  await clockOf('groups')
+  if (currentViewInPanel() === 'chat') {
+    registry.get('title').click()
+    await settle()
+  }
+  assert.equal(currentViewInPanel(), 'history', 'the history never opened, so this test proves nothing')
+
+  const rows = registry.get('history').querySelectorAll('button').filter((node) => node.className === 'session')
+  if (rows.length > 0) rows[0].focus()
+
+  // Emitted on the document, which is where the panel installs this handler —
+  // the same route a real keypress takes on its way up from the focused row.
+  document.emit('keydown', { key: 'Escape' })
+  await settle()
+
+  assert.equal(currentViewInPanel(), 'chat', 'Escape left the history open')
+  // Focus has to leave the row that is no longer on screen. Landing on the body
+  // would send the next Tab to the top of the panel instead of the header the
+  // person just came from.
+  assert.equal(
+    document.activeElement,
+    registry.get('title'),
+    'focus was not returned to the control that opened the history',
+  )
+  t.onCleanup(() => {
+    if (currentViewInPanel() === 'history') registry.get('title').click()
+  })
+})
+
+test('a question and a finished answer are announced, and a healthy start is not', async (t) => {
+  // Nothing in this panel was a live region, so a reader who cannot see it
+  // learned nothing: the failing send, the question blocking the turn, and the
+  // answer itself all arrived silently. The transcript cannot carry this — it is
+  // rebuilt wholesale on every poll, so making it a live region would
+  // re-announce the whole conversation each time — hence a separate region with
+  // the two moments that stop everything plus the one moment an answer is final.
+  await clockOf('groups')
+
+  // The half that is easy to get wrong, and the reason this test has a first
+  // act: `groups` starts empty and `hostReachable` starts false, so the surface
+  // is briefly up on *every* start. Announcing that would tell the reader the
+  // panel cannot work each time it opens correctly — and clearing it a moment
+  // later does not undo the announcement, which is why the whole startup history
+  // is checked rather than the value left behind.
+  const startupSaid = startupAnnouncements()
+  assert.deepEqual(
+    startupSaid,
+    [],
+    `a healthy start must stay silent for its whole startup, but said: ${JSON.stringify(startupSaid)}`,
+  )
+  assert.equal(announcer.textContent, '', `a healthy start must say nothing, said: ${announcer.textContent}`)
+
+  // A question. It blocks the turn until answered, and the visible evidence is a
+  // card that appears in a transcript the reader may not be looking at.
+  await askApproval({ id: 'announce-q1', toolName: 'browser_click', site: 'example.com' })
+  await settleMacrotask()
+  assert.notEqual(announcer.textContent, '', 'the blocking question was announced to nobody')
+  assert.match(
+    announcer.textContent,
+    /browser_click/,
+    `the announcement must name what is being asked for, got: ${announcer.textContent}`,
+  )
+
+  t.onCleanup(() => {
+    post('dsh-approval-settled', { id: 'announce-q1', outcome: 'answered-elsewhere' })
+  })
+
+  // An answer, which is the only moment its text is final: `.live-body` is
+  // rewritten in full on every frame, so announcing per token would repeat the
+  // whole answer from the top each time.
+  announcer.textContent = ''
+  deliver({ sessionId: SESSION, kind: 'start' })
+  deliver({ sessionId: SESSION, kind: 'text', text: 'The document covers three phases.' })
+  await settleMacrotask()
+  assert.equal(
+    announcer.textContent,
+    '',
+    `a streaming answer must not be announced token by token, got: ${announcer.textContent}`,
+  )
+
+  deliver({ sessionId: SESSION, kind: 'end' })
+  await settleMacrotask()
+  assert.match(
+    announcer.textContent,
+    /three phases/,
+    `the finished answer must be announced once, got: ${announcer.textContent}`,
+  )
 })

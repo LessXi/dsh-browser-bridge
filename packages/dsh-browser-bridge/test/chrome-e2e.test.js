@@ -16,13 +16,14 @@
  * from `/json/list`, which is the same shape a browser-level client would give.
  */
 
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { spawn } from 'node:child_process'
+import { get } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { assert, test } from './harness.js'
-import { distillSnapshot, renderElements, boundsFor, implicitRole } from '../../../extension/page-distill.js'
+import { applyAccessibleNames, distillSnapshot, renderElements, boundsFor, implicitRole } from '../../../extension/page-distill.js'
 
 /** Where Chrome usually lives, in the order worth trying. */
 const CHROME_CANDIDATES = [
@@ -120,19 +121,58 @@ async function startChrome(binary) {
       cleanup()
       throw new Error(`Chrome exited with code ${child.exitCode} before its debugging endpoint came up (see ${logPath})`)
     }
-    try {
-      const response = await fetch(`http://127.0.0.1:${port}/json/version`)
-      if (response.ok) {
-        const version = await response.json()
-        return { process: child, port, webSocketUrl: version.webSocketDebuggerUrl, logPath, cleanup }
-      }
-    } catch {
-      // Not listening yet.
+    const version = await probeVersion(port)
+    if (version !== undefined) {
+      return { process: child, port, webSocketUrl: version.webSocketDebuggerUrl, logPath, cleanup }
     }
     await new Promise((resolve) => setTimeout(resolve, 200))
   }
   cleanup()
   throw new Error(`Chrome did not expose a debugging endpoint on port ${port} within 25s`)
+}
+
+/**
+ * Ask a debugging port for its version JSON, once.
+ *
+ * This deliberately uses `node:http` with `agent: false` rather than `fetch`.
+ * `fetch` is backed by undici, whose global dispatcher keeps the connection in a
+ * keep-alive pool; because nothing closes that pool, the pooled socket stayed
+ * open past the end of every test and the process could never exit. The suite
+ * printed its summary and then hung, which is indistinguishable from a slow run
+ * — and it is why `npm test` appeared to stall. `agent: false` gives this probe
+ * a socket that is destroyed with the response.
+ *
+ * @param {number} port - The debugging port.
+ * @returns {Promise<object | undefined>} The parsed version, or undefined when not listening yet.
+ */
+function probeVersion(port) {
+  return new Promise((resolve) => {
+    const request = get(
+      { host: '127.0.0.1', port, path: '/json/version', agent: false, timeout: 2_000 },
+      (response) => {
+        if (response.statusCode !== 200) {
+          response.resume()
+          resolve(undefined)
+          return
+        }
+        let body = ''
+        response.setEncoding('utf8')
+        response.on('data', (chunk) => { body += chunk })
+        response.on('end', () => {
+          try {
+            resolve(JSON.parse(body))
+          } catch {
+            resolve(undefined)
+          }
+        })
+      },
+    )
+    request.on('error', () => resolve(undefined))
+    request.on('timeout', () => {
+      request.destroy()
+      resolve(undefined)
+    })
+  })
 }
 
 /**
@@ -196,12 +236,31 @@ class Cdp {
   }
 
   /**
-   * Wait for one event.
+   * Wait for one event, with a deadline.
+   *
+   * The deadline is what makes this suite debuggable: an event that never
+   * arrives used to park the promise forever, and because the harness runs every
+   * suite in one process, that hung the *entire* run — the suites sorted after
+   * this file never executed and `npm test` never printed a summary. A timeout
+   * turns that silence into a named failure.
+   *
    * @param {string} method - The event name.
+   * @param {number} [timeoutMs] - How long to wait.
    * @returns {Promise<object>} The event parameters.
    */
-  waitFor(method) {
-    return new Promise((resolve) => this.events.set(method, { resolve }))
+  waitFor(method, timeoutMs = 15_000) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.events.delete(method)
+        reject(new Error(`CDP event ${method} did not arrive within ${timeoutMs}ms`))
+      }, timeoutMs)
+      this.events.set(method, {
+        resolve: (params) => {
+          clearTimeout(timer)
+          resolve(params)
+        },
+      })
+    })
   }
 
   /** Close the socket. */
@@ -215,14 +274,28 @@ class Cdp {
 }
 
 /**
- * Open a page target and attach to it.
+ * Open a page target, attach to it, and wait until its document has loaded.
+ *
+ * The target is created on `about:blank` and then navigated, rather than being
+ * created with the final URL. Creating it with the URL raced its own load
+ * listener: a `data:` URL parses in a few milliseconds, so `Page.loadEventFired`
+ * had already fired — and been discarded, since nothing was subscribed yet — by
+ * the time the caller reached `waitFor`. The caller then awaited an event that
+ * could no longer happen. This is why the whole suite appeared to hang rather
+ * than fail.
+ *
  * @param {Cdp} cdp - The browser-level client.
  * @param {string} url - The page to open.
- * @returns {Promise<{ sessionId: string, targetId: string }>} The attachment.
+ * @returns {Promise<{ sessionId: string, targetId: string }>} The attachment, loaded.
  */
 async function openPage(cdp, url) {
-  const { targetId } = await cdp.send('Target.createTarget', { url })
+  const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' })
   const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true })
+  await cdp.send('Page.enable', {}, sessionId)
+  // Subscribed before the navigation is requested, so this cannot be missed.
+  const load = cdp.waitFor('Page.loadEventFired')
+  await cdp.send('Page.navigate', { url }, sessionId)
+  await load
   return { sessionId, targetId }
 }
 
@@ -246,9 +319,6 @@ test('the DOM snapshot pipeline works against a real Chrome page', async (t) => 
   await cdp.ready
 
   const { sessionId } = await openPage(cdp, pageUrl())
-  const load = cdp.waitFor('Page.loadEventFired')
-  await cdp.send('Page.enable', {}, sessionId)
-  await load
 
   // ── the browser sees the page ──────────────────────────────────────────────
   const identity = await cdp.send('Runtime.evaluate', {
@@ -346,9 +416,6 @@ test('a synthesized click lands on the element the snapshot named', async (t) =>
   await cdp.ready
 
   const { sessionId } = await openPage(cdp, pageUrl())
-  const load = cdp.waitFor('Page.loadEventFired')
-  await cdp.send('Page.enable', {}, sessionId)
-  await load
   await cdp.send('DOM.enable', {}, sessionId)
 
   const snapshot = await cdp.send('DOMSnapshot.captureSnapshot', { computedStyles: [], includeDOMRects: true }, sessionId)
@@ -371,6 +438,219 @@ test('a synthesized click lands on the element the snapshot named', async (t) =>
   assert.equal(result.result.value, 'clicked', 'a click at the snapshot bounds must reach the element')
 })
 
+/**
+ * Count the pixels that differ between two screenshots, inside one rectangle.
+ *
+ * Both images are full-page captures compared *through a canvas in the page*,
+ * because there is no way to compare a rectangle directly: a clipped
+ * `Page.captureScreenshot` is composited without the DevTools overlay layer, so
+ * the element's own area comes back identical whether or not it is highlighted.
+ * That was measured, not assumed — a clipped capture of a highlighted button was
+ * byte-for-byte its unhighlighted self while the full-page capture of the same
+ * moment plainly showed the box. Comparing a clip would therefore have asserted
+ * nothing while looking like a stricter test.
+ *
+ * Node has no PNG decoder, and adding one to ask "how many pixels changed here"
+ * would buy a dependency for a question the page can already answer.
+ *
+ * @param {Cdp} cdp - The connection.
+ * @param {string} sessionId - The page session.
+ * @param {string} before - Base64 PNG of the page before.
+ * @param {string} after - Base64 PNG of the page after.
+ * @param {{x: number, y: number, width: number, height: number}} area - The rectangle to compare.
+ * @returns {Promise<number>} How many pixels inside the rectangle are not identical.
+ */
+async function changedPixelsIn(cdp, sessionId, before, after, area) {
+  const result = await cdp.send('Runtime.evaluate', {
+    expression: `(async () => {
+      const load = (data) => new Promise((ok, bad) => {
+        const image = new Image()
+        image.onload = () => ok(image)
+        image.onerror = () => bad(new Error('could not decode the screenshot'))
+        image.src = 'data:image/png;base64,' + data
+      })
+      const [a, b] = await Promise.all([load(${JSON.stringify(before)}), load(${JSON.stringify(after)})])
+      const read = (image) => {
+        const canvas = document.createElement('canvas')
+        canvas.width = image.width
+        canvas.height = image.height
+        const context = canvas.getContext('2d', { willReadFrequently: true })
+        context.drawImage(image, 0, 0)
+        return context.getImageData(0, 0, image.width, image.height).data
+      }
+      const area = ${JSON.stringify(area)}
+      // The capture is the device pixel grid; the box model is CSS pixels.
+      const scale = a.width / window.innerWidth
+      const x0 = Math.max(0, Math.floor(area.x * scale))
+      const y0 = Math.max(0, Math.floor(area.y * scale))
+      const x1 = Math.min(a.width, Math.ceil((area.x + area.width) * scale))
+      const y1 = Math.min(a.height, Math.ceil((area.y + area.height) * scale))
+      const pixelsA = read(a)
+      const pixelsB = read(b)
+      let changed = 0
+      for (let y = y0; y < y1; y += 1) {
+        for (let x = x0; x < x1; x += 1) {
+          const at = (y * a.width + x) * 4
+          if (pixelsA[at] !== pixelsB[at] || pixelsA[at + 1] !== pixelsB[at + 1]
+            || pixelsA[at + 2] !== pixelsB[at + 2] || pixelsA[at + 3] !== pixelsB[at + 3]) changed += 1
+        }
+      }
+      return { changed, area: { x0, y0, x1, y1 }, scale, total: (x1 - x0) * (y1 - y0) }
+    })()`,
+    awaitPromise: true,
+    returnByValue: true,
+  }, sessionId)
+  return result.result.value
+}
+
+/**
+ * The viewport rectangle of a node.
+ *
+ * @param {Cdp} cdp - The connection.
+ * @param {string} sessionId - The page session.
+ * @param {number} nodeId - The node.
+ * @returns {Promise<{x: number, y: number, width: number, height: number}>} The rectangle in CSS pixels.
+ */
+async function boxOf(cdp, sessionId, nodeId) {
+  const quad = (await cdp.send('DOM.getBoxModel', { nodeId }, sessionId)).model.border
+  const xs = [quad[0], quad[2], quad[4], quad[6]]
+  const ys = [quad[1], quad[3], quad[5], quad[7]]
+  const x = Math.min(...xs)
+  const y = Math.min(...ys)
+  return { x, y, width: Math.max(...xs) - x, height: Math.max(...ys) - y }
+}
+
+test('the acting-on overlay is drawn over the target, and taken down again', async (t) => {
+  if (chromeBinary === undefined) {
+    t.skip('no Chrome binary on this machine')
+    return
+  }
+  const chrome = await startChrome(chromeBinary)
+  t.onCleanup(() => chrome.cleanup())
+  const cdp = new Cdp(chrome.webSocketUrl)
+  t.onCleanup(() => cdp.close())
+  await cdp.ready
+
+  const { sessionId } = await openPage(cdp, pageUrl())
+  await cdp.send('DOM.enable', {}, sessionId)
+
+  // The extension's own constants, read out of the shipped file rather than
+  // copied here: a test that pins its own colour would keep passing after the
+  // product's stopped being drawn.
+  const source = readFileSync(new URL('../../../extension/background.js', import.meta.url), 'utf8')
+  const declaration = source.match(/const HIGHLIGHT_CONFIG = \{[\s\S]*?\n\}/)
+  assert.ok(declaration !== null, 'background.js must still declare HIGHLIGHT_CONFIG')
+  const highlightConfig = new Function(`${declaration[0]}; return HIGHLIGHT_CONFIG`)()
+
+  const shot = async () => {
+    const { data } = await cdp.send('Page.captureScreenshot', { format: 'png' }, sessionId)
+    return data
+  }
+
+  const { root } = await cdp.send('DOM.getDocument', { depth: 0 }, sessionId)
+  const { nodeId } = await cdp.send('DOM.querySelector', { nodeId: root.nodeId, selector: '#go' }, sessionId)
+  const { node } = await cdp.send('DOM.describeNode', { nodeId }, sessionId)
+
+  const untouched = await shot()
+  const area = await boxOf(cdp, sessionId, nodeId)
+
+  await cdp.send('Overlay.enable', {}, sessionId)
+  await cdp.send('Overlay.highlightNode', { backendNodeId: node.backendNodeId, highlightConfig }, sessionId)
+  // The overlay is painted by the compositor, not by the page's own layout, so
+  // the frame has to land before the capture means anything.
+  await new Promise((resolve) => setTimeout(resolve, 250))
+  const highlighted = await shot()
+  assert.notEqual(highlighted, untouched, 'the overlay drew nothing at all')
+
+  // "Something on screen changed" is not the claim, and asserting only that is
+  // how the first version of this test was found to prove nothing: `showInfo`
+  // alone repaints the page — it draws the DevTools chip above the element — so
+  // a fully transparent `contentColor` and `borderColor` still changed pixels
+  // and still passed. What has to be true is that the element's own area is
+  // covered by the box, so the comparison is confined to that rectangle.
+  const covered = await changedPixelsIn(cdp, sessionId, untouched, highlighted, area)
+  assert.ok(
+    covered.changed > covered.total * 0.5,
+    `the box did not cover the element it names: ${covered.changed}/${covered.total} of its pixels changed`,
+  )
+
+  await cdp.send('Overlay.hideHighlight', {}, sessionId)
+  await new Promise((resolve) => setTimeout(resolve, 250))
+  assert.equal(await shot(), untouched, 'the overlay outlived the action it was explaining')
+
+  // A target named by a snapshot index has bounds and no node id, which is the
+  // path `DOM.getNodeForLocation` exists to close. Resolving a point back to a
+  // node is what lets both addressing modes draw the same box.
+  const hit = await cdp.send('DOM.getNodeForLocation', {
+    x: Math.round(area.x + area.width / 2),
+    y: Math.round(area.y + area.height / 2),
+  }, sessionId)
+  assert.ok(hit.backendNodeId !== undefined, 'a point inside the element must resolve back to a node')
+  await cdp.send('Overlay.highlightNode', { backendNodeId: hit.backendNodeId, highlightConfig }, sessionId)
+  await new Promise((resolve) => setTimeout(resolve, 250))
+  const coveredByPoint = await changedPixelsIn(cdp, sessionId, untouched, await shot(), area)
+  assert.ok(
+    coveredByPoint.changed > coveredByPoint.total * 0.5,
+    `the point-addressed target did not cover the element: ${coveredByPoint.changed}/${coveredByPoint.total}`,
+  )
+  await cdp.send('Overlay.hideHighlight', {}, sessionId)
+})
+
+test('the acting-on overlay stays up long enough to be seen', async (t) => {
+  if (chromeBinary === undefined) {
+    t.skip('no Chrome binary on this machine')
+    return
+  }
+  const chrome = await startChrome(chromeBinary)
+  t.onCleanup(() => chrome.cleanup())
+  const cdp = new Cdp(chrome.webSocketUrl)
+  t.onCleanup(() => cdp.close())
+  await cdp.ready
+
+  const { sessionId } = await openPage(cdp, pageUrl())
+  await cdp.send('DOM.enable', {}, sessionId)
+
+  // The configured dwell, read from the shipped file rather than restated here.
+  const source = readFileSync(new URL('../../../extension/background.js', import.meta.url), 'utf8')
+  const declaration = source.match(/const HIGHLIGHT_DWELL_MS = \d+/)
+  assert.ok(declaration !== null, 'background.js must still declare HIGHLIGHT_DWELL_MS')
+  const dwell = new Function(`${declaration[0]}; return HIGHLIGHT_DWELL_MS`)()
+
+  // The bug this test exists for: the first version drew the box, clicked and
+  // hid it again inside one function, so it was on screen for 24ms — measured,
+  // not estimated. A person cannot register a flash that short, which made the
+  // feature invisible to exactly the person it was built for. Asserting that a
+  // number in the source is large enough is what the *next* version would break,
+  // so this one holds the box down and looks at it.
+  assert.ok(dwell >= 400, `a ${dwell}ms dwell is under the ~100ms it takes to notice a flash`)
+
+  const { root } = await cdp.send('DOM.getDocument', { depth: 0 }, sessionId)
+  const { nodeId } = await cdp.send('DOM.querySelector', { nodeId: root.nodeId, selector: '#go' }, sessionId)
+  const { node } = await cdp.send('DOM.describeNode', { nodeId }, sessionId)
+
+  const shot = async () => {
+    const { data } = await cdp.send('Page.captureScreenshot', { format: 'png' }, sessionId)
+    return data
+  }
+
+  const baseline = await shot()
+  await cdp.send('Overlay.enable', {}, sessionId)
+  await cdp.send('Overlay.highlightNode', { backendNodeId: node.backendNodeId, highlightConfig: {
+    showInfo: true,
+    contentColor: { r: 66, g: 98, b: 240, a: 0.4 },
+    borderColor: { r: 66, g: 98, b: 240, a: 0.9 },
+  } }, sessionId)
+
+  // Sampled at the moment a real click would already have returned. In the
+  // shipped flow the action is finished by now; only the box is still up.
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  assert.notEqual(await shot(), baseline, 'the box was already gone by the time a 24ms action would have returned')
+
+  await cdp.send('Overlay.hideHighlight', {}, sessionId)
+  await new Promise((resolve) => setTimeout(resolve, 250))
+  assert.equal(await shot(), baseline, 'the box did not come down again')
+})
+
 test('insertText reaches a page and fires its input listener', async (t) => {
   if (chromeBinary === undefined) {
     t.skip('no Chrome binary on this machine')
@@ -383,9 +663,6 @@ test('insertText reaches a page and fires its input listener', async (t) => {
   await cdp.ready
 
   const { sessionId } = await openPage(cdp, pageUrl())
-  const load = cdp.waitFor('Page.loadEventFired')
-  await cdp.send('Page.enable', {}, sessionId)
-  await load
 
   // Focus by selector, which is what `page.type` with a selector does.
   await cdp.send('Runtime.evaluate', { expression: 'document.getElementById("email").focus()' }, sessionId)
@@ -411,9 +688,6 @@ test('a screenshot comes back as a real image payload', async (t) => {
   await cdp.ready
 
   const { sessionId } = await openPage(cdp, pageUrl())
-  const load = cdp.waitFor('Page.loadEventFired')
-  await cdp.send('Page.enable', {}, sessionId)
-  await load
 
   for (const format of ['jpeg', 'png']) {
     const shot = await cdp.send('Page.captureScreenshot', {
@@ -480,4 +754,179 @@ test('the pure helpers behave without a browser', () => {
   // An empty or malformed snapshot must degrade to "nothing", not throw.
   assert.deepEqual(distillSnapshot({}), [])
   assert.deepEqual(distillSnapshot({ documents: [{ nodes: {}, layout: {} }], strings: [] }), [])
+})
+
+test('indices stay unique when the snapshot holds more than one document', () => {
+  // A snapshot carries one document per frame, and each numbers its nodes from
+  // zero. Reporting the raw position hands the model two different elements with
+  // the same `#n` the moment a page contains an iframe — measured on a checkout
+  // whose card form sits in one, four of seven rows collided, and `#13` was both
+  // "Apply coupon" on the page and the card-number field in the frame.
+  //
+  // `resolveTarget` looks an index up with `find`, so the collision is not
+  // cosmetic: it clicks whichever came first in document order.
+  // One string table for the whole snapshot, which is the shape CDP sends: the
+  // documents index into a shared pool rather than each carrying its own. A
+  // fixture that gave each document a private pool would still produce two rows,
+  // and they would both read the *first* document's label.
+  const strings = ['', 'html', 'body', 'button', 'name', 'Apply coupon', 'Pay now']
+  const at = (text) => strings.indexOf(text)
+
+  const build = (buttonName, buttonIndex) => {
+    const length = buttonIndex + 1
+    const nodeType = new Array(length).fill(1)
+    const nodeName = new Array(length).fill(at('body'))
+    nodeType[0] = 9
+    nodeName[0] = at('html')
+    nodeName[buttonIndex] = at('button')
+    return {
+      nodes: {
+        parentIndex: new Array(length).fill(0),
+        nodeType,
+        nodeName,
+        nodeValue: new Array(length).fill(0),
+        // The name comes from an attribute rather than a text child, so the
+        // fixture stays about *which document a row belongs to* instead of
+        // depending on the descendant-text plumbing as well.
+        attributes: { [buttonIndex]: [at('name'), at(buttonName)] },
+        backendNodeId: new Array(length).fill(0).map((_zero, index) => index + 1),
+      },
+      layout: { nodeIndex: [buttonIndex], bounds: [[0, 0, 100, 20]] },
+    }
+  }
+
+  // The page has a button at node 3; the frame has one at node 3 as well, which
+  // is the ordinary collision when a frame is small.
+  const snapshot = {
+    strings,
+    documents: [build('Apply coupon', 3), build('Pay now', 3)],
+  }
+
+  const elements = distillSnapshot(snapshot, { interactiveOnly: true })
+  assert.equal(elements.length, 2, `expected both frames' buttons, saw ${elements.length}`)
+
+  const indices = elements.map((element) => element.index)
+  assert.equal(new Set(indices).size, indices.length, `indices collide across documents: ${JSON.stringify(indices)}`)
+
+  // The frame's row keeps its own position, so a caller that needs to talk to
+  // that document directly still can.
+  const second = elements[1]
+  assert.equal(second.nodeIndex, 3, 'the per-document position was lost')
+
+  // And the names stay attached to the right rows: an offset that misaligned the
+  // pairing would still produce unique numbers.
+  assert.deepEqual(
+    elements.map((element) => element.name),
+    ['Apply coupon', 'Pay now'],
+    'the rows were paired with the wrong documents',
+  )
+})
+
+test('the browser names override the derived ones, and only where it helps', () => {
+  // Chrome implements the accessible-name computation; the reader in
+  // `page-distill.js` implements a subset of it. A probe against a realistic
+  // page showed the difference concretely — an input labelled by `<label for>`
+  // came back nameless, a `<select>` was named after its options — so the
+  // browser is asked, and this pins which of its answers are taken.
+  const derived = [
+    { index: 71, tag: 'INPUT', role: 'textbox', name: '', type: 'email', backendNodeId: 15 },
+    { index: 81, tag: 'SELECT', role: 'combobox', name: 'ChinaJapanKorea', backendNodeId: 16 },
+    // A label whose words are about to be given to the control it names.
+    { index: 68, tag: 'LABEL', role: 'label', name: 'Email address', backendNodeId: 14 },
+    { index: 93, tag: 'INPUT', role: 'checkbox', name: 'on', type: 'checkbox', backendNodeId: 17 },
+    // No backend id, so nothing to join on and nothing to change.
+    { index: 200, tag: 'BUTTON', role: 'button', name: 'Someone else', backendNodeId: undefined },
+    // A real target with no name at all. It must survive: dropping it would
+    // hide a clickable element, which is a capability, not noise.
+    { index: 134, tag: 'BUTTON', role: 'button', name: '', backendNodeId: 18 },
+  ]
+  const tree = {
+    nodes: [
+      { backendDOMNodeId: 15, role: { value: 'textbox' }, name: { value: 'Email address' } },
+      { backendDOMNodeId: 16, role: { value: 'combobox' }, name: { value: 'Country' } },
+      // A `<label>` is `LabelText` to assistive technology, which is not a word
+      // this rendering can use — and Chrome reports it with an empty name,
+      // because the words have already gone to the control.
+      { backendDOMNodeId: 14, role: { value: 'LabelText' }, name: { value: '' } },
+      { backendDOMNodeId: 17, role: { value: 'checkbox' }, name: { value: ' I agree to the terms' } },
+      { backendDOMNodeId: 18, role: { value: 'button' }, name: { value: '' } },
+      // An AX node for something not in the list, which must be harmless.
+      { backendDOMNodeId: 999, role: { value: 'button' }, name: { value: 'Not on the page' } },
+    ],
+  }
+
+  const { elements, matched, dropped } = applyAccessibleNames(derived, tree)
+  assert.equal(matched, 5, 'the join must match every element that carries a backend id')
+
+  const byIndex = new Map(elements.map((element) => [element.index, element]))
+  assert.equal(byIndex.get(71).name, 'Email address', 'the empty derived name was not replaced')
+  assert.equal(byIndex.get(81).name, 'Country', 'the select kept its concatenated option text')
+  assert.equal(byIndex.get(93).name, 'I agree to the terms', 'the label whitespace was not collapsed')
+  assert.equal(byIndex.get(200).name, 'Someone else', 'an element with no backend id was touched')
+
+  // The label is gone: its words now live on the control, so the row was a
+  // duplicate with the information removed. Measured on a checkout page, four
+  // of these plus an unnamed button were 16% of the list.
+  assert.equal(byIndex.has(68), false, 'an empty label proxy still occupies a row')
+  assert.equal(dropped, 1, `expected exactly one dropped proxy, dropped ${dropped}`)
+
+  // The unnamed button is not a proxy and must stay: it is a real target.
+  assert.notEqual(byIndex.get(134), undefined, 'an unnamed but clickable element was dropped')
+  assert.equal(byIndex.get(134).name, '')
+
+  // Degenerate inputs cannot throw: the AX domain may legitimately be refused.
+  assert.equal(applyAccessibleNames(derived, undefined).matched, 0)
+  assert.equal(applyAccessibleNames(derived, { nodes: [] }).matched, 0)
+  assert.equal(applyAccessibleNames(derived, { nodes: [] }).elements, derived, 'a failed join must change nothing')
+})
+
+test('a label does not take its control value as its own text', () => {
+  // The defect this pins, seen on a realistic page: a wrapping `<label>` around
+  // a checkbox rendered as `label "onI agree to the terms"` — the checkbox's own
+  // value glued to the words — and a `<select>` inside a label became
+  // `label "ChinaJapanKorea"`. The label's job is the words the page prints
+  // beside the field.
+  const strings = ['', 'html', 'body', 'label', 'input', 'I agree to the terms', 'on']
+  const at = (name) => strings.indexOf(name)
+  const snapshot = {
+    strings,
+    documents: [{
+      nodes: {
+        // `label` wraps `input` and is followed by the text — the real shape:
+        //   <label><input id=terms type=checkbox> I agree to the terms</label>
+        // so the label's children are the input (index 4) and the text (index 5).
+        parentIndex: [-1, 0, 1, 2, 3, 3],
+        nodeType: [9, 1, 1, 1, 1, 3],
+        nodeName: [at('html'), at('html'), at('body'), at('label'), at('input'), 0],
+        nodeValue: [0, 0, 0, 0, 0, at('I agree to the terms')],
+        // The control carries a value, and it has to: this is what the defect
+        // reads. A live checkbox reports `on`, an unfilled one reports nothing —
+        // and with nothing there the label renders correctly either way, which
+        // is how this test passed against the broken code before the fixture
+        // gave the input a value.
+        inputValue: {
+          index: [4],
+          value: [at('on')],
+        },
+        backendNodeId: [1, 2, 3, 4, 5, 6],
+      },
+      layout: { nodeIndex: [3, 4], bounds: [[0, 0, 200, 20], [0, 0, 16, 16]] },
+    }],
+  }
+
+  const elements = distillSnapshot(snapshot, { interactiveOnly: true })
+  const label = elements.find((element) => element.tag === 'LABEL')
+  const control = elements.find((element) => element.tag === 'INPUT')
+
+  assert.notEqual(label, undefined, 'the label was not distilled, so nothing below is proved')
+  assert.equal(
+    label.name.includes('on'),
+    false,
+    `the label absorbed its control's value: ${JSON.stringify(label.name)}`,
+  )
+  assert.equal(label.name, 'I agree to the terms', 'the label lost the words that label it')
+  // The control still reads its own value as its name — that rule is unchanged
+  // and is why an already-filled input is still nameable. It is the descent into
+  // a control that must contribute nothing, not the control itself.
+  assert.equal(control.name, 'on', 'the control no longer reads its own value as its name')
 })

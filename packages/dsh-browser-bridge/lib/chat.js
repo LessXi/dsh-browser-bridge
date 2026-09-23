@@ -50,6 +50,15 @@ const PLUGIN_ID = 'browser-bridge'
 /** Longest a tool row's one-line summary may be. */
 const TOOL_SUMMARY_MAX = 80
 
+/**
+ * Longest the reason behind a failed tool call may be.
+ *
+ * Longer than a call's summary on purpose: a summary names what was asked for
+ * (`#save`), and the reason is the sentence explaining why it did not happen —
+ * clipping that to a selector's width is what would leave it unread.
+ */
+const TOOL_FAILURE_MAX = 200
+
 /** Longest a derived fallback title may be. */
 const TITLE_MAX = 60
 
@@ -169,8 +178,93 @@ export function toolFailed(data) {
   const message = data?.message
   if (message?.isError === true) return true
   const content = Array.isArray(message?.content) ? message.content : []
-  if (content.some((block) => block?.isError === true)) return true
+  if (hasErrorBlock(content)) return true
   return data?.error !== undefined && data?.error !== null
+}
+
+/**
+ * Whether an error flag appears anywhere in a content array, including inside a
+ * `tool-result` block's own content.
+ *
+ * The nesting is the same one `toolResultText` follows, and missing it here is
+ * worse than missing a reason: a failed call would be drawn as a success, so the
+ * one row that should stand out would be coloured like the ones that worked.
+ *
+ * @param {unknown} content - A content array, possibly nested.
+ * @param {number} [depth] - Remaining levels to descend.
+ * @returns {boolean} True when any block carries `isError`.
+ */
+function hasErrorBlock(content, depth = 4) {
+  if (!Array.isArray(content) || depth <= 0) return false
+  for (const block of content) {
+    if (typeof block !== 'object' || block === null) continue
+    if (block.isError === true) return true
+    if (block.type === 'tool-result' && hasErrorBlock(block.content, depth - 1)) return true
+  }
+  return false
+}
+
+/**
+ * Why a tool call failed, in the tool's own words.
+ *
+ * A failed browser call used to reach the panel as a bare cross: the row kept
+ * the arguments (`#save`) but threw the result away, so a person watching the
+ * model work saw `✕ browser_click #save` and nothing about *why*. The model was
+ * the only reader of the reason, which meant someone who needed to decide
+ * whether to intervene — close the DevTools window, grant the origin, stop the
+ * run — had no way to tell a mis-aimed selector from a blocked tab from a page
+ * that never answered.
+ *
+ * The reason is taken from the result's text, and from the error's message when
+ * there is no text, because the two carriers are used by different failure
+ * paths: a tool that returns a diagnostic string, and one that throws.
+ *
+ * @param {unknown} data - A `tool/result` event's data.
+ * @returns {string} One line, or an empty string when nothing explains it.
+ */
+export function toolFailure(data) {
+  const message = data?.message
+  const content = Array.isArray(message?.content) ? message.content : []
+  const fromContent = toolResultText(content)
+  if (fromContent.length > 0) return oneLine(fromContent, TOOL_FAILURE_MAX)
+  const error = data?.error
+  if (typeof error === 'string') return oneLine(error, TOOL_FAILURE_MAX)
+  const fromError = asText(error?.message) || asText(message?.error)
+  return fromError.length > 0 ? oneLine(fromError, TOOL_FAILURE_MAX) : ''
+}
+
+/**
+ * Join the text inside a tool result, following the nesting the harness writes.
+ *
+ * A `tool/result` message does not carry its text directly: it holds one
+ * `tool-result` block whose own `content` is the blocks the tool produced. The
+ * host's `collectImageRefs` recurses into it for exactly this reason, and a
+ * reader that stops at the outer block finds nothing — which is how a failure
+ * reason silently came back empty and left the row with a bare cross.
+ *
+ * Recursion is bounded rather than trusting the shape: this runs on whatever a
+ * session's log contains, and a cycle would hang the read that draws the panel.
+ *
+ * @param {unknown} content - A content array, possibly nested.
+ * @param {number} [depth] - Remaining levels to descend.
+ * @returns {string} The joined text, or an empty string.
+ */
+function toolResultText(content, depth = 4) {
+  if (!Array.isArray(content) || depth <= 0) return ''
+  const parts = []
+  for (const block of content) {
+    if (typeof block !== 'object' || block === null) continue
+    if (block.type === 'tool-result') {
+      const nested = toolResultText(block.content, depth - 1)
+      if (nested.length > 0) parts.push(nested)
+      continue
+    }
+    if (block.type === 'text') {
+      const text = asText(block.text)
+      if (text.length > 0) parts.push(text)
+    }
+  }
+  return parts.join('\n').trim()
 }
 
 /**
@@ -196,7 +290,14 @@ export function collapseToolRuns(rows) {
       && previous.summary === row.summary
     ) {
       previous.count += 1
+      // The last call's status stands for the run, and its reason has to travel
+      // with it: taking the status without the reason would draw a merged row
+      // with a cross on it and nothing to explain the cross, which is the exact
+      // shape this row exists to avoid. A call that succeeded clears the reason,
+      // because the run's final word is that it worked.
       previous.status = row.status
+      if (typeof row.failure === 'string' && row.failure.length > 0) previous.failure = row.failure
+      else delete previous.failure
       continue
     }
     out.push(row.kind === 'tool' ? { ...row, count: 1 } : row)
@@ -364,7 +465,20 @@ export function describeEvents(events, api) {
         // latest word either way.
         const callId = asText(data?.message?.source?.callId) || asText(data?.callId)
         const row = callId.length > 0 ? toolRows.get(callId) : undefined
-        if (row !== undefined) row.status = toolFailed(data) ? 'error' : 'ok'
+        if (row !== undefined) {
+          const failed = toolFailed(data)
+          row.status = failed ? 'error' : 'ok'
+          // Only a failure carries a reason. A successful call's output is the
+          // page, not an explanation, and putting it on the row would turn every
+          // snapshot into a wall of text.
+          if (failed) {
+            const reason = toolFailure(data)
+            if (reason.length > 0) row.failure = reason
+            else delete row.failure
+          } else {
+            delete row.failure
+          }
+        }
         break
       }
 

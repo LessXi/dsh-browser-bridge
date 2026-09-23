@@ -17,6 +17,12 @@
  * @module dsh-browser-bridge/bridge
  */
 
+// `protocol.js` is a leaf of frozen constant tables with no imports of its own,
+// so this cannot introduce a cycle. The notification name is taken from there
+// rather than spelled inline so the host and the extension cannot drift apart on
+// the string.
+import { NOTIFICATIONS } from './protocol.js'
+
 /** Stable failure codes, so a tool can phrase its own diagnostic. */
 export const BRIDGE_ERRORS = Object.freeze({
   notConnected: 'bridge-not-connected',
@@ -182,7 +188,16 @@ export class BrowserConnection {
         else resolve(value)
       }
 
-      const onAbort = () => settle(new BridgeError(BRIDGE_ERRORS.cancelled, `the ${method} call was cancelled`))
+      const onAbort = () => {
+        // Tell the extension before giving up locally. Rejecting here only ends
+        // the host's wait; the extension keeps polling or waiting for a load,
+        // which is what makes Stop a lie for the slow methods. The notification
+        // carries the request id so the extension can find the work it still has
+        // in flight, and it goes out before `settle` removes the entry that
+        // knows the id.
+        this.notify(NOTIFICATIONS.callCancelled, { id })
+        settle(new BridgeError(BRIDGE_ERRORS.cancelled, `the ${method} call was cancelled`))
+      }
       signal?.addEventListener('abort', onAbort, { once: true })
 
       const timer = setTimeout(() => {

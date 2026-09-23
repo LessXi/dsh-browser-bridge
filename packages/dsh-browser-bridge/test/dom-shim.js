@@ -40,6 +40,8 @@ class Element {
     this.offsetHeight = 0
     this.parentNode = null
     this.listeners = new Map()
+    /** Attributes set by name, read back by the same name. See `setAttribute`. */
+    this.attributes = {}
     this.#text = ''
     this.#children = []
   }
@@ -152,20 +154,32 @@ class Element {
   setAttribute(name, value) {
     if (name === 'id') this.id = String(value)
     else if (name === 'class') this.className = String(value)
-    else if (name === 'aria-expanded') this.ariaExpanded = String(value)
-    else this[name] = String(value)
+    // Stored under the name it was set with, because `getAttribute` reads that
+    // same name back. The previous version wrote camel-cased keys here while
+    // reading the dashed name there, so every `aria-*` read came back `null` —
+    // which is indistinguishable from "never set", and is how a row that does
+    // announce itself looked like one that does not.
+    else this.attributes[name] = String(value)
   }
 
   getAttribute(name) {
     if (name === 'id') return this.id
     if (name === 'class') return this.className
-    return this[name] ?? null
+    // A plain property wins when it holds something, because the panel sets
+    // `src`, `hidden` and the rest by assignment rather than by attribute, and
+    // the browser reflects those into attributes for exactly this reason.
+    const direct = this[name]
+    if (direct !== undefined && direct !== null && typeof direct !== 'object') return String(direct)
+    return this.attributes[name] ?? null
   }
 
   removeAttribute(name) {
     if (name === 'id') this.id = ''
     else if (name === 'class') this.className = ''
-    else delete this[name]
+    else {
+      delete this.attributes[name]
+      if (name in this) delete this[name]
+    }
   }
 
   addEventListener(type, listener) {
@@ -179,9 +193,39 @@ class Element {
     if (at !== -1) list.splice(at, 1)
   }
 
-  /** Fire the listeners registered for `type`. Handlers may read `event`. */
+  /**
+   * Fire the listeners registered for `type`, then let it bubble.
+   *
+   * Bubbling is not a nicety here: the panel installs its Escape handling on the
+   * document and its `@`-picker handling on the textarea, and the picker's own
+   * Escape branch means the two must be able to disagree about one keystroke. A
+   * shim that stopped at the element could not tell a fix from a regression in
+   * exactly that case.
+   *
+   * `event.preventDefault` is provided when the caller did not, because every
+   * handler under test calls it and a shim that throws on its absence reports a
+   * TypeError instead of the behaviour.
+   *
+   * @param {string} type - The event name.
+   * @param {object} [event] - The event object the handlers read.
+   * @returns {void}
+   */
   emit(type, event = {}) {
+    if (typeof event.preventDefault !== 'function') event.preventDefault = () => {}
+    let stopped = false
+    if (typeof event.stopPropagation !== 'function') {
+      event.stopPropagation = () => { stopped = true }
+    } else {
+      const original = event.stopPropagation
+      event.stopPropagation = () => { stopped = true; original() }
+    }
     for (const listener of [...(this.listeners.get(type) ?? [])]) listener(event)
+    if (stopped) return
+    // Bubble to the document, which is where the panel installs its Escape
+    // handling. The `document` object has its own `emit` that does not bubble,
+    // so this terminates rather than recursing.
+    const root = this.ownerDocument
+    if (root !== undefined && typeof root.emit === 'function') root.emit(type, event)
   }
 
   /**
@@ -250,8 +294,56 @@ class Element {
     return null
   }
 
-  focus() {}
-  blur() {}
+  /**
+   * Move focus here.
+   *
+   * This used to be a no-op, which meant the document had no `activeElement`
+   * that ever changed and *every* focus behaviour was untestable — including
+   * where focus lands when a layer closes, and whether the arrow keys move
+   * between rows at all. The contract kept here is the one the panel relies on:
+   * focusing an attached element makes it the document's `activeElement`, and
+   * focusing a detached one does nothing, because a node that is not in the
+   * tree cannot hold focus in a browser either.
+   *
+   * @returns {void}
+   */
+  focus() {
+    const document = this.ownerDocument
+    if (document === undefined) return
+    document.activeElement = this
+  }
+
+  blur() {
+    const document = this.ownerDocument
+    if (document?.activeElement === this) document.activeElement = null
+  }
+
+  /**
+   * The document this node belongs to, found by walking to the root.
+   *
+   * Two roots have to be recognised, because this shim builds its tree in a way
+   * a browser does not. Elements handed out by `getElementById` are created on
+   * demand and are the *roots* of their own subtrees — they have no `parentNode`
+   * — yet they are exactly the nodes a browser would consider in the document.
+   * So those carry a `documentRef`, and the walk accepts either that or a node
+   * marked `isDocument` at the top of the tree.
+   *
+   * A genuinely detached subtree has neither, and returns `undefined`: a node
+   * that is not in the document cannot hold focus in a browser either, and a
+   * shim that let it would make "focus stayed where it was" look like "focus
+   * moved".
+   *
+   * @returns {object|undefined} The document, when this node belongs to one.
+   */
+  get ownerDocument() {
+    let node = this
+    while (node !== null && node !== undefined) {
+      if (node.documentRef !== undefined) return node.documentRef
+      if (node.isDocument === true) return node
+      node = node.parentNode
+    }
+    return undefined
+  }
   click() {
     this.emit('click', {})
   }
@@ -372,6 +464,16 @@ function makeDocument() {
     if (!registry.has(id)) {
       const element = new Element('div')
       element.id = id
+      // These elements are roots — nothing is their parent — but in a browser
+      // they would be in the document, so they have to say which document they
+      // belong to. Without this, focus on a row inside one walks to a null
+      // parent and finds no document, so `focus()` becomes a no-op again and
+      // every focus assertion silently reads "nothing moved".
+      //
+      // Read through a getter rather than assigned here: `byId` is defined
+      // before the document object it refers to, and a plain assignment would
+      // capture a value that does not exist yet.
+      Object.defineProperty(element, 'documentRef', { get: () => document })
       registry.set(id, element)
     }
     return registry.get(id)
@@ -386,15 +488,59 @@ function makeDocument() {
     // TypeError in whichever suite runs next.
     head: new Element('head'),
     hidden: false,
+    /**
+     * What currently holds focus.
+     *
+     * The shim keeps this so focus behaviour is testable at all: without it,
+     * "where does focus go when a layer closes" and "do the arrow keys move
+     * between rows" are questions no test can ask. `null` before anything has
+     * been focused, which is what a browser reports when focus is on the body.
+     *
+     * @type {Element|null}
+     */
+    activeElement: null,
     getElementById: byId,
     createElement: (tagName) => new Element(tagName),
     createTextNode: (data) => new TextNode(data),
     createDocumentFragment: () => new Fragment(),
     querySelector: () => null,
     querySelectorAll: () => [],
-    addEventListener: () => {},
-    removeEventListener: () => {},
+    /**
+     * Document-level listeners, kept so they can be fired.
+     *
+     * These used to be no-ops, which made every shortcut the panel installs on
+     * the document untestable — and the panel installs its Escape handling
+     * there. A test can now reach that code by emitting on the document, which
+     * is the same path a real keypress takes.
+     *
+     * @type {Map<string, Function[]>}
+     */
+    listeners: new Map(),
+    addEventListener(type, listener) {
+      if (!document.listeners.has(type)) document.listeners.set(type, [])
+      document.listeners.get(type).push(listener)
+    },
+    removeEventListener(type, listener) {
+      const list = document.listeners.get(type) ?? []
+      const index = list.indexOf(listener)
+      if (index !== -1) list.splice(index, 1)
+    },
+    /**
+     * Fire the document listeners registered for `type`.
+     * @param {string} type - The event name.
+     * @param {object} [event] - The event object the handlers read.
+     * @returns {void}
+     */
+    emit(type, event = {}) {
+      for (const listener of [...(document.listeners.get(type) ?? [])]) listener(event)
+    },
   }
+  // Marks this object as the root `focus()` walks up to. A flag rather than a
+  // class check, because the document here is a plain object.
+  Object.defineProperty(document, 'isDocument', { value: true })
+  documentElement.parentNode = document
+  document.body.parentNode = document
+  document.head.parentNode = document
   return { document, registry }
 }
 

@@ -15,6 +15,10 @@
  * reachable, so a bare checkout can still run the rest of the suite.
  */
 
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
 import { assert, test } from './harness.js'
 import { loadPeer } from '../lib/deps.js'
 import { buildTools } from '../lib/tools.js'
@@ -23,6 +27,9 @@ import { BridgeRegistry } from '../lib/bridge.js'
 import { GrantTable } from '../lib/grants.js'
 import { ContextAttachments } from '../lib/context.js'
 import { resolveSettings } from '../lib/config.js'
+
+/** This file's directory, so the README is found from anywhere. */
+const here = dirname(fileURLToPath(import.meta.url))
 
 /** A settings reader over defaults plus overrides. */
 function settingsWith(overrides = {}) {
@@ -119,4 +126,28 @@ test('every output schema declares additionalProperties on each object node', as
     assert.ok(compiled !== undefined)
   }
   assert.deepEqual(offendersByTool, [], `these object nodes need an explicit additionalProperties: ${offendersByTool.join(', ')}`)
+})
+
+test('every tool the plugin registers is in the README table', async () => {
+  // The table is how someone decides whether to hand over the `debugger`
+  // permission at all, so a tool that exists but is undocumented is a capability
+  // the reader was not told about. It drifted exactly once and silently:
+  // `browser_dialog` was written, tested and merged, and the table still listed
+  // twenty-four tools. Nothing caught it, because nothing compared the two.
+  //
+  // Both directions are checked. A missing row hides a capability; a stale row
+  // promises one that does not exist, and a reader who tries it gets a tool
+  // error naming a name the documentation invented.
+  const readme = readFileSync(join(here, '..', '..', '..', 'README.md'), 'utf8')
+  const documented = new Set(
+    [...readme.matchAll(/^\|\s*`(browser_\w+)`/gm)].map((match) => match[1]),
+  )
+  assert.ok(documented.size >= 20, `expected a real table in the README, found ${documented.size} rows`)
+
+  const registered = allDefinitions().map((definition) => definition.name)
+  const undocumented = registered.filter((name) => !documented.has(name))
+  assert.deepEqual(undocumented, [], `these tools exist but are not in the README table: ${undocumented.join(', ')}`)
+
+  const invented = [...documented].filter((name) => !registered.includes(name))
+  assert.deepEqual(invented, [], `the README documents tools that do not exist: ${invented.join(', ')}`)
 })

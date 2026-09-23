@@ -19,6 +19,7 @@ import {
   textBlocks,
   titleFrom,
   toolFailed,
+  toolFailure,
   toolSummary,
 } from '../lib/chat.js'
 
@@ -40,7 +41,15 @@ function callEvent(callId, name, args) {
   return { seq: 4, time: 4, type: 'tool/call', data: { turn: 1, step: 1, callId, name, arguments: args } }
 }
 
-/** A tool result. The call id lives on the message's source, not on the event. */
+/**
+ * A tool result. The call id lives on the message's source, not on the event.
+ *
+ * The content is a `tool-result` block wrapping its own blocks — the real
+ * shape, which nests: `screenshot.test.js` walks into it the same way, and the
+ * host's own `collectImageRefs` recurses for the same reason. A fixture that
+ * put the text directly on the message would make a non-recursive reader look
+ * correct.
+ */
 function resultEvent(callId, options = {}) {
   const { isError = false, text = 'ok' } = options
   return {
@@ -50,7 +59,11 @@ function resultEvent(callId, options = {}) {
     data: {
       turn: 1,
       step: 1,
-      message: { role: 'tool', source: { callId }, content: [{ type: 'tool-result', text, isError }] },
+      message: {
+        role: 'tool',
+        source: { callId },
+        content: [{ type: 'tool-result', toolCallId: callId, content: [{ type: 'text', text, isError }] }],
+      },
     },
   }
 }
@@ -153,6 +166,69 @@ test('a failed tool result marks its own row rather than adding one', () => {
 
 test('a result with no matching call is dropped', () => {
   assert.deepEqual(describeEvents([resultEvent('nowhere')], SURFACE), [])
+})
+
+test('a failed tool call carries the reason it gave', () => {
+  // The row used to keep the arguments and throw the result away, so a failed
+  // browser call reached the panel as `✕ browser_click #save` with no word on
+  // why. The model could read the reason and correct itself; the person
+  // watching could not tell a missed selector from a blocked tab from a page
+  // that never answered.
+  const rows = describeEvents([
+    callEvent('c1', 'browser_click', '{"selector":"#save"}'),
+    resultEvent('c1', { isError: true, text: 'no element matches #save' }),
+  ], SURFACE)
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].status, 'error')
+  assert.equal(rows[0].failure, 'no element matches #save')
+})
+
+test('a successful tool call carries no reason', () => {
+  // A snapshot's output is the page, not an explanation. Putting it on the row
+  // would turn every successful read into a wall of text, and the row is one
+  // line by design.
+  const rows = describeEvents([
+    callEvent('c1', 'browser_snapshot', '{}'),
+    resultEvent('c1', { text: '<html>a very long page</html>' }),
+  ], SURFACE)
+  assert.equal(rows[0].status, 'ok')
+  assert.equal('failure' in rows[0], false, 'a successful call carried a failure reason')
+})
+
+test('toolFailure prefers the result text, then the thrown error', () => {
+  assert.equal(toolFailure(resultEvent('c', { isError: true, text: 'selector not found' }).data), 'selector not found')
+  // A tool that throws has no text block, and its message is the only carrier.
+  assert.equal(toolFailure({ error: { message: 'the tab is gone' } }).length > 0, true)
+  assert.equal(toolFailure({ error: 'plain string failure' }), 'plain string failure')
+  assert.equal(toolFailure({}), '')
+  // Whitespace is collapsed and the budget is enforced, because the row is one
+  // line and a multi-line diagnostic would otherwise push the layout around.
+  assert.equal(toolFailure({ error: 'a\n\nb   c' }), 'a b c')
+  assert.ok(toolFailure({ error: 'x'.repeat(500) }).length <= 200)
+})
+
+test('a merged run keeps the reason from the call that decided its status', () => {
+  // Consecutive identical calls become one row with a count, and the last call's
+  // status stands for the run. Its reason has to come with it: a merged row
+  // showing a cross and no explanation is the bare-cross defect again, one level
+  // up.
+  const failedLast = collapseToolRuns([
+    { kind: 'tool', name: 'browser_click', summary: '#save', status: 'ok' },
+    { kind: 'tool', name: 'browser_click', summary: '#save', status: 'error', failure: 'no element matches #save' },
+  ])
+  assert.equal(failedLast.length, 1)
+  assert.equal(failedLast[0].count, 2)
+  assert.equal(failedLast[0].failure, 'no element matches #save')
+
+  // And the other direction: a run that ended successfully must not keep the
+  // reason from an earlier failure, or the row would explain a status it no
+  // longer has.
+  const okLast = collapseToolRuns([
+    { kind: 'tool', name: 'browser_click', summary: '#save', status: 'error', failure: 'no element matches #save' },
+    { kind: 'tool', name: 'browser_click', summary: '#save', status: 'ok' },
+  ])
+  assert.equal(okLast[0].status, 'ok')
+  assert.equal('failure' in okLast[0], false, 'a successful run kept a stale reason')
 })
 
 test('a turn that died leaves a lasting row, not just a live toast', () => {

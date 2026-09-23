@@ -69,11 +69,17 @@ test('no dictionary entry is a sentence', (t) => {
   // at all, the sentence *is* the content — the original does the same thing in
   // its status surface ("Install the app to use ChatGPT in {browser}"), and a
   // label there would say nothing. The list is counted so it cannot grow quietly.
+  //
+  // It grew once, deliberately: the same pane now also answers "no sessions yet",
+  // which is the first thing a new reader sees and was 559px of blank transcript
+  // before. That is the same surface making the same kind of statement.
   const ALLOWED = [
     'blocked.hostTitle',
     'blocked.hostBody',
+    'blocked.emptyTitle',
+    'blocked.emptyBody',
   ]
-  assert.equal(ALLOWED.length, 2, 'the exempt list grew; was that intentional?')
+  assert.equal(ALLOWED.length, 4, 'the exempt list grew; was that intentional?')
 
   const offenders = []
   for (const [locale, dictionary] of Object.entries(DICTIONARIES)) {
@@ -378,7 +384,7 @@ test('the two options dictionaries carry the same keys', () => {
   // The panel's rule is that an entry is a label, and it stays scoped to the
   // panel: this page is read once, sitting still, and its warning is the point.
   const t = optionsTranslator('zh')
-  assert.equal(t('save'), '保存并连接')
+  assert.equal(t('save'), '连接')
   assert.equal(t('cannotConnect', { port: '3080' }), '连不上 3080 端口。')
   assert.equal(optionsTranslator('en')('missing.key'), 'missing.key')
 })

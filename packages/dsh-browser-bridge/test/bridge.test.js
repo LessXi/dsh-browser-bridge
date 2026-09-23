@@ -12,6 +12,7 @@ import { EventEmitter } from 'node:events'
 
 import { assert, test } from './harness.js'
 import { BRIDGE_ERRORS, BridgeError, BridgeRegistry, parseFrame } from '../lib/bridge.js'
+import { NOTIFICATIONS } from '../lib/protocol.js'
 
 /**
  * A minimal stand-in for a `ws` socket: an event emitter that records what the
@@ -224,6 +225,49 @@ test('aborting mid-flight rejects the call and settles once', async () => {
   // A late answer for the abandoned id must be a no-op, not a double settle.
   socket.deliver({ id, ok: true, value: 'late' })
   assert.equal(connection.pendingCount, 0)
+})
+
+test('aborting mid-flight tells the extension to stop working', async () => {
+  // Rejecting here only ends the host's wait. The extension keeps polling or
+  // waiting for a load, so for the slow methods — `page.waitFor` polls for
+  // fifteen seconds and `page.navigate` waits twenty for a load — pressing Stop
+  // left the browser still driving the page. This is the frame that ends it, and
+  // the id is what lets the extension find the work it still has in flight.
+  const socket = new FakeSocket()
+  const connection = new BridgeRegistry().adopt(socket)
+
+  const controller = new AbortController()
+  const pending = connection.call('page.waitFor', { tabId: 7 }, { signal: controller.signal })
+  const id = socket.lastRequest().id
+  controller.abort()
+  await assert.rejects(pending, (error) => error.code === BRIDGE_ERRORS.cancelled)
+
+  // `sent` holds the raw frame text, the same thing the `ws` socket would have
+  // written, so it is parsed rather than read as an object.
+  const frames = socket.sent.map((text) => JSON.parse(text))
+  const notification = frames.find((frame) => frame.notify === NOTIFICATIONS.callCancelled)
+  assert.notEqual(notification, undefined, 'the extension was never told the call was over')
+  assert.equal(notification.payload?.id, id, 'the cancellation named a different request')
+})
+
+test('a call that is never aborted sends no cancellation', async () => {
+  // The notification is emitted from the abort path only. A call that simply
+  // answers must not leave a stray frame behind, or the extension would be told
+  // to stop work that already finished — and, worse, the id would be free to be
+  // reused while the extension still remembered it.
+  const socket = new FakeSocket()
+  const connection = new BridgeRegistry().adopt(socket)
+
+  const pending = connection.call('page.waitFor', { tabId: 7 }, {})
+  const id = socket.lastRequest().id
+  socket.deliver({ id, ok: true, value: { satisfied: true } })
+  await pending
+
+  assert.equal(
+    socket.sent.map((text) => JSON.parse(text)).some((frame) => frame.notify === NOTIFICATIONS.callCancelled),
+    false,
+    'a call that answered on its own still sent a cancellation',
+  )
 })
 
 test('closing the socket fails every outstanding call', async () => {

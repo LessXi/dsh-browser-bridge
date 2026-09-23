@@ -71,7 +71,24 @@ export const zh = Object.freeze({
   // Shown on the attachment chip only while the extension is not attached to the
   // harness, because in that state the chip would otherwise promise a context
   // the send cannot actually carry.
-  'context.offline': '未连接',
+  //
+  // It names what is offline rather than the whole panel: measured on a fresh
+  // install with no token, the chat routes still answer (only the websocket needs
+  // the token), so the transcript renders and the composer works. 「未连接」 alone
+  // read as "this panel is broken".
+  'context.offline': '浏览器工具未连接',
+  // The way out of that state, on the same chip. A label, not a sentence — the
+  // panel's rule is that a dictionary value names a thing or an action, and only
+  // the blocked pane may explain (see `panel-i18n.test.js`). This chip is not
+  // that pane: the conversation is fine and one control is missing.
+  'context.offlineAction': '设置',
+  // The toolbar badge's tooltip, shown while the debugger is attached to that
+  // tab. The badge dot itself is a glyph and needs no words; this is what a
+  // person reads when they hover it to ask "what is that dot?".
+  'action.controlled': 'DSH 正在操作这个标签页',
+  // Shown while a question is waiting and the panel is closed — the only place
+  // it can appear, since a shut panel is not running and cannot say anything.
+  'action.awaiting': 'DSH 等你批准',
   // The `@` picker. `at.empty` and `at.none` are two different nothings: one
   // means the browser has no page this panel could read, the other means the
   // typing has not matched one yet. Saying the same thing for both would send
@@ -112,11 +129,24 @@ export const zh = Object.freeze({
   // disagree, every route answers a shape the panel does not understand, which
   // would otherwise read as "no sessions" and a bare 400.
   'error.restartHost': '请重启 dsh web（宿主是旧版本）',
+  // The reason a request failed because nothing answered on the port. It is its
+  // own key rather than reusing the offline chip's label: that one now names the
+  // browser tools, and a switch that could not be sent failed because the whole
+  // host was unreachable — a different fact with a different remedy.
+  'error.unreachable': '连不上 dsh web',
   // The blocked surface: a title, what to do, and the button that does it.
+  // Two states share it — no host, and no sessions. The second one is the first
+  // thing a new reader sees: measured at 380x720 the transcript was 559px of
+  // nothing, the composer still said 「问点什么…」, and the send button was
+  // disabled with nothing on screen saying why.
   'blocked.hostTitle': '连不上 dsh web',
   'blocked.hostBody': '先启动 dsh web，再重试。',
   'blocked.retry': '重试',
   'blocked.retrying': '重试中…',
+  'blocked.emptyTitle': '还没有会话',
+  'blocked.emptyBody': '新建一个，就可以开始问了。',
+  'blocked.emptyAction': '新建会话',
+  'blocked.creating': '新建中…',
   // The host answers every send with what it staged and what it refused. A
   // refusal used to be invisible: the chip promised an attachment, the message
   // went out without it, and nothing said so.
@@ -187,7 +217,10 @@ export const en = Object.freeze({
   'transcript.loading': 'Loading…',
   'context.tab': 'this tab',
   'context.selection': 'the selection',
-  'context.offline': 'Offline',
+  'context.offline': 'Browser tools offline',
+  'context.offlineAction': 'Settings',
+  'action.controlled': 'DSH is operating this tab',
+  'action.awaiting': 'DSH needs your approval',
   'at.list': 'Tabs',
   'at.empty': 'No readable tabs',
   'at.none': 'No matching tabs',
@@ -214,10 +247,15 @@ export const en = Object.freeze({
   'error.startedFailed': 'Panel failed to start: {error}',
   'error.noSession': 'Pick a chat first',
   'error.restartHost': 'Restart dsh web (host is older)',
+  'error.unreachable': 'Cannot reach dsh web',
   'blocked.hostTitle': 'dsh web is not running',
   'blocked.hostBody': 'Start dsh web, then retry.',
   'blocked.retry': 'Retry',
   'blocked.retrying': 'Retrying…',
+  'blocked.emptyTitle': 'No chats yet',
+  'blocked.emptyBody': 'Start one, and ask away.',
+  'blocked.emptyAction': 'New chat',
+  'blocked.creating': 'Starting…',
   'error.attachmentRefused': 'Attachment refused: {reason}',
   'error.reportStale': 'Reload the page',
   'error.notCopied': 'Could not copy',
@@ -272,11 +310,28 @@ export const options = Object.freeze({
     portLabel: 'Harness 端口',
     portHint: 'Harness 网址里的那个端口，通常是 3080。',
     tokenLabel: '桥接令牌',
-    tokenHint: '打开 DSH，进入「设置 → 插件 → browser-bridge」，复制令牌。它只保存在这个浏览器配置文件里。',
+    tokenHint: '通常留空即可：扩展会自己去 harness 取令牌。只有想手动指定时，才把令牌粘贴进来。',
+    tokenShow: '显示',
+    tokenHide: '隐藏',
+    // The token is 64 hex characters, and pasting one is the step this page
+    // exists for. Naming the expected shape is what turns "it did not work" into
+    // "I pasted half of it" without a round trip to the harness.
+    tokenShape: '令牌看起来是完整的（{length} 位十六进制）。',
+    tokenShapeWrong: '令牌应当是 {length} 位十六进制字符，粘贴的不对。',
+    // Automatic enrolment. Every failure names the one thing the person would
+    // have to change, because the alternative — one "could not get the token"
+    // for a stopped harness, a switched-off bridge and a broken answer — sends
+    // them to check three things that are each already known here.
+    tokenFetching: '正在从 harness 取令牌…',
+    tokenFetched: '已从 harness 取到令牌。',
+    tokenFetchNoHarness: '没有 harness 在 {port} 端口应答。先启动 dsh web（并确认端口一致），再点「连接」。',
+    tokenFetchOff: '桥接在 DSH「设置 → 插件」里被关掉了，所以没有取令牌。想用就先在那里打开它。',
+    tokenFetchMalformed: 'harness 应答了，但没有给出令牌。请手动粘贴一个。',
     autoPushLabel: '把每次划词自动同步进 DSH 上下文',
     autoPushHint: '默认关闭。关闭时由你从右键菜单决定送什么，所以只是划词去复制一段文字，永远不会进模型。',
-    save: '保存并连接',
+    save: '连接',
     test: '测试连接',
+    refetch: '重新取令牌',
     filesTitle: '文件上传',
     filesBody: '要让 DSH 通过页面上传文件，需要 Chrome 里一个本扩展自己无法授予的设置：打开 chrome://extensions，找到本扩展，点「详情」，打开「允许访问文件网址」。',
     controlTitle: '它怎样始终由你掌控',
@@ -285,12 +340,12 @@ export const options = Object.freeze({
     control3: '提交表单、付款、删除会再问一次。',
     control4: '浏览历史永远不会被记成「已允许」——每次读取都要重新问。',
     control5: '页面内容除了送进你自己的 harness，不会发往任何地方。',
-    noToken: '还没有保存令牌。请从 DSH「设置 → 插件 → browser-bridge」复制。',
+    noToken: '还没有令牌。点「连接」让扩展自己去 harness 取，或者手动粘贴一个。',
     connected: '已连接到 {port} 端口上的 harness。',
     cannotConnect: '连不上 {port} 端口。',
     checkIntro: '请检查：',
     check1: 'harness 在运行（dsh web），且端口与它的网址一致；',
-    check2: '令牌与 DSH「设置 → 插件 → browser-bridge」里的一致；',
+    check2: '令牌是 harness 当前的那一个——点「重新取令牌」可以自动同步；',
     check3: '没有别的程序占着这个端口。',
     refused: 'harness 拒绝了连接——最常见的原因是令牌不对或已过期。',
     timeout: 'harness 8 秒内没有回应。',
@@ -314,11 +369,21 @@ export const options = Object.freeze({
     portLabel: 'Harness port',
     portHint: 'The port shown in the harness URL, usually 3080.',
     tokenLabel: 'Bridge token',
-    tokenHint: 'Open DSH, go to Settings → Plugins → browser-bridge, and copy the token. It is stored only in this browser profile.',
+    tokenHint: 'Usually leave this empty — the extension fetches the token from the harness itself. Fill it in only to set one by hand.',
+    tokenShow: 'Show',
+    tokenHide: 'Hide',
+    tokenShape: 'The token looks complete ({length} hexadecimal characters).',
+    tokenShapeWrong: 'A token is {length} hexadecimal characters — this is not one.',
+    tokenFetching: 'Getting the token from the harness…',
+    tokenFetched: 'The token came from the harness.',
+    tokenFetchNoHarness: 'No harness answered on port {port}. Start dsh web (and check the port matches), then press Connect again.',
+    tokenFetchOff: 'The bridge is switched off in DSH Settings → Plugins, so no token was requested. Turn it on there to use it.',
+    tokenFetchMalformed: 'The harness answered without a token. Paste one by hand.',
     autoPushLabel: 'Sync every text selection into DSH context automatically',
     autoPushHint: 'Off by default. With it off, you choose what to send from the right-click menu, so merely highlighting text to copy it never reaches the model.',
-    save: 'Save and connect',
+    save: 'Connect',
     test: 'Test connection',
+    refetch: 'Get the token again',
     filesTitle: 'File uploads',
     filesBody: 'To let DSH upload a file through a page, Chrome needs one setting this extension cannot grant for itself: open chrome://extensions, find this extension, choose Details, and turn on Allow access to file URLs.',
     controlTitle: 'How this stays under your control',
@@ -327,12 +392,12 @@ export const options = Object.freeze({
     control3: 'Submitting forms, purchasing, and deleting ask a second time.',
     control4: 'Browser history is never remembered as allowed — every read asks again.',
     control5: 'No page content is ever sent anywhere except to your own harness.',
-    noToken: 'No token saved. Copy it from DSH Settings → Plugins → browser-bridge.',
+    noToken: 'No token yet. Press Connect and the extension will get one from the harness, or paste one by hand.',
     connected: 'Connected to the harness on port {port}.',
     cannotConnect: 'Could not connect on port {port}.',
     checkIntro: 'Check that:',
     check1: 'the harness is running (dsh web) and the port matches its URL;',
-    check2: 'the token matches DSH Settings → Plugins → browser-bridge;',
+    check2: 'the token is the harness\'s current one — "Get the token again" syncs it;',
     check3: 'nothing else on this machine is holding that port.',
     refused: 'The harness refused the connection — most often a wrong or stale token.',
     timeout: 'The harness did not answer within 8 seconds.',

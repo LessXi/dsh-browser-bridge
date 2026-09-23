@@ -8,7 +8,11 @@
         color-scheme: light dark;
         --line: color-mix(in srgb, currentColor 18%, transparent);
         --muted: color-mix(in srgb, currentColor 62%, transparent);
-        --accent: #4d6bfe;
+        /* The panel's accent, not a second one. White on the old `#4d6bfe`
+           measured about 4.1:1, under the 4.5:1 that body text needs, and two
+           different blues for the same primary action across two surfaces of
+           one product is a difference the eye reads as a mistake. */
+        --accent: #4262f0;
       }
       body {
         margin: 0 auto;
@@ -26,6 +30,11 @@
       }
       legend { padding: 0 6px; font-weight: 600; }
       label { display: block; margin: 0 0 6px; font-weight: 600; }
+      /* The checkbox row is a label wrapping its own input, so the whole row is
+         the target a finger has to hit. At the inherited 22px line box that was
+         under the 24px WCAG 2.2 AA minimum (2.5.8); the padding brings it to 28
+         without moving the text. */
+      label.check { display: flex; align-items: center; gap: 6px; padding: 3px 0; }
       input[type="text"], input[type="password"], input[type="number"] {
         width: 100%;
         box-sizing: border-box;
@@ -38,6 +47,18 @@
       }
       .row { margin-bottom: 16px; }
       .hint { margin: 6px 0 0; font-size: 12.5px; color: var(--muted); }
+      /* The token is the one field a person pastes blind — sixty-four hex
+         characters copied from another window — so it gets a reveal control and
+         an inline shape check. The button sits on the input's own line, where
+         the eye already is when the paste lands. */
+      .token-row { display: flex; gap: 8px; align-items: stretch; }
+      .token-row input { flex: 1; min-width: 0; }
+      .token-row button { flex: none; padding: 8px 12px; font-size: 13px; }
+      #shape { margin: 6px 0 0; font-size: 12.5px; color: var(--muted); }
+      /* Only shown once the field has something in it and the length is wrong:
+         a warning that is always visible is one nobody reads. */
+      #shape[data-state="bad"] { color: #d1453b; }
+      #shape[data-state="good"] { color: #2f9e63; }
       .actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
       button {
         padding: 8px 14px;
@@ -92,12 +113,19 @@
       </div>
       <div class="row">
         <label for="token" data-i18n="tokenLabel"></label>
-        <input id="token" type="password" spellcheck="false" />
+        <div class="token-row">
+          <input id="token" type="password" spellcheck="false" autocomplete="off" />
+          <button id="reveal" type="button" aria-pressed="false" data-i18n="tokenShow"></button>
+        </div>
         <p class="hint" data-i18n="tokenHint"></p>
+        <!-- Announces the shape as soon as there is something to judge, so a
+             truncated paste is caught here rather than as a failed connection
+             that blames the harness. -->
+        <p id="shape" hidden></p>
       </div>
       <div class="row">
-        <label for="autopush" style="font-weight:600">
-          <input id="autopush" type="checkbox" style="width:auto;margin-right:6px" />
+        <label class="check" for="autopush" style="font-weight:600">
+          <input id="autopush" type="checkbox" style="width:auto;margin:0" />
           <span data-i18n="autoPushLabel"></span>
         </label>
         <p class="hint" data-i18n="autoPushHint"></p>
@@ -105,6 +133,7 @@
       <div class="actions">
         <button id="save" class="primary" data-i18n="save"></button>
         <button id="test" data-i18n="test"></button>
+        <button id="refetch" data-i18n="refetch"></button>
       </div>
       <div id="result" hidden></div>
     </fieldset>

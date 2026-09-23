@@ -26,13 +26,33 @@ import { APPROVAL_SCOPES } from './approval.js'
 import { classifySensitivity } from './grants.js'
 import { METHODS } from './protocol.js'
 import { normalizeOrigin, PolicySyntaxError, resolveOriginPolicy } from './policy.js'
-import { failureText, textOutput, untrusted } from './tools.js'
+import { failureText, provenanceNote, squashOneLine, textOutput, untrusted } from './tools.js'
 
 /** Capabilities a tool requires from the site's policy. */
 const NEEDS_ACCESS = 'access'
 const NEEDS_UPLOADS = 'uploads'
 const NEEDS_DOWNLOADS = 'downloads'
 const NEEDS_FULL_CDP = 'full_cdp_access'
+
+/**
+ * Characters of a raw CDP result `browser_cdp` will hand back.
+ *
+ * The raw passthrough exists for the calls the purpose-built tools do not cover,
+ * and those are exactly the ones that return whole documents —
+ * `DOMSnapshot.captureSnapshot` on an ordinary page runs to tens of thousands of
+ * characters. The cap keeps one call from filling the context, and the marker
+ * that accompanies it is what keeps the cap from lying.
+ */
+const CDP_RESULT_MAX = 20_000
+
+/**
+ * How many links `browser_read` lists before it says it stopped.
+ *
+ * The bound is about a page's worth of reading, not about correctness: the
+ * count that goes unshown is reported, so a page with more is still legible as
+ * "there are more" rather than as "this is all there is".
+ */
+const LINK_LIST_MAX = 60
 
 /**
  * Build the page tools.
@@ -362,7 +382,15 @@ export function buildPageTools(ports) {
         const header = [
           `Page: ${snapshot?.title ?? '(untitled)'}`,
           `URL: ${snapshot?.url ?? ''}`,
-          `${snapshot?.elementCount ?? 0} actionable element(s)${snapshot?.truncated === true ? ', truncated' : ''}`,
+          // Both numbers when they differ: the page's real total, then how many
+          // the list below actually names. A single count left the reader to
+          // assume the list was complete, so an index past the wire cap looked
+          // like one that should work.
+          `${snapshot?.elementCount ?? 0} actionable element(s)${
+            Number.isInteger(snapshot?.listedCount) && snapshot.listedCount < snapshot.elementCount
+              ? `, ${snapshot.listedCount} listed below`
+              : ''
+          }${snapshot?.truncated === true ? ', truncated' : ''}`,
           '',
         ]
         return {
@@ -391,15 +419,90 @@ export function buildPageTools(ports) {
       if (!check.ok) return { text: check.text }
       try {
         const page = await call(METHODS.pageRead, { tabId: hole.tabId, maxBytes: Number(settings().pageTextMaxBytes) }, exec)
-        const linkLines = Array.isArray(page?.links) && page.links.length > 0
-          ? ['', 'Links:', ...page.links.slice(0, 60).map((link) => `- ${link.text} → ${link.href}`)]
+        // The extension caps `links` before this ever sees it, and this cap is
+        // lower still. Either one silently drops links the page really has, and
+        // a list that just stops looks like the page ran out of links — the
+        // model then reports "there is no checkout link" about a page that has
+        // one. Saying how many were left out costs a line and removes that.
+        //
+        // The total comes from the extension's `linkCount` where it is present,
+        // because by then the array is already the capped one: counting it would
+        // report 200 as the page's size when the page has 400.
+        const all = Array.isArray(page?.links) ? page.links : []
+        const total = Number.isInteger(page?.linkCount) ? page.linkCount : all.length
+        const shown = all.slice(0, LINK_LIST_MAX)
+        const linkLines = shown.length > 0
+          ? [
+              '',
+              'Links:',
+              ...shown.map((link) => `- ${link.text} → ${link.href}`),
+              ...(total > shown.length ? [`… (showing ${shown.length} of ${total} links)`] : []),
+            ]
           : []
         return {
           text: untrusted(`${page?.title ?? ''}\n\n${page?.text ?? ''}${linkLines.join('\n')}`, { url: page?.url, title: page?.title }),
-          meta: { url: page?.url, truncated: page?.truncated },
+          meta: { url: page?.url, truncated: page?.truncated, links: total },
         }
       } catch (error) {
         return { text: failureText('browser_read', error, connectionStatus()), meta: { code: error?.code } }
+      }
+    },
+  })
+
+  tools.push({
+    name: 'browser_dialog',
+    description:
+      'Report and clear the JavaScript dialog (alert, confirm, prompt) blocking a tab. A dialog suspends everything else that tab could be asked to do, so when other browser tools stop responding, check this first. Calling it with only tab_id reports; adding accept answers it.',
+    parameters: {
+      tab_id: { type: 'integer', required: true, description: 'The tab to check.' },
+      accept: {
+        type: 'boolean',
+        description: 'Answer the dialog. Omit to report it without answering. Dismissing is the default because the extension did not read a question the page asked you.',
+      },
+      prompt_text: {
+        type: 'string',
+        description: 'What to type into a prompt() when accepting one. Ignored for alert and confirm.',
+      },
+    },
+    isConcurrencySafe: () => true,
+    output: textOutput('dialog state'),
+    async execute(args, exec) {
+      const hole = tabIdOf(args, 'browser_dialog')
+      if ('text' in hole) return { text: hole.text }
+      // `gate` already asks for the second confirmation when the action is
+      // classified sensitive, and `classifySensitivity` marks this tool that way
+      // only when `accept` is set — so reporting a dialog is cheap and answering
+      // one is a decision the person is asked about.
+      const check = await gate({ toolName: 'browser_dialog', args, exec })
+      if (!check.ok) return { text: check.text }
+
+      const answering = args.accept === true || typeof args.prompt_text === 'string'
+      try {
+        // Read before clearing, so the report is true either way: reporting
+        // "none" after answering would hide what was actually there.
+        const before = await call(METHODS.pageDialogs, { tabId: hole.tabId }, exec)
+        const dialog = before?.dialog ?? null
+        if (answering) {
+          await call(METHODS.pageDismissDialog, {
+            tabId: hole.tabId,
+            ...(typeof args.prompt_text === 'string' ? { promptText: args.prompt_text } : {}),
+          }, exec)
+        }
+        if (dialog === null) {
+          return { text: 'No JavaScript dialog is blocking this tab.', meta: { tabId: hole.tabId, dialog: null } }
+        }
+        const lines = [
+          `${dialog.type ?? 'dialog'} is blocking this tab${answering ? ' and was just answered' : ''}:`,
+          `  ${untrusted(String(dialog.message ?? ''), { url: before?.url })}`,
+        ]
+        if (answering) {
+          lines.push('', 'Dismissing is the default, so the page took its "no" branch.')
+        } else {
+          lines.push('', 'Every other tool for this tab will time out until this is answered. Call browser_dialog again with accept: true to clear it.')
+        }
+        return { text: lines.join('\n'), meta: { tabId: hole.tabId, dialog, answered: answering } }
+      } catch (error) {
+        return { text: failureText('browser_dialog', error, connectionStatus()), meta: { code: error?.code } }
       }
     },
   })
@@ -872,7 +975,29 @@ export function buildPageTools(ports) {
       if (!check.ok) return { text: check.text }
       try {
         const result = await call(METHODS.cdpSend, { tabId: hole.tabId, method: args.method, params: args.params }, exec)
-        return { text: JSON.stringify(result ?? null, null, 2).slice(0, 20_000), meta: { method: args.method } }
+        const body = JSON.stringify(result ?? null, null, 2)
+        // The answer is page-derived content, even though it arrives through a
+        // protocol call rather than through `browser_read`. `Network.getResponseBody`
+        // returns whatever the server sent, `DOM.getOuterHTML` returns the page's
+        // own markup, and both are strings an attacker controls end to end. Every
+        // other tool that carries page text wraps it; this one is the most
+        // capable tool in the set, so leaving it as the single unwrapped path
+        // made the strongest channel the one with no boundary on it.
+        //
+        // Wrapped before the cap so the marker is never what gets cut — a
+        // boundary that can be truncated away is not a boundary.
+        const marked = untrusted(body, { url: `tab ${hole.tabId}`, title: `CDP ${args.method}` })
+        // A cut-off JSON document is not a smaller answer, it is an unparseable
+        // one: the text ends mid-token and the reader has no way to tell that
+        // the rest exists. `DOMSnapshot.captureSnapshot` and
+        // `Network.getResponseBody` cross this line on ordinary pages, so the
+        // marker is the difference between "this is what the browser said" and
+        // "this is the first 20000 characters of what the browser said".
+        if (marked.length <= CDP_RESULT_MAX) return { text: marked, meta: { method: args.method } }
+        return {
+          text: `${marked.slice(0, CDP_RESULT_MAX)}\n\n… (result truncated: ${body.length} characters of CDP output, showing the first part. Narrow the call — a more specific domain, or a depth-limiting parameter — to see the rest.)`,
+          meta: { method: args.method, truncated: true, fullLength: body.length },
+        }
       } catch (error) {
         return { text: failureText('browser_cdp', error, connectionStatus()), meta: { code: error?.code } }
       }
@@ -923,15 +1048,26 @@ export function buildPageTools(ports) {
       try {
         const result = await call(METHODS.tabsList, { includeAll: true }, exec)
         const tabs = Array.isArray(result) ? result : []
-        const active = tabs.find((tab) => tab.active === true)
+        const { tab: active, via } = activeTabOf(tabs)
         // A selection lives in a page, so this reports the active tab's page and
         // asks the caller to use browser_context for anything already staged.
-        const lines = [
-          active === undefined ? 'No active tab.' : `Active tab: ${active.title ?? '(untitled)'} — ${active.url ?? ''}`,
-          '',
-          'Highlighted text is reported to DSH as a context chip; use browser_context to list what is staged.',
-        ]
-        return { text: lines.join('\n'), meta: { active } }
+        const headline =
+          active === undefined
+            ? 'No active tab.'
+            : `Active tab: ${squashOneLine(active.title) || '(untitled)'} — ${squashOneLine(active.url)}`
+        const lines = [headline, '', provenanceNote('the title and URL above')]
+        // Only worth saying when it is a caveat. With several windows open, a
+        // tab picked from row order may well be in a window the user is not
+        // looking at, and a model that reads this as authoritative will answer
+        // about the wrong page with full confidence.
+        if (via === 'first-active' && tabs.filter((tab) => tab.active === true).length > 1) {
+          lines.push(
+            '',
+            'Several windows are open and this extension could not tell which one you are looking at, so the tab above is simply the first active row. Confirm it with browser_tabs before relying on it.',
+          )
+        }
+        lines.push('', 'Highlighted text is reported to DSH as a context chip; use browser_context to list what is staged.')
+        return { text: lines.join('\n'), meta: { active, via } }
       } catch (error) {
         return { text: failureText('browser_selection', error, connectionStatus()), meta: { code: error?.code } }
       }
@@ -939,6 +1075,33 @@ export function buildPageTools(ports) {
   })
 
   return tools
+}
+
+/**
+ * Pick the tab the user means by "the current page", and say how it was chosen.
+ *
+ * `tab.active` cannot answer this on its own. Chrome marks one tab active *per
+ * window*, so with three windows open there are three active rows and taking the
+ * first one reports a tab in a window the user is not looking at — while the
+ * page they actually asked about sits in another window, unmentioned. The
+ * extension resolves the ambiguity because only it can ask Chrome, and puts the
+ * answer on each row as `windowFocused`.
+ *
+ * When nothing is marked focused the extension could not tell (an older build,
+ * or a Chrome that refused `windows.getLastFocused`), and the old behaviour is
+ * the only thing left. That fallback is reported as `via: 'first-active'` rather
+ * than passed off as knowledge, so a caller can tell the two apart.
+ *
+ * @param {object[]} tabs - Tab rows from the extension.
+ * @returns {{ tab: object | undefined, via: string }} The chosen row and the rule used.
+ */
+function activeTabOf(tabs) {
+  const active = tabs.filter((tab) => tab.windowFocused === true && tab.active === true)
+  // Exactly one window is focused, so more than one match means the extension
+  // reported something contradictory; fall back rather than pick arbitrarily.
+  if (active.length === 1) return { tab: active[0], via: 'focused-window' }
+  const first = tabs.find((tab) => tab.active === true)
+  return { tab: first, via: first === undefined ? 'none' : 'first-active' }
 }
 
 /**

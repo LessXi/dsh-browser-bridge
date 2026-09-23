@@ -87,6 +87,7 @@ window.__ModuleLoader__.load({
       unreachable: '无法访问',
       unknown: '未知',
       lastError: '上次错误',
+      limitation: '限制',
       note: '把令牌和端口（本页 URL 里的数字）一起填进 DSH Browser Bridge 扩展的选项页。其余设置——站点规则、Developer mode、附件上限——都在 settings.yaml 的 browser-bridge 键下，点本页右上角按钮打开。',
       connectHint: '连接方法：把 extension/ 作为「已解压的扩展程序」载入 Chrome，填入令牌后点保存并连接。',
       warning: '这个桥接能读取并操作你已登录的任何站点。它会在访问新站点前询问、在提交或支付前再问一次，并且永远不会为浏览历史记住授权。',
@@ -96,6 +97,12 @@ window.__ModuleLoader__.load({
       browserConnected: '浏览器：已连接',
       browserNotConnected: '浏览器：未连接',
       statusPanel: '浏览器桥接状态',
+      removeChip: '从上下文移除',
+      removeChipHint: '发送前移除——什么都还没发出去',
+      chipSelection: '选中内容',
+      chipPage: '整页',
+      chipTab: '标签页',
+      chipChars: '{count} 字',
     }
 
     /** English copy, key-identical to the Chinese source of truth. */
@@ -121,6 +128,7 @@ window.__ModuleLoader__.load({
       unreachable: 'unreachable',
       unknown: 'unknown',
       lastError: 'Last error',
+      limitation: 'Limitation',
       note: 'Paste the token into the DSH Browser Bridge extension options together with the harness port (the number in this page’s URL). Everything else — origin rules, Developer mode, attachment limits — lives in settings.yaml under the browser-bridge key; open it with the button at the top of this page.',
       connectHint: 'To connect: load extension/ as an unpacked extension in Chrome, paste the token there, and press Save and connect.',
       warning: 'This bridge can read and operate any site you are signed in to. It asks before each new site, asks again before submitting or spending, and never remembers an approval for browser history.',
@@ -130,6 +138,12 @@ window.__ModuleLoader__.load({
       browserConnected: 'browser: connected',
       browserNotConnected: 'browser: not connected',
       statusPanel: 'Browser bridge status',
+      removeChip: 'Remove from context',
+      removeChipHint: 'Remove before sending — nothing has been sent yet',
+      chipSelection: 'selected text',
+      chipPage: 'page',
+      chipTab: 'tab',
+      chipChars: '{count} chars',
     }
 
     /** Locale namespace owned by this plugin. */
@@ -160,21 +174,21 @@ window.__ModuleLoader__.load({
 
     const CSS = `
 .dshbb-root{position:relative;display:inline-flex;align-items:center;gap:6px}
-.dshbb-trigger{display:inline-flex;align-items:center;gap:6px;min-height:28px;padding:3px 6px;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;cursor:pointer}
-.dshbb-trigger:hover,.dshbb-trigger:focus-visible{color:var(--dsw-alias-label-secondary)}
+.dshbb-trigger{display:inline-flex;align-items:center;gap:6px;min-height:28px;padding:3px 6px;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px;cursor:pointer}
+.dshbb-trigger:hover,.dshbb-trigger:focus-visible{color:var(--dsw-alias-label-primary)}
 .dshbb-dot{width:8px;height:8px;border-radius:50%;background:var(--dsw-alias-label-tertiary);flex:none}
 .dshbb-dot[data-state="connected"]{background:#2f9e63}
 .dshbb-dot[data-state="disconnected"]{background:#d1453b}
-.dshbb-panel{position:absolute;bottom:calc(100% + 6px);left:0;z-index:200;width:330px;box-sizing:border-box;padding:10px;border:1px solid var(--dsw-alias-border-l1);border-radius:12px;background:var(--dsw-specific-menu);box-shadow:var(--dsw-elevation-prominent);font-size:12px;line-height:1.5}
+.dshbb-panel{position:absolute;bottom:calc(100% + 6px);left:0;z-index:200;width:min(330px,calc(100vw - 24px));box-sizing:border-box;padding:10px;border:1px solid var(--dsw-alias-border-l1);border-radius:12px;background:var(--dsw-specific-menu);box-shadow:var(--dsw-elevation-prominent);font-size:12px;line-height:1.5}
 .dshbb-row{display:flex;gap:8px;align-items:baseline;padding:4px 0;border-bottom:1px solid var(--dsw-alias-border-l1)}
 .dshbb-row:last-child{border-bottom:0}
 .dshbb-muted{color:var(--dsw-alias-label-tertiary)}
 .dshbb-grow{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.dshbb-btn{padding:4px 8px;border:1px solid var(--dsw-alias-border-l1);border-radius:6px;background:transparent;color:inherit;font:inherit;cursor:pointer;flex:none}
+.dshbb-btn{padding:4px 8px;min-height:24px;border:1px solid var(--dsw-alias-border-l1);border-radius:6px;background:transparent;color:inherit;font:inherit;cursor:pointer;flex:none}
 .dshbb-chips{display:flex;flex-wrap:wrap;gap:6px;padding:2px 0}
-.dshbb-chip{display:inline-flex;align-items:center;gap:6px;max-width:340px;padding:3px 4px 3px 8px;border:1px solid var(--dsw-alias-border-l1);border-radius:999px;background:var(--dsw-alias-fill-l2);font-size:12px;line-height:18px}
+.dshbb-chip{display:inline-flex;align-items:center;gap:6px;max-width:min(340px,calc(100vw - 24px));padding:3px 4px 3px 8px;border:1px solid var(--dsw-alias-border-l1);border-radius:999px;background:var(--dsw-alias-fill-l2);font-size:12px;line-height:18px}
 .dshbb-chip-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.dshbb-chip-x{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border:0;border-radius:50%;background:transparent;color:var(--dsw-alias-label-tertiary);font-size:14px;line-height:1;cursor:pointer;flex:none}
+.dshbb-chip-x{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;margin:-3px -2px -3px 0;border:0;border-radius:50%;background:transparent;color:var(--dsw-alias-label-secondary);font-size:14px;line-height:1;cursor:pointer;flex:none}
 .dshbb-chip-x:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-fill-l1)}
 .dshbb-code{font-family:var(--dsw-font-mono);font-size:11px;word-break:break-all}
 /* Card shell and field rows mirror the harness's own PluginCard and fields
@@ -190,7 +204,11 @@ window.__ModuleLoader__.load({
 .dshbb-card-headtext{display:flex;flex-direction:column;gap:4px;flex:1;min-width:0}
 .dshbb-card-name{color:var(--dsw-alias-label-primary);font-size:15px;font-weight:600;line-height:1.4}
 .dshbb-card-description{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:1.5}
-.dshbb-card-chevron{flex:none;color:var(--dsw-alias-label-tertiary);transition:transform .16s}
+/* Secondary, which is what the host uses for the majority of its disclosure
+   chevrons (18 rules named chevron/expand are secondary, 13 tertiary). The card
+   description above stays tertiary, matching the host's own cardDesc — but a
+   chevron is the affordance that opens the card, so it belongs with the controls. */
+.dshbb-card-chevron{flex:none;color:var(--dsw-alias-label-secondary);transition:transform .16s}
 .dshbb-card-chevron-open{transform:rotate(180deg)}
 .dshbb-card-body{border-top:.5px solid var(--dsw-alias-border-l2);margin:0 16px;padding-bottom:8px}
 /* Fields are a vertical stack in the harness, not label/value columns. */
@@ -198,13 +216,27 @@ window.__ModuleLoader__.load({
 .dshbb-field+.dshbb-field{border-top:.5px solid var(--dsw-alias-border-l2)}
 .dshbb-field-head{display:flex;align-items:center;gap:8px}
 .dshbb-field-label{min-width:0;flex:1;color:var(--dsw-alias-label-primary);font-size:13px;font-weight:500;line-height:1.5}
-.dshbb-field-value{min-width:0;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:1.5;word-break:break-word}
+/* The value half is the data: the enabled state, the connection state, and the
+   token itself. It used to be label-tertiary, which measured 3.71:1 against the
+   card's white in the light theme — under the 4.5:1 that 12px text needs, and the
+   token is a 64-character string the reader has to compare against the extension
+   options. Both of this file's surfaces now agree: the popover's .dshbb-line-value
+   already used label-primary, and the host's own settings rows do the same
+   (entryValue and value in dsh-client-ui-settings-plugin-inventory and
+   dsh-client-ui-theme). The description above stays tertiary on purpose: the host
+   paints its own card description the same way (.cardDesc, 13px, tertiary), so a
+   heavier one here would stand out from every sibling card rather than be read. */
+.dshbb-field-value{min-width:0;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.5;word-break:break-word}
 /* The status popover keeps the compact row shape: it is a small panel, not a
    settings card, and twelve-pixel padding per row would make it unwieldy. */
 .dshbb-line{display:flex;gap:10px;align-items:baseline;padding:5px 0}
-.dshbb-line-label{flex:none;min-width:110px;color:var(--dsw-alias-label-tertiary);font-size:12px}
+.dshbb-line-label{flex:none;min-width:110px;color:var(--dsw-alias-label-secondary);font-size:12px}
 .dshbb-line-value{min-width:0;color:var(--dsw-alias-label-primary);font-size:12px;word-break:break-word}
-.dshbb-note{margin:8px 0 0;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:1.55}
+/* The one manual step in the whole product. It used to be label-tertiary, which
+   measures 3.71:1 in the light theme; the host's own instructional copy at this
+   size uses secondary (its guideNote and help rules), and reading this paragraph
+   is what makes the extension work at all. */
+.dshbb-note{margin:8px 0 0;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.55}
 .dshbb-note code{font-family:var(--dsw-font-mono);font-size:11.5px}
 .dshbb-warn{border-left:3px solid #d9971f;padding-left:10px;margin:10px 0 0;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.55}
 `
@@ -326,22 +358,36 @@ window.__ModuleLoader__.load({
 
     /**
      * One line describing an attachment.
+     *
+     * The host owns the `kind` and the character count; only the words around
+     * them are ours, and they are translated — a chip reading
+     * `github.com · selected text · 1234 chars` sat in Chinese and English
+     * interfaces alike before this.
+     *
      * @param {object} attachment - The attachment row.
+     * @param {(key: string) => string} translate - The locale translator.
      * @returns {string} The label.
      */
-    function chipLabel(attachment) {
-      let host = attachment.origin ?? ''
-      if (host.length === 0 && typeof attachment.url === 'string') {
+    function chipLabel(attachment, translate) {
+      // A label names a *site*, so the scheme is stripped: `origin` holds a full
+      // origin (`https://github.com`) while the chip wants `github.com`. The
+      // host's own `describeAttachment` in `context.js` does the same thing for
+      // the same reason, and the two must agree — the chip is the compact
+      // rendering of a record that describer already names.
+      const hostOf = (value) => {
+        if (typeof value !== 'string' || value.length === 0) return ''
         try {
-          host = new URL(attachment.url).host
+          return new URL(value).host
         } catch {
-          host = attachment.url
+          return value
         }
       }
+      let host = hostOf(attachment.origin) || hostOf(attachment.url)
       const kind = attachment.kind === 'selection'
-        ? 'selected text'
-        : attachment.kind === 'page' ? 'page' : 'tab'
-      return `${host.length > 0 ? host : 'page'} · ${kind}${attachment.chars > 0 ? ` · ${attachment.chars} chars` : ''}`
+        ? translate('chipSelection')
+        : attachment.kind === 'page' ? translate('chipPage') : translate('chipTab')
+      const count = attachment.chars > 0 ? ` · ${translate('chipChars').replace('{count}', String(attachment.chars))}` : ''
+      return `${host.length > 0 ? host : translate('chipPage')} · ${kind}${count}`
     }
 
     /**
@@ -357,6 +403,7 @@ window.__ModuleLoader__.load({
       const sessionId = props?.sessionId ?? props?.session?.id ?? ''
       const [staged, setStaged] = react.useState([])
       usePolled(() => fetchAttachments(sessionId), setStaged, [sessionId])
+      const translate = makeTranslator(props)
 
       if (!Array.isArray(staged) || staged.length === 0) return null
 
@@ -366,14 +413,14 @@ window.__ModuleLoader__.load({
         ...staged.map((attachment) => react.createElement(
           'span',
           { key: attachment.id, className: 'dshbb-chip', title: attachment.preview ?? '' },
-          react.createElement('span', { className: 'dshbb-chip-text' }, chipLabel(attachment)),
+          react.createElement('span', { className: 'dshbb-chip-text' }, chipLabel(attachment, translate)),
           react.createElement(
             'button',
             {
               type: 'button',
               className: 'dshbb-chip-x',
-              'aria-label': `Remove ${chipLabel(attachment)} from context`,
-              title: 'Remove before sending — nothing has been sent yet',
+              'aria-label': `${translate('removeChip')}: ${chipLabel(attachment, translate)}`,
+              title: translate('removeChipHint'),
               onClick: async () => {
                 const removed = await removeAttachment(sessionId, attachment.id)
                 // On failure the chip stays: a stale chip that is still queued is
@@ -632,7 +679,7 @@ window.__ModuleLoader__.load({
         open
           ? react.createElement(
             'div',
-            { className: 'dshbb-panel', role: 'dialog', 'aria-label': 'Browser bridge status' },
+            { className: 'dshbb-panel', role: 'dialog', 'aria-label': translate('statusPanel') },
             react.createElement(Field, { variant: 'line', label: translate('bridge'), value: health?.enabled === false ? translate('disabled') : translate('enabled') }),
             react.createElement(Field, { variant: 'line', label: translate('extension'), value: connected ? translate('connected') : translate('notConnected') }),
             react.createElement(Field, { variant: 'line', label: translate('inFlight'), value: health?.pendingCalls ?? 0 }),
@@ -640,7 +687,10 @@ window.__ModuleLoader__.load({
             typeof health?.status?.lastError === 'string' && health.status.lastError.length > 0
               ? react.createElement(Field, { variant: 'line', label: translate('lastError'), value: health.status.lastError })
               : null,
-            ...limitations.map((item) => react.createElement(Field, { key: String(item), variant: 'line', label: translate('note'), value: item })),
+            // `limitation`, not `note`: `note` is the paragraph below the fields,
+            // and a paragraph used as a label does not fit beside a value — it
+            // was 1150px inside a 308px row, which pushed the popover 4x wide.
+            ...limitations.map((item) => react.createElement(Field, { key: String(item), variant: 'line', label: translate('limitation'), value: item })),
             react.createElement(
               'div',
               { className: 'dshbb-line' },
@@ -687,10 +737,15 @@ window.__ModuleLoader__.load({
         locale: LOCALE_NS,
       }, BridgeCard)), 'browser-bridge: settings card')
 
+      // `locale` here as well as on the other two: without it the slot receives no
+      // `t` translator, so the chip's label and its remove button rendered fixed
+      // English inside an otherwise translated interface. The chips sit on the
+      // composer, which is the one surface every message passes through.
       ctx.effect(() => ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
         name: 'conversation.input.dock',
         id: 'browser-context',
         order: 30,
+        locale: LOCALE_NS,
       }, ContextChips)), 'browser-bridge: context chips')
 
       // `locale` here too: the popover carries field labels, so it needs the same

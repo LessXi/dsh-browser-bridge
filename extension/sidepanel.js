@@ -77,6 +77,7 @@ const history = document.getElementById('history')
 const toBottom = document.getElementById('to-bottom')
 const earlierButton = document.getElementById('earlier')
 const toast = document.getElementById('toast')
+const announcer = document.getElementById('announcer')
 const surface = document.getElementById('blocked')
 const blockedTitle = document.getElementById('blocked-title')
 const blockedBody = document.getElementById('blocked-body')
@@ -189,6 +190,14 @@ let currentSessionRunning = false
 const drafts = new Map()
 /** Reasoning rows the user opened, by row index. */
 const expandedReasoning = new Set()
+/**
+ * Failed tool rows the user opened, by row index.
+ *
+ * Separate from `expandedReasoning` because the two sets are keyed by the same
+ * row indices and a row is only ever one kind: sharing one set would make
+ * opening a failure also open whatever reasoning row held that index.
+ */
+const expandedFailures = new Set()
 /** The last drawn transcript, for the "did anything change" comparison. */
 let drawnSignature = ''
 /** True while the view is pinned to the newest row. */
@@ -244,23 +253,73 @@ let mentioned = null
 let live = null
 
 /**
+ * Which "nothing to show" surface was last announced, so the poll does not repeat
+ * it. `''` means nothing is on screen.
+ */
+let announcedOffline = ''
+
+/**
+ * Whether a first request has come back yet.
+ *
+ * Before that, `hostReachable` is `false` and `groups` is empty — the initial
+ * values, not findings — so the surface is up for a moment on every ordinary
+ * start. Announcing that would tell a reader "cannot reach dsh web" every time
+ * the panel opened, including when the host is healthy, which is worse than
+ * saying nothing.
+ */
+let loadedOnce = false
+
+/**
  * Show a short-lived failure message. There is no success channel: a send that
  * worked is visible as the message appearing, and a notice saying so would be
  * one more line of chrome.
+ *
+ * `#toast` is a live region (`role="status"`) and is never `hidden`. That is the
+ * fix for a real defect rather than a style choice: a live region has to be in
+ * the accessibility tree *before* the change it announces, and the element used
+ * to be hidden whenever it was empty — which is exactly when a message arrives.
+ * Measured, writing text into it while hidden leaves `inTree: false`, so the
+ * twenty-odd failures reported through here were announced unreliably or not at
+ * all. It is hidden by `:empty` in the stylesheet instead, which costs no height
+ * and keeps it observable.
+ *
+ * Clearing removes the text; the stylesheet collapses the element from there.
  *
  * @param {string} text - The message, or an empty string to clear it.
  * @returns {void}
  */
 function say(text) {
   toast.textContent = text
-  toast.hidden = text.length === 0
   if (text.length === 0) return
   setTimeout(() => {
-    if (toast.textContent === text) {
-      toast.textContent = ''
-      toast.hidden = true
-    }
+    if (toast.textContent === text) toast.textContent = ''
   }, 6000)
+}
+
+/**
+ * Say something a screen reader has no other way to learn.
+ *
+ * `#toast` covers failures, but three things the panel does happen silently to a
+ * reader who cannot see them: a question appears that blocks the turn until it is
+ * answered, the host goes away so nothing can be sent, and an answer finishes
+ * arriving. The visible evidence for all three is text appearing somewhere in a
+ * transcript that is rebuilt wholesale on every poll — which is why the
+ * transcript cannot be a live region itself, and why this separate sentence is
+ * needed rather than an attribute on what is already there.
+ *
+ * The text is written on a later task on purpose. A live region announces a
+ * *change*, and two announcements in a row that differ only by content can be
+ * coalesced into one; clearing first guarantees the region is observably empty
+ * before the new sentence lands.
+ *
+ * @param {string} text - What to announce.
+ * @returns {void}
+ */
+function announce(text) {
+  announcer.textContent = ''
+  setTimeout(() => {
+    announcer.textContent = text
+  }, 0)
 }
 
 /**
@@ -320,15 +379,26 @@ function paintStaticCopy() {
 }
 
 /**
- * Show or hide the surface for a panel that cannot work at all.
+ * Show or hide the surface for a panel that has no conversation to show.
  *
- * With no host there is nothing to read, nothing to send and no error to report,
- * so the panel looked broken: a blank transcript and a dead send button. The one
- * line that said so used to be an eleven-pixel grey footnote under the content,
- * which is where a footnote belongs rather than an explanation of why nothing
- * works — the empty region above it is the largest thing on screen and said
- * nothing at all. This is the shape the original uses for the same moment: a
- * title, the sentence that says what to do, and the button that does it.
+ * Two states land here and they are the two ways the content area can be empty
+ * through no fault of the reader:
+ *
+ * 1. No host: nothing to read, nothing to send, no error to report. The panel
+ *    looked broken — a blank transcript and a dead send button. The one line
+ *    that said so used to be an eleven-pixel grey footnote under the content,
+ *    which is where a footnote belongs rather than an explanation of why nothing
+ *    works.
+ * 2. No sessions: measured at 380x720 the transcript was 559px of nothing at all
+ *    (`childCount: 0`, no visible text), while the composer invited typing with
+ *    「问点什么…」 and the send button sat disabled with nothing on screen
+ *    explaining why. Typing a first message and pressing send could not work,
+ *    and that is the most likely thing a new reader tries. The `＋` in the header
+ *    was the whole answer, rendered as an unlabelled glyph.
+ *
+ * Both are the same shape the original uses for the same moment — a title, the
+ * sentence that says what to do, and the button that does it — so they share the
+ * surface rather than growing a second one that would drift from it.
  *
  * It clears itself on the next successful request, so it is a state and never a
  * warning to dismiss.
@@ -336,13 +406,44 @@ function paintStaticCopy() {
  * @returns {void}
  */
 function renderOffline() {
-  const blocked = !hostReachable
-  surface.hidden = !blocked
-  if (!blocked) return
-  // The retry is the panel's whole startup, so it is the same work the first
-  // load did rather than a second, thinner path that could drift from it.
-  blockedAction.disabled = retrying
-  blockedAction.textContent = retrying ? t('blocked.retrying') : t('blocked.retry')
+  // The host is the more fundamental failure: with no port answering there is
+  // nothing to say about sessions, because the list on screen cannot be trusted
+  // to be current.
+  const hostDown = !hostReachable
+  const noSessions = !hostDown && groups.length === 0
+  const shown = hostDown || noSessions
+  surface.hidden = !shown
+  // Announced only when the surface appears, because this runs on every poll and
+  // the host can stay away for minutes: a reader told "cannot reach dsh web" once
+  // per three seconds would turn the announcement off along with the panel. The
+  // `loadedOnce` guard covers the other end — the first paint happens before any
+  // request has answered, so without it every ordinary start announces a problem
+  // that is not there.
+  if (shown && loadedOnce && announcedOffline !== (hostDown ? 'host' : 'empty')) {
+    announcedOffline = hostDown ? 'host' : 'empty'
+    announce(t(hostDown ? 'blocked.hostTitle' : 'blocked.emptyTitle'))
+  } else if (!shown && announcedOffline !== '') {
+    // The surface went away, so the sentence in the announcer is now stale.
+    // Leaving it there is not merely untidy: anything that reads the region later
+    // — including a screen reader asked to repeat itself — would be told the
+    // panel still cannot work when it is working.
+    announcedOffline = ''
+    announce('')
+  }
+  if (!shown) return
+  if (hostDown) {
+    blockedTitle.textContent = t('blocked.hostTitle')
+    blockedBody.textContent = t('blocked.hostBody')
+    // The retry is the panel's whole startup, so it is the same work the first
+    // load did rather than a second, thinner path that could drift from it.
+    blockedAction.disabled = retrying
+    blockedAction.textContent = retrying ? t('blocked.retrying') : t('blocked.retry')
+    return
+  }
+  blockedTitle.textContent = t('blocked.emptyTitle')
+  blockedBody.textContent = t('blocked.emptyBody')
+  blockedAction.disabled = creating
+  blockedAction.textContent = creating ? t('blocked.creating') : t('blocked.emptyAction')
 }
 
 /**
@@ -357,6 +458,10 @@ function renderOffline() {
  */
 function setHostReachable(reachable) {
   hostReachable = reachable
+  // A request came back, so from here on an empty panel is a finding rather than
+  // the state before the first answer. Set before the repaint, because
+  // `renderOffline` is what reads it.
+  loadedOnce = true
   renderOffline()
 }
 
@@ -384,7 +489,13 @@ function renderTitle() {
   // The header falls back to the product's own name rather than to the error
   // sentence: the blocked surface below already says it, and said twice in one
   // screen it reads as a stutter rather than as emphasis.
-  const label = !hostReachable
+  // The header names the conversation on screen. With none selected there is no
+  // name to show, and the two sentences that used to fill the gap both said
+  // something the panel is not in a position to assert — 「还没有会话」 is a claim
+  // about the reader's own data, and the blocked surface below now makes that
+  // claim itself, properly, with the button that fixes it. Said in both places it
+  // reads as a stutter rather than as emphasis.
+  const label = !hostReachable || groups.length === 0
     ? t('panel.title')
     : currentSessionId.length === 0
       ? t('history.empty')
@@ -770,7 +881,7 @@ async function chooseModel(patch) {
     },
   })
   if (status === 0) {
-    say(t('model.failed', { reason: t('context.offline') }))
+    say(t('model.failed', { reason: t('error.unreachable') }))
     return
   }
   const selected = payload?.selected
@@ -829,6 +940,41 @@ function renderContexts() {
     contexts.hidden = true
     return
   }
+
+  // The host answers but this extension is not attached to it. That is a
+  // different state from the one above and it used to get the same six words:
+  // 「未连接」 in a pill that was not a button, while the transcript rendered
+  // normally and the composer worked. Nothing on screen named the token or the
+  // settings page, and the only route there was to open the history view and
+  // scroll to its footer — so a fresh install with no token could not be fixed
+  // from the panel that was asking to be fixed.
+  //
+  // It is a control now, because there is exactly one thing to do about it. The
+  // wording says what still works rather than what is broken: the conversation
+  // is intact and the browser tools are the part that is missing (the chat
+  // routes need no token; only the websocket does).
+  if (!bridgeConnected) {
+    const chip = document.createElement('span')
+    chip.className = 'chip'
+    chip.dataset.warn = 'true'
+    const label = document.createElement('span')
+    label.className = 'label'
+    label.textContent = t('context.offline')
+    const open = document.createElement('button')
+    open.type = 'button'
+    open.textContent = t('context.offlineAction')
+    open.title = t('context.offlineAction')
+    open.addEventListener('click', () => {
+      chrome.runtime.openOptionsPage()
+    })
+    chip.title = t('context.offline')
+    chip.setAttribute('aria-label', `${t('context.offline')} — ${t('context.offlineAction')}`)
+    chip.append(label, open)
+    contexts.hidden = false
+    contexts.append(chip)
+    return
+  }
+
   const chips = []
 
   if (mentionAddsSomething()) {
@@ -866,7 +1012,6 @@ function renderContexts() {
   if (currentTab.url.length > 0) {
     const chip = document.createElement('span')
     chip.className = 'chip'
-    if (!bridgeConnected) chip.dataset.warn = 'true'
     const title = currentTab.title || currentTab.url
     // The icon carries "this is the current tab", which is what the words
     // 「当前标签页 · 」 used to say. Measured at 392px: the label gets 360px and
@@ -875,7 +1020,7 @@ function renderContexts() {
     // Large Language Mo…`, spending its space on a label and then truncating the
     // thing the reader came for. The official panel does the same: its compact
     // source renders an icon and hides the words.
-    if (bridgeConnected && currentTab.icon.length > 0) {
+    if (currentTab.icon.length > 0) {
       const icon = document.createElement('img')
       icon.className = 'site'
       icon.src = currentTab.icon
@@ -886,11 +1031,10 @@ function renderContexts() {
     }
     const label = document.createElement('span')
     label.className = 'label'
-    label.textContent = bridgeConnected ? title : t('context.offline')
+    label.textContent = title
     // The chip is a fact, not a control, so its full name is carried here rather
-    // than spelled out on screen. It matters most in the offline case, where the
-    // icon is gone and 「未连接」 alone would not say what is offline.
-    chip.title = bridgeConnected ? `${t('context.tab')} · ${title}` : t('context.offline')
+    // than spelled out on screen.
+    chip.title = `${t('context.tab')} · ${title}`
     chip.setAttribute('aria-label', chip.title)
     chip.append(label)
     chips.push(chip)
@@ -1010,7 +1154,22 @@ function renderRow(row, index) {
     const wrapper = document.createElement('div')
     wrapper.className = 'row'
     wrapper.dataset.kind = 'tool'
-    const line = document.createElement('div')
+
+    // A failure carries the reason the tool gave, and the row has to be able to
+    // show it. Without this a broken call read as a bare cross next to its
+    // arguments: the model could see why it failed and correct itself, while the
+    // person watching could not tell a missed selector from a blocked tab from a
+    // page that never answered — and so could not tell whether to intervene.
+    const reason = typeof row.failure === 'string' ? row.failure : ''
+    const open = reason !== '' && expandedFailures.has(index)
+
+    // A real `<button>` when there is something to reveal, and a plain `div`
+    // otherwise. The first version made the div clickable, which is a control
+    // only a mouse can reach: no tab stop, no focus ring, no Enter. The panel
+    // already solves this for the reasoning row with a button, so this follows
+    // that rather than inventing a second way.
+    const line = document.createElement(reason === '' ? 'div' : 'button')
+    if (reason !== '') line.type = 'button'
     line.className = 'tool'
     line.dataset.status = row.status ?? 'pending'
     const mark = document.createElement('span')
@@ -1026,7 +1185,24 @@ function renderRow(row, index) {
     calls.className = 'calls'
     if (Number.isInteger(row.count) && row.count > 1) calls.textContent = `×${row.count}`
     line.append(mark, name, args, calls)
+
+    if (reason !== '') {
+      line.classList.add('has-reason')
+      line.setAttribute('aria-expanded', String(open))
+      line.addEventListener('click', () => {
+        if (expandedFailures.has(index)) expandedFailures.delete(index)
+        else expandedFailures.add(index)
+        drawTranscript(rows)
+      })
+    }
+
     wrapper.append(line)
+    if (open) {
+      const detail = document.createElement('div')
+      detail.className = 'tool-failure'
+      detail.textContent = reason
+      wrapper.append(detail)
+    }
     return wrapper
   }
 
@@ -1098,7 +1274,7 @@ function updateToBottom() {
  */
 function drawTranscript(next) {
   rows = next
-  const signature = JSON.stringify(next) + JSON.stringify([...expandedReasoning])
+  const signature = JSON.stringify(next) + JSON.stringify([...expandedReasoning]) + JSON.stringify([...expandedFailures])
   // A settled stream gives way to the real rows the moment they actually
   // change. Doing it here rather than on the `end` frame is what keeps the
   // text on screen if the re-read raced the append.
@@ -1302,11 +1478,22 @@ function renderApproval() {
   reject.textContent = t('approval.reject')
   reject.disabled = answering
   reject.addEventListener('click', () => answerApproval('rejected'))
+  // Narrowest grant first, which is how a permission dialog is ordered — Chrome
+  // asks 「仅这次访问时允许」 before 「每次访问时都允许」, and Android does the
+  // same. The narrowest answer is the one the eye and the hand reach first, and
+  // widening the grant costs a deliberate move. The buttons carry no emphasis
+  // of their own: see `.approval-actions` in sidepanel.html for why none of the
+  // three is allowed to look like the default.
   actions.append(once, always, reject)
   card.append(actions)
 
   transcript.append(card)
   if (stickToBottom) transcript.scrollTop = transcript.scrollHeight
+  // The card is the one thing in this panel that stops everything until it is
+  // answered, and it appears with no other trace: a reader who is not watching
+  // the transcript has no way to know the turn is waiting on them. Reuses the
+  // sentence the card itself shows rather than inventing a second one to drift.
+  announce(what.textContent)
 }
 
 /**
@@ -1463,7 +1650,32 @@ function applyDelta(payload) {
     refreshGroups().catch(() => {})
     return
   }
-  if (live === null) return
+  // A panel opened mid-turn never saw `start`, and a delta without one must not
+  // invent a live block: the tokens that arrive from here are the *tail* of an
+  // answer whose opening this panel never received, so rendering them would show
+  // a fragment that looks like a whole reply. That is worse than the waiting line
+  // it replaces, because nothing on screen would say the beginning is missing.
+  //
+  // The cost is silence for the rest of the attempt, and it is bounded: the host
+  // commits the assistant message at the end of it, so the next `end` re-reads
+  // the transcript and the complete answer appears. `stream.js` records the same
+  // trade — a dropped notification costs at most the rest of the animation.
+  //
+  // `failed` is hoisted above this guard for the same reason in reverse: a turn
+  // that died commits nothing, so there is no later read to recover it and the
+  // failure has to be reported whether or not this panel saw the start.
+  if (live === null) {
+    // `end` still has to land: the waiting line is driven by the host's `running`
+    // flag, and swallowing the end left the panel animating a turn that was over
+    // for up to `POLL_MS`. Nothing is adopted — there is nothing to adopt.
+    if (payload.kind === 'end') {
+      currentSessionRunning = false
+      renderWorking()
+      refreshTranscript().catch(() => {})
+      refreshGroups().catch(() => {})
+    }
+    return
+  }
 
   const text = typeof payload.text === 'string' ? payload.text : ''
   if (payload.kind === 'text') live.text += text
@@ -1478,6 +1690,12 @@ function applyDelta(payload) {
     // The waiting line is drawn from the host's `running` flag, so without this
     // it would sit under the finished answer until the next five-second poll.
     refreshGroups().catch(() => {})
+    // The answer is the one moment its text is final, and until now a reader
+    // heard nothing while it streamed in: `.live-body` is rewritten in full on
+    // every frame, so it cannot be a live region — each token would re-announce
+    // the whole answer from the top. Announcing the finished text once is the
+    // shape that matches how the panel actually builds it.
+    if (live.text.length > 0) announce(live.text)
     return
   } else return
 
@@ -1595,6 +1813,26 @@ function drawHistory() {
         selectSession(session.id)
         showView('chat')
       })
+      // The arrow keys are how anyone who lists sessions with a keyboard moves
+      // between them; measured before this, ArrowDown on a session row left
+      // focus exactly where it was. `focus()` rather than a scroll offset, so
+      // the browser's own scroll-into-view follows the row and the panel does
+      // not have to know where it landed.
+      //
+      // Only up and down. Home and End belong to the textarea, and the list has
+      // no text cursor of its own to move.
+      button.addEventListener('keydown', (event) => {
+        if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+        const rows = [...history.querySelectorAll('.session')]
+        const index = rows.indexOf(button)
+        if (index === -1) return
+        // No wrapping: the list is a position in a longer sequence, and
+        // jumping from the last row to the first hides how long it is.
+        const next = rows[index + (event.key === 'ArrowDown' ? 1 : -1)]
+        if (next === undefined) return
+        event.preventDefault()
+        next.focus()
+      })
       fragment.append(button)
     }
   }
@@ -1643,6 +1881,10 @@ function renderChrome() {
   renderContexts()
   drawModel()
   if (view === 'history') drawHistory()
+  // The session list decides whether the content area has anything to show, so
+  // this belongs with the other repaints rather than only on the reachability
+  // edge it used to hang off.
+  renderOffline()
   drawSend()
   renderWorking()
 }
@@ -1799,7 +2041,6 @@ async function refreshGroups() {
   const stored = await chrome.storage.local.get({ port: '3080', panelSessionId: '' })
   harnessPort = String(stored.port ?? '3080')
   const { payload, status } = await bridge('/browser-bridge/chat')
-  setHostReachable(status !== 0)
 
   // A 200 whose body has no `groups` is not an empty list: it is a host running
   // code from before this panel existed. Saying so once is far better than
@@ -1812,6 +2053,12 @@ async function refreshGroups() {
   if (understood) hostStale = false
 
   groups = understood ? payload.groups : []
+  // Recorded after the list, not before it. `setHostReachable` repaints the
+  // "nothing to show" surface, and it reads `groups` to decide which state that
+  // is — so calling it first painted the empty state from the *previous* list,
+  // announced 「还没有会话」 to a reader on every ordinary start, and corrected
+  // itself a moment later. A screen reader cannot un-hear that.
+  setHostReachable(status !== 0)
 
   const ids = new Set(groups.flatMap((group) => group.sessions.map((session) => session.id)))
   const remembered = typeof stored.panelSessionId === 'string' ? stored.panelSessionId : ''
@@ -1823,6 +2070,7 @@ async function refreshGroups() {
   if (next !== currentSessionId) {
     currentSessionId = next
     expandedReasoning.clear()
+    expandedFailures.clear()
     drawnSignature = ''
     restoreDraft()
   }
@@ -1842,6 +2090,7 @@ function selectSession(sessionId) {
     drafts.set(currentSessionId, input.value)
     currentSessionId = sessionId
     expandedReasoning.clear()
+    expandedFailures.clear()
     drawnSignature = ''
     transcript.replaceChildren()
     stickToBottom = true
@@ -2085,11 +2334,15 @@ async function newSession() {
   if (creating) return
   creating = true
   drawNew()
+  // The same control lives on the empty surface, and it has to show the same
+  // work there — otherwise pressing it looks like nothing happened.
+  renderOffline()
   try {
     await createSession()
   } finally {
     creating = false
     drawNew()
+    renderOffline()
   }
 }
 
@@ -2126,6 +2379,7 @@ async function createSession() {
   drafts.set(currentSessionId, input.value)
   currentSessionId = result.payload.sessionId
   expandedReasoning.clear()
+  expandedFailures.clear()
   drawnSignature = ''
   rows = []
   transcript.replaceChildren()
@@ -2184,7 +2438,22 @@ document.addEventListener('click', () => {
 })
 
 document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape') setMenu(false)
+  if (event.key !== 'Escape') return
+  setMenu(false)
+  // The history is a layer over the conversation, and Escape is how a keyboard
+  // user dismisses a layer. Without this the only way out was to find the `‹`
+  // button with the mouse or tab to it, while every other overlay in the panel
+  // already answered Escape.
+  //
+  // It closes rather than toggles: `#title` opens *and* closes, so making
+  // Escape toggle would let it open the history, which is not what dismissing a
+  // layer means.
+  if (view === 'history') {
+    showView('chat')
+    // Focus has to leave the row that is disappearing, or it lands on `body` and
+    // the next Tab starts from the top of the panel.
+    titleButton.focus()
+  }
 })
 
 sendButton.addEventListener('click', () => {
@@ -2478,13 +2747,51 @@ async function retry() {
   }
 }
 
+/**
+ * Put the caret where someone who just opened the panel expects it.
+ *
+ * Opening the panel is an explicit act, and the overwhelmingly common reason
+ * for it is to type something. Measured before this, focus landed on `body`:
+ * the first keystroke went nowhere, and the only way to begin was to click the
+ * box or tab to it.
+ *
+ * Two states are excluded, and both are cases where focus already has a better
+ * home. A waiting question is why someone who followed the badge opened the
+ * panel at all, so aiming them at the composer points at the wrong control. And
+ * the blocked surface has no composer to type into — focusing a box that is not
+ * on screen leaves `document.activeElement` on a hidden node and sends the next
+ * Tab somewhere unpredictable.
+ *
+ * `preventScroll`, because the panel is short: letting the browser scroll the
+ * focused element into view would move the transcript under someone who just
+ * opened it.
+ *
+ * A named function rather than three lines inside `start`, because `start` runs
+ * once at import: as inline code the excluded branches would be unreachable from
+ * the suite, which is how the arrow-key gap survived in the first place.
+ *
+ * @returns {void}
+ */
+function focusComposer() {
+  if (pendingApproval !== null || !surface.hidden) return
+  input.focus({ preventScroll: true })
+}
+
 /** Start the panel and keep the slow-moving parts fresh. */
 async function start() {
   paintStaticCopy()
   await loadEverything()
   await requestSelectionFromPage().catch(() => {})
+  focusComposer()
+  // One surface, two jobs. Which one the button does is the same decision that
+  // chose its label, so it is read back from the state rather than from a flag
+  // set by whichever branch drew last.
   blockedAction.addEventListener('click', () => {
-    retry().catch(() => {})
+    if (!hostReachable) {
+      retry().catch(() => {})
+      return
+    }
+    newSession().catch((error) => say(t('error.generic', { reason: error.message })))
   })
 
   // Switching tabs is a new page, and with it a new selection — or none. Without

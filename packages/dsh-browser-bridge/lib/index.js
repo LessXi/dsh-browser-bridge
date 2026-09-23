@@ -107,11 +107,21 @@ class StatusTracker {
  *   stored settings section does not satisfy its schema.
  */
 export async function apply(ctx, _config) {
-  const [schemasteryModule, toolsModule, llmModule] = await Promise.all([
-    loadPeer('@deepseek-ai/schemastery'),
-    loadPeer('@deepseek-ai/dsh-tools'),
-    loadPeer('@deepseek-ai/dsh-llm'),
-  ])
+  // Loaded one at a time, not with `Promise.all`. These three packages share
+  // `cosmokit`, which publishes both an ESM and a CJS entry; importing the set
+  // concurrently can make the CJS side `require()` the ESM side while it is
+  // still being evaluated, and the loader then throws "Cannot require() ES
+  // Module ... because it is not yet fully loaded". It is deterministic, not
+  // rare: five fresh processes in a row failed on the concurrent form and five
+  // succeeded on this one.
+  //
+  // The sequential form costs nothing measurable: 27-29ms across five cold-cache
+  // runs, against 28-30ms for the concurrent form that fails. Module loading is
+  // serialized inside the loader either way, so `Promise.all` was never buying
+  // parallelism here — only the race.
+  const schemasteryModule = await loadPeer('@deepseek-ai/schemastery')
+  const toolsModule = await loadPeer('@deepseek-ai/dsh-tools')
+  const llmModule = await loadPeer('@deepseek-ai/dsh-llm')
   const schemastery = schemasteryModule.default ?? schemasteryModule
   const { defineTool } = toolsModule
   const { createUserMessage, boundContextSummary } = llmModule
@@ -478,7 +488,14 @@ export async function apply(ctx, _config) {
             diag: attachments.diagnostics(),
           },
           originRuleCount: Object.keys(layers().origins ?? {}).length,
-          tokenHint: token.slice(0, 8),
+          // No `tokenHint` here. This route is the one surface that answers
+          // without a token and without a loopback check, because the client UI
+          // and the extension both poll it before they can authenticate. The
+          // first eight characters of the token used to be echoed back from it,
+          // which is a credential fragment on the one route chosen to have no
+          // authentication at all — and nothing read it. `tokenLength` stays:
+          // it is a shape, not a secret, and the extension's options page
+          // documents it as the length check it performs locally.
           tokenLength: token.length,
         }))
       },
