@@ -286,7 +286,10 @@
       #find-input {
         flex: 1;
         min-width: 0;
-        height: 26px;
+        /* A floor, not a fixed box: the query text and the row it sits in both
+           follow the reader's font size. `em` resolves against this control's own
+           13px, so `2em` is exactly the 26px it was. */
+        min-height: 2em;
         padding: 0 8px;
         font: inherit;
         font-size: var(--text-sm);
@@ -936,7 +939,11 @@
          overflowing costs the third answer. */
       .approval-actions { display: flex; flex-wrap: wrap; gap: 6px; }
       .approval-actions button {
-        height: 28px;
+        /* A floor, like every other text-bearing control here: these three labels
+           follow the reader's font size, and a frozen 28px would have them
+           painting outside the buttons they are the label of. `em` resolves
+           against this control's own 12px, so `calc(28 / 12)` is exactly 28px. */
+        min-height: calc(28em / 12);
         /* 10px rather than 12px: 「只允许一次」/「本会话允许」/「拒绝」 are the
            longest control labels in the panel, and the three of them plus gaps
            have to clear the narrowest side panel worth supporting. */
@@ -1309,13 +1316,26 @@
            degrades to an abbreviated model name, which is the right trade. */
         min-width: 0;
         max-width: 224px;
-        height: 28px;
+        /* A floor and a length, not a fixed height and a fixed line box, for the
+           reason the editor below records: both the name and the caret inside are
+           font-sized, and at a 32px root a frozen 28px box with a 20px line left
+           the name painting across its own caret.
+           Both denominators are this control's own font size, 13px, and not the
+           editor's 14px — measured, writing `2em` here gave 26px, which no
+           reading of the stylesheet reveals.
+           The line height is `calc(20em / 13)` and not `calc(20 / 13)`: a
+           unitless ratio is inherited as a ratio, so the caret inside — set in
+           12px — would take 12 × 1.538 = 18.46px instead of the 20px every child
+           has today. Measured after the first attempt: the caret's line box moved
+           1.54px, which is exactly what changed 61 pixels of the committed
+           screenshot. */
+        min-height: calc(28em / 13);
         padding: 0 6px 0 8px;
         border-radius: 999px;
         color: var(--muted);
         font-size: var(--text-sm);
         font-weight: 500;
-        line-height: 20px;
+        line-height: calc(20em / 13);
       }
       #model:hover:not(:disabled) { background: var(--hover); }
       #model:disabled { color: var(--faint); cursor: default; }
@@ -1335,9 +1355,26 @@
            measurable and looks like a mistake because it is one. The editor's
            text is inset to the same line the toolbar's text uses. */
         padding: 4px 0 4px 8px;
-        min-height: 28px;
-        max-height: 140px;
-        line-height: 20px;
+        /* All three are floors or ratios rather than fixed pixels, because the
+           text inside the editor follows the reader's font size and these have to
+           follow it too. Measured at a 32px root: the font reached 28px while
+           `line-height` stayed at 20px, so three typed lines painted on top of
+           each other and the reader could not read back what they were writing —
+           and with `min-height` fixed as well, an empty box already needed
+           scrolling.
+           The numbers are the originals expressed against the font: `2em` and
+           `10em` are 28px and 140px at the default root, and `20em / 14` is the
+           20px line the design had, so nothing moves at the size every measurement
+           in this repository was taken at.
+           A length rather than a bare `20 / 14` ratio, matching the model trigger
+           above: a unitless ratio is re-resolved against each child's own font
+           size, and that is how the trigger's caret silently moved 1.54px. A
+           textarea has no element children today, so this is the same number
+           either way — it is written the safer way so the pattern cannot be
+           copied into a box that does have them. */
+        min-height: 2em;
+        max-height: 10em;
+        line-height: calc(20em / 14);
         font-size: var(--text-base);
       }
       #input::placeholder { color: inherit; opacity: .5; }
@@ -1391,7 +1428,10 @@
         display: inline-flex;
         align-items: center;
         gap: 4px;
-        height: 26px;
+        /* A floor, for the same reason as the rest: the effort name inside is
+           font-sized. `em` resolves against this control's own 12px, so
+           `calc(26 / 12)` is exactly the 26px it was. */
+        min-height: calc(26em / 12);
         padding: 0 10px;
         border-radius: 999px;
         background: var(--lift);

@@ -1073,4 +1073,75 @@ test('the reader’s own font size reaches the text, and the boxes grow with it'
       `${selector}'s glyph must be sized in rem so it grows with its box`,
     )
   }
+
+  // Every other control that holds a line of text needs the same treatment, and
+  // the failure mode is specific: a frozen `line-height` in `px` while the font
+  // grows makes the lines paint on top of each other. Measured at a 32px root,
+  // the editor's font reached 28px inside a 20px line — three typed lines
+  // overlapped and the reader could not read back what they were writing.
+  const textBoxes = ['#input', '#model', '#find-input', '.approval-actions button', '.menu-effort']
+  for (const selector of textBoxes) {
+    const lineHeight = declarationOf(selector, 'line-height')
+    assert.ok(
+      lineHeight === null || !/px$/.test(lineHeight),
+      `${selector} freezes its line height at ${lineHeight}; the font inside grows and the lines would land on each other`,
+    )
+    const height = declarationOf(selector, 'height')
+    assert.equal(
+      height,
+      null,
+      `${selector} still has a fixed height (${height}); its text follows the reader and the box would not`,
+    )
+  }
+
+  // "Not a pixel value" is not enough on its own: a ratio written against the
+  // wrong denominator is still not a pixel value, and it still resizes the
+  // control. `calc(20em / 14)` on the editor is the 20px the design had;
+  // `calc(20em / 13)` is 21.5px, which no reading of the stylesheet reveals.
+  //
+  // And it must be a length, not a bare `20 / 14` ratio: a unitless ratio is
+  // inherited as a ratio, so each child re-resolves it against its own font size.
+  // Measured, that moved the model trigger's caret — set in 12px — from a 20px
+  // line box to 18.46px, which is the whole of the 61 pixels that changed in
+  // `docs/screenshots/model-menu.png` and looks exactly like antialiasing.
+  assert.equal(
+    declarationOf('#input', 'line-height'),
+    'calc(20em / 14)',
+    '#input is set in 14px, so its 20px line is 20em/14 — and a length, so children keep 20px',
+  )
+  assert.equal(
+    declarationOf('#model', 'line-height'),
+    'calc(20em / 13)',
+    '#model is set in 13px, so its 20px line is 20em/13; a bare ratio would shrink its caret',
+  )
+
+  // A floor written against the wrong denominator silently resizes the control.
+  // `em` and a unitless ratio both resolve against the element they are written
+  // on, so `#model` — set in 13px, not the editor's 14px — needed `calc(28em / 13)`
+  // to stay 28px. Measured: `2em` there gave 26px and `20 / 14` gave 18.57px, and
+  // neither is visible in the stylesheet.
+  const distinctFloors = { '#input': ['2em', '10em'], '#model': ['calc(28em / 13)'] }
+  for (const [selector, expected] of Object.entries(distinctFloors)) {
+    const values = expected.map((_, index) => {
+      const property = index === 0 ? 'min-height' : 'max-height'
+      return declarationOf(selector, property)
+    })
+    assert.deepEqual(
+      values,
+      expected,
+      `${selector} must carry floors that resolve to the sizes it was measured at`,
+    )
+  }
+  assert.equal(
+    declarationOf('#find-input', 'min-height'),
+    '2em',
+    '#find-input is set in 13px, so 2em is the 26px it was',
+  )
+  for (const selector of ['.approval-actions button', '.menu-effort']) {
+    const value = declarationOf(selector, 'min-height')
+    assert.ok(
+      /^calc\(\d+em \/ 12\)$/.test(value ?? ''),
+      `${selector}'s floor is ${value}; it is set in 12px, so the denominator must be 12`,
+    )
+  }
 })
