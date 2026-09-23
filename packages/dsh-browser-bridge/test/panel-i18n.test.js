@@ -37,6 +37,10 @@ function readExtensionFile(name) {
 /** The English translator, for the label tests below. */
 const t_en = translator('en')
 
+/** The Chinese translator. Some labels are counts in one language and words in
+ * the other, so a test that only ever looks at English cannot see the drift. */
+const t_zh = translator('zh')
+
 test('the dictionaries carry the same keys, and neither is empty', (t) => {
   const zhKeys = Object.keys(zh).sort()
   const enKeys = Object.keys(en).sort()
@@ -250,6 +254,69 @@ test('relative time uses the coarsest unit that still reads as recent', (t) => {
   assert.equal(relativeTime(t_en, now - 3 * 86_400_000, now), '3d ago')
   assert.equal(relativeTime(t_en, 0, now), '')
   assert.equal(relativeTime(t_en, Number.NaN, now), '')
+})
+
+test('past a week a session says which day it was, not how many days ago', (t) => {
+  const now = new Date(2026, 8, 23, 14, 30).getTime()
+  const day = 86_400_000
+
+  // Below the boundary the count is still the easier reading, and it is what the
+  // column showed before — the change must not creep downward into it.
+  assert.equal(relativeTime(t_en, now - 6 * day, now, 'en'), '6d ago')
+  assert.equal(relativeTime(t_zh, now - 6 * day, now, 'zh'), '6 天前')
+
+  // At the boundary and beyond, the reader gets a day they can picture.
+  assert.equal(relativeTime(t_en, now - 7 * day, now, 'en'), 'Sep 16')
+  assert.equal(relativeTime(t_zh, now - 7 * day, now, 'zh'), '9月16日')
+
+  // A label that still says "ago" is not a date, and an empty one is not a
+  // label. Both languages must cross over at the same place.
+  for (const [locale, t] of [['en', t_en], ['zh', t_zh]]) {
+    for (const days of [7, 8, 30, 61, 400]) {
+      const label = relativeTime(t, now - days * day, now, locale)
+      assert.ok(!/\bago\b|前/.test(label), `${locale}: ${days}d still counts: ${label}`)
+      assert.ok(label.length > 0, `${locale}: ${days}d produced nothing`)
+    }
+  }
+})
+
+test('a date carries its year only when the year is the news', (t) => {
+  const now = new Date(2026, 8, 23, 14, 30).getTime()
+
+  // Same year: the panel is mostly this case, and repeating "2026" on every row
+  // spends the width the session title needs to say what makes rows different.
+  assert.equal(relativeTime(t_en, new Date(2026, 0, 15).getTime(), now, 'en'), 'Jan 15')
+  assert.equal(relativeTime(t_zh, new Date(2026, 0, 15).getTime(), now, 'zh'), '1月15日')
+
+  // Across the boundary the year is exactly the fact that separates two rows
+  // both saying "Jan 15", so it is shown.
+  assert.equal(relativeTime(t_en, new Date(2025, 0, 15).getTime(), now, 'en'), 'Jan 15, 2025')
+  assert.equal(relativeTime(t_zh, new Date(2025, 0, 15).getTime(), now, 'zh'), '2025年1月15日')
+})
+
+test('the two languages really do format dates differently', (t) => {
+  const now = new Date(2026, 8, 23, 14, 30).getTime()
+  const when = new Date(2025, 0, 15).getTime()
+  // If a future change routed both locales through one hard-coded pattern, the
+  // tests above would still pass while one language silently read as the other.
+  assert.notEqual(relativeTime(t_zh, when, now, 'zh'), relativeTime(t_en, when, now, 'en'))
+})
+
+test('the session list hands its language to the date formatter', (t) => {
+  // This one cannot be reached by calling `relativeTime`, which is why it reads
+  // the source. The parameter defaults to `'en'`, so a call site that drops it
+  // compiles, runs, and passes every test above — while a Chinese reader gets
+  // "Sep 16" in a list whose every other word is Chinese. Verified by mutation:
+  // with this assertion removed, dropping the argument goes unnoticed.
+  const source = readExtensionFile('sidepanel.js')
+  const calls = [...source.matchAll(/relativeTime\(([^)]*)\)/g)].map((match) => match[1])
+  assert.ok(calls.length > 0, 'the panel calls relativeTime somewhere')
+  for (const args of calls) {
+    assert.ok(
+      /,\s*locale\s*$/.test(args.trim()),
+      `relativeTime(${args.trim()}) must pass the panel's locale`,
+    )
+  }
 })
 
 test('every dictionary entry is free of placeholder spelling mistakes', (t) => {

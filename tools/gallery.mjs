@@ -87,7 +87,7 @@ const SHOTS = [
     scenario: 'historyOpen',
     scheme: 'dark',
     locale: 'zh-CN',
-    why: 'Sessions grouped by workspace, with relative time and a running indicator.',
+    why: 'Sessions grouped by workspace: minutes for the ones just used, a day for the older ones, and a running indicator.',
   },
   {
     file: 'reasoning.png',

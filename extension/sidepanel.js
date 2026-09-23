@@ -2758,7 +2758,7 @@ function drawHistory() {
       }
       const time = document.createElement('span')
       time.className = 'session-time'
-      time.textContent = relativeTime(t, session.updatedAt, now)
+      time.textContent = relativeTime(t, session.updatedAt, now, locale)
       button.append(time)
       button.addEventListener('click', () => {
         selectSession(session.id)

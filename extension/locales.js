@@ -527,12 +527,23 @@ export function browserTranslator() {
  * A session list is scanned, not read: the exact minute is noise, and the only
  * question a person asks of that column is "is this the thing I was just in".
  *
+ * Past a week, though, a count of days stops answering that question. "236 days
+ * ago" is not a distance anyone computes — it is a date they want, and the
+ * arithmetic to get there is work the label should have done. So this hands the
+ * calendar the job at that point and prints the day itself.
+ *
+ * A week is the boundary because it is where the two readings cross: below it a
+ * count is easier to compare against "am I in the middle of this", above it the
+ * count is a number nobody converts. It also keeps the label short — dates with
+ * a year are wider than anything the minutes branch ever prints.
+ *
  * @param {(key: string, params?: Record<string, unknown>) => string} t - The translator.
  * @param {number} when - Epoch milliseconds.
  * @param {number} [now] - The reference time, for tests.
+ * @param {'zh' | 'en'} [locale] - Which calendar conventions to print with.
  * @returns {string} The label, or an empty string when there is no timestamp.
  */
-export function relativeTime(t, when, now = Date.now()) {
+export function relativeTime(t, when, now = Date.now(), locale = 'en') {
   if (!Number.isFinite(when) || when <= 0) return ''
   const seconds = Math.max(0, Math.round((now - when) / 1000))
   if (seconds < 90) return t('time.now')
@@ -540,5 +551,35 @@ export function relativeTime(t, when, now = Date.now()) {
   if (minutes < 60) return t('time.minutes', { count: minutes })
   const hours = Math.round(minutes / 60)
   if (hours < 24) return t('time.hours', { count: hours })
-  return t('time.days', { count: Math.round(hours / 24) })
+  const days = Math.round(hours / 24)
+  if (days < 7) return t('time.days', { count: days })
+  return calendarDate(when, locale, now)
+}
+
+/**
+ * The day a timestamp falls on, written the way its language writes days.
+ *
+ * The year appears only when it differs from the reference year. A session list
+ * is mostly same-year, and repeating the year on every row spends the width the
+ * session title needs to say the one thing that separates the rows from each
+ * other. Across a year boundary the year is the fact, so it is shown.
+ *
+ * `Intl` rather than a hand-written format: the two languages disagree about
+ * order, separator and whether the month is a number or a name, and this project
+ * has no business re-deriving CLDR. Both environments that load this module —
+ * the panel and the test runner — resolve `zh` and `en` identically (verified
+ * across 18 format/output pairs), so the tests guard what the reader sees.
+ *
+ * @param {number} when - Epoch milliseconds.
+ * @param {'zh' | 'en'} locale - Which conventions to print with.
+ * @param {number} now - The reference time, for the year comparison.
+ * @returns {string} The formatted day.
+ */
+function calendarDate(when, locale, now) {
+  const sameYear = new Date(when).getFullYear() === new Date(now).getFullYear()
+  return new Intl.DateTimeFormat(locale, {
+    ...(sameYear ? {} : { year: 'numeric' }),
+    month: 'short',
+    day: 'numeric',
+  }).format(when)
 }

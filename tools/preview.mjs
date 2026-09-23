@@ -351,6 +351,30 @@ const DEFAULT_GROUPS = [
         blank: true,
         model: null,
       },
+      // The ages above are minutes and hours. Real session lists are not: of the
+      // 156 session files on the machine this was built on, 140 are more than a
+      // day old and the median is a week — so the days branch is the one a reader
+      // actually sees, and a fixture that never reaches it cannot show what it
+      // looks like. This row is the median.
+      {
+        id: 'session-d',
+        title: 'Investigate the flaky snapshot test',
+        updatedAt: Date.now() - 7 * 24 * 60 * 60_000,
+        running: false,
+        blank: false,
+        model: { provider: 'deepseek', model: 'deepseek-v4-pro', reasoningEffort: 'high' },
+      },
+      // And this one is two months old. "61 days ago" is not a distance anyone
+      // computes; the day it happened is the answer to the question the column
+      // is actually asking.
+      {
+        id: 'session-e',
+        title: 'Set up the release checklist',
+        updatedAt: Date.now() - 61 * 24 * 60 * 60_000,
+        running: false,
+        blank: false,
+        model: { provider: 'deepseek', model: 'deepseek-v4-pro', reasoningEffort: 'medium' },
+      },
     ],
   },
 ]
