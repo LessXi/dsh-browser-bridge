@@ -62,6 +62,16 @@ const TOOL_FAILURE_MAX = 200
 /** Longest a derived fallback title may be. */
 const TITLE_MAX = 60
 
+/**
+ * Most search results one query may return.
+ *
+ * A cap rather than a page: the matches are a *map* of where the word appears,
+ * so the reader wants them all at once. Thirty is enough to show the shape of a
+ * conversation without turning the list into a second transcript, and the panel
+ * says when the cap was reached rather than pretending it found everything.
+ */
+const SEARCH_MAX = 30
+
 /** Longest an attachment notice may be before it is clipped. */
 const CONTEXT_LABEL_MAX = 60
 
@@ -491,6 +501,54 @@ export function describeEvents(events, api) {
 }
 
 /**
+ * The text a row shows, for searching.
+ *
+ * Every field a row can put on screen, and nothing else. Searching `callId`
+ * would match a string the reader cannot see, which turns a search result into
+ * a row that does not appear to contain the word.
+ *
+ * @param {object} row - A transcript row.
+ * @returns {string} Its searchable text.
+ */
+export function searchableText(row) {
+  const parts = [row.text, row.name, row.summary, row.failure]
+  return parts.filter((part) => typeof part === 'string').join(' ')
+}
+
+/**
+ * Find rows whose visible text contains `query`, newest first.
+ *
+ * Case-insensitive and literal. Deliberately not a regex: a transcript is full
+ * of `.`, `(`, `[` and `\`, so a search for `filter(` would throw and one for
+ * `a.b` would match `axb`. Someone searching their own conversation means the
+ * characters they typed.
+ *
+ * Matching is per row rather than per line, because a row is the unit the
+ * transcript draws and the unit a result can scroll to.
+ *
+ * @param {object[]} rows - Transcript rows, oldest first.
+ * @param {string} query - What to look for.
+ * @param {number} [maximum] - Most matches to return.
+ * @returns {{ index: number, row: object }[]} Matches, each with its position in `rows`.
+ */
+export function findRows(rows, query, maximum = SEARCH_MAX) {
+  const needle = query.trim().toLowerCase()
+  if (needle.length === 0) return []
+  const found = []
+  // Walked backwards so the newest match comes first: the end of a
+  // conversation is where someone scrolling back is looking, and a result list
+  // starting at the beginning of a 6969-row session is not one anybody reads to
+  // the bottom of.
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    if (searchableText(rows[index]).toLowerCase().includes(needle)) {
+      found.push({ index, row: rows[index] })
+      if (found.length >= maximum) break
+    }
+  }
+  return found
+}
+
+/**
  * Build the chat surface over the harness's session services.
  *
  * Listing goes through the **session controller**, which is the same object the
@@ -693,23 +751,62 @@ export function createChat(ports) {
    * @param {string} sessionId - The session.
    * @param {number} [limit] - Maximum rows.
    * @param {number} [before] - Rows to drop from the end first.
-   * @returns {Promise<{ title: string, messages: object[], more: boolean }>} The title, rows, and whether anything older remains.
+   * @param {number} [end] - Absolute row index to end the window at; wins over `before`.
+   * @returns {Promise<{ title: string, messages: object[], more: boolean, total: number }>} The title, rows, whether anything older remains, and how many rows the session has in all.
    */
-  const readMessages = async (sessionId, limit, before) => {
+  const readMessages = async (sessionId, limit, before, end) => {
     const maximum = Number.isInteger(limit) && limit > 0 ? limit : DEFAULT_LIMIT
     const skip = Number.isInteger(before) && before > 0 ? before : 0
     const replay = await readThrough(sessionId)
     const derived = titleFrom(replay.messages)
+    const size = replay.messages.length
     // Sliced from the end, so `before` walks back through the conversation and
     // the newest row is always the last one returned.
-    const end = Math.max(0, replay.messages.length - skip)
-    const start = Math.max(0, end - maximum)
+    //
+    // `end` is the same window named by an absolute row index, and it exists
+    // because a count from the end is not a position in a conversation that is
+    // still being written to: searching, jumping to a match, and then having the
+    // model append a reply would slide the reader forward by exactly the number
+    // of rows that arrived. An absolute index does not move when the end does.
+    const stop = Number.isInteger(end) && end >= 0 ? Math.min(end, size) : Math.max(0, size - skip)
+    const start = Math.max(0, stop - maximum)
     return {
       // The listing is the authority on titles; a session that is not in the
       // list (a brand-new one, say) falls back to the transcript's own words.
       title: replay.title || knownTitles.get(sessionId) || derived,
-      messages: replay.messages.slice(start, end),
+      messages: replay.messages.slice(start, stop),
       more: start > 0,
+      // The row count, because a search result is a position and the caller has
+      // to turn that position into a window. Without it the panel can only count
+      // what it was already given, which is the window it is trying to move away
+      // from.
+      total: size,
+    }
+  }
+
+  /**
+   * Search one session's whole transcript.
+   *
+   * Searched on the host rather than in the panel because the panel only ever
+   * holds a window — 60 rows of 6969 — and a search that answered "not found"
+   * from the rows on screen would be **lying about the reader's own
+   * conversation**. The host reads the session in full and can answer for all
+   * of it.
+   *
+   * @param {string} sessionId - The session.
+   * @param {string} query - What to look for.
+   * @returns {Promise<{ matches: object[], total: number, truncated: boolean }>} Matches, the row count, and whether the cap cut the list short.
+   */
+  const searchMessages = async (sessionId, query) => {
+    const replay = await readThrough(sessionId)
+    const matches = findRows(replay.messages, typeof query === 'string' ? query : '')
+    return {
+      matches,
+      total: replay.messages.length,
+      // Said out loud rather than implied: a capped list that reads as complete
+      // is how someone concludes their conversation does not contain a word it
+      // does contain.
+      truncated: matches.length >= SEARCH_MAX,
     }
   }
 
@@ -931,7 +1028,7 @@ export function createChat(ports) {
     }
   }
 
-  return { listSessions, readMessages, createSession, send, cancel, readModels, selectModel, services }
+  return { listSessions, readMessages, searchMessages, createSession, send, cancel, readModels, selectModel, services }
 }
 
 /**

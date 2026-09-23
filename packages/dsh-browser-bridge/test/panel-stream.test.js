@@ -29,6 +29,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { test, assert } from './harness.js'
 import { makeDocument } from './dom-shim.js'
 import { zh } from '../../../extension/locales.js'
+import { findRows } from '../lib/chat.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const extensionDir = join(here, '..', '..', '..', 'extension')
@@ -79,6 +80,8 @@ const host = {
   down: false,
   /** Every `POST {action:'messages'}` body, in order. */
   reads: [],
+  /** Every `POST {action:'search'}` body, in order. */
+  searches: [],
   /** Whether the host says rows exist beyond the window it returned. */
   more: false,
   /**
@@ -254,12 +257,46 @@ globalThis.fetch = async (url, options = {}) => {
     const body = options.body === undefined ? {} : JSON.parse(options.body)
     if (body.action === 'messages') {
       host.reads.push(body)
+      // Sliced the way the host slices, and for the same reason: this stub used
+      // to answer every request with the whole fixture, so the panel's window —
+      // the thing `depth`, `loadEarlier` and a search jump are all about — was
+      // invisible to every test here. A harness that cannot show the state cannot
+      // check it, and the search jump would have shipped its window protocol
+      // against a mock that accepts any `end` at all.
+      const all = host.messages
+      const limit = Number.isInteger(body.limit) && body.limit > 0 ? body.limit : 40
+      const stop = Number.isInteger(body.end) && body.end >= 0
+        ? Math.min(body.end, all.length)
+        : all.length
+      const start = Math.max(0, stop - limit)
       return respond({
         sessionId: body.sessionId,
-        messages: host.messages,
+        messages: all.slice(start, stop),
         title: host.title,
-        more: host.more === true,
+        more: host.more === true || start > 0,
+        total: all.length,
       })
+    }
+    if (body.action === 'search') {
+      host.searches.push(body)
+      // The real matcher, not a second copy of it.
+      const matches = findRows(host.messages, body.query)
+      const answer = {
+        sessionId: body.sessionId,
+        matches,
+        total: host.messages.length,
+        truncated: matches.length >= 30,
+      }
+      // A search of a long session is not instantaneous, and the reader can type
+      // the next word before it answers. `host.holdSearch` is how a test takes
+      // the timing into its own hands instead of hoping the mock is slower than
+      // the next keystroke.
+      if (host.holdSearch !== null && host.holdSearch !== undefined) {
+        const gate = host.holdSearch
+        host.holdSearch = null
+        return gate.then(() => respond(answer))
+      }
+      return respond(answer)
     }
     // Overridable so the model menu can be driven from here. It answered
     // `empty-catalog` unconditionally, which is a real state the panel must
@@ -3433,6 +3470,237 @@ test('a draft is sent, not kept', async (t) => {
     (await storage.snapshot())[`panelDraft:${SESSION}`],
     undefined,
     'a sent message must not come back as a draft on the next opening',
+  )
+})
+
+// ---------------------------------------------------------------------------
+// Finding a word in a long conversation
+// ---------------------------------------------------------------------------
+//
+// These live here, before the two tests below load a *second* copy of the panel
+// module to get a genuinely fresh instance. Those copies attach their own
+// listeners to the same stub elements, so from that point on one emitted click
+// reaches two or three live panels and every count in these tests doubles. The
+// first version of them ran at the end of the file and read `3 !== 1` on
+// `host.searches.length` for exactly that reason — the assertion was right and
+// its position was wrong.
+
+/**
+ * A long transcript with a needle far outside the panel's opening window.
+ *
+ * The point of search is the part that is *not* on screen. `PAGE_ROWS` is 60, so
+ * a needle at row 10 of 600 is invisible when the panel opens — which is exactly
+ * the case an implementation that searched the rows it held would get wrong,
+ * reporting the word as absent from the reader's own conversation.
+ *
+ * @param {number} turns - How many turns to build.
+ * @returns {object[]} The rows.
+ */
+function longTranscript(turns) {
+  const rows = []
+  for (let index = 0; index < turns; index += 1) {
+    rows.push({ kind: 'user', text: `question ${index}` })
+    rows.push({ kind: 'assistant', text: `answer ${index}` })
+    if (index === 4) rows.push({ kind: 'assistant', text: 'the zebra conclusion' })
+  }
+  return rows
+}
+
+/** Put a long transcript on screen and hand the reader a search for `zebra`. */
+async function searchForZebra() {
+  // An earlier test can leave a turn running, and while one is the send button is
+  // a *stop* button — disabled, so the send assertions below would be driving a
+  // control that cannot act. This helper is the file's own way of clearing that.
+  await settleToIdle()
+  host.messages = longTranscript(300)
+  // Read once first: `hasEarlier`, `windowTotal` and the drawn rows are all
+  // refreshed by a read, so a test that skipped this would be driving a panel
+  // that still believes it holds the previous fixture.
+  await settle()
+  // `#find-open` is a *toggle*, so opening it unconditionally closes a bar an
+  // earlier test left open — and then the count on screen is the previous
+  // query's, and the assertions fail for a reason that has nothing to do with
+  // searching. Same mistake the browser probe made.
+  //
+  // The state is read from `aria-expanded`, which the panel writes, and not from
+  // `hidden` on the bar. The DOM shim does not carry the markup's `hidden`
+  // attribute — it fabricates an element per id on first use — so `#find.hidden`
+  // reads `false` whether the bar is open or not. A guard written on it skipped
+  // the click and then passed, which is a guard that asks nothing.
+  const open = () => registry.get('find-open').getAttribute('aria-expanded') === 'true'
+  if (!open()) {
+    registry.get('find-open').emit('click')
+    await settleMacrotask()
+  }
+  assert.equal(open(), true, 'the find bar must be open for this to mean anything')
+  const field = registry.get('find-input')
+  field.value = 'zebra'
+  field.emit('input')
+  await settle()
+  return field
+}
+
+test('a search reaches rows the panel has never held', async (t) => {
+  await searchForZebra()
+
+  // The premise, asserted rather than assumed: `PAGE_ROWS` rows of 600 do not
+  // contain the needle, so a search answered from the window would find nothing.
+  assert.equal(host.reads.at(-1).limit, 60, 'the panel opens on one page')
+  assert.ok(
+    !registry.get('transcript').textContent.includes('zebra'),
+    'the needle must start off screen, or this test proves nothing',
+  )
+
+  assert.equal(host.searches.length, 1, 'the panel must ask the host, which holds every row')
+  assert.equal(host.searches[0].query, 'zebra')
+  assert.match(registry.get('find-count').textContent, /1\/1/)
+
+  registry.get('find-next').emit('click')
+  await settle()
+
+  // The window moved, named by an absolute row rather than a count from the end,
+  // because a count from the end is not a position in a conversation that is
+  // still being written to.
+  const jumped = host.reads.at(-1)
+  assert.ok(Number.isInteger(jumped.end), `the jump must name an absolute row, got ${JSON.stringify(jumped)}`)
+  assert.ok(jumped.end < host.messages.length, 'and it must not be the end of the session')
+  assert.ok(registry.get('transcript').textContent.includes('zebra'), 'the match is on screen')
+})
+
+test('jump to latest leaves the window a search parked it in', async (t) => {
+  await searchForZebra()
+  registry.get('find-next').emit('click')
+  await settle()
+  assert.ok(Number.isInteger(host.reads.at(-1).end), 'the window is parked')
+
+  // Measured in a real browser before this test existed: "jump to latest" scrolled
+  // the *window* to its bottom, the last row stayed at 「第 11 个问题」 of 600, and
+  // the newest content was unreachable. A scrollbar at the bottom is not the same
+  // fact as the newest rows being on screen, and only the second is what the
+  // control promises.
+  registry.get('to-bottom').emit('click')
+  await settle()
+
+  assert.equal(host.reads.at(-1).end, undefined, 'returning to the newest rows drops the anchor')
+  assert.ok(
+    registry.get('transcript').textContent.includes('answer 299'),
+    'the newest row must actually be on screen after "jump to latest"',
+  )
+})
+
+test('the way back to the newest rows stays on screen while parked', async (t) => {
+  await searchForZebra()
+  registry.get('find-next').emit('click')
+  await settle()
+  assert.ok(Number.isInteger(host.reads.at(-1).end), 'the window is parked')
+
+  // Measured in a real browser: the control that leaves the window hid itself
+  // once the scrollbar reached the bottom of the *window* — because visibility
+  // was decided by "is the scrollbar at the bottom", which is true while the
+  // conversation continues far below. The reader was then stranded in the past
+  // with no way back, which is the one failure this control exists to prevent.
+  //
+  // The DOM shim reports `scrollHeight` and `clientHeight` as 0, so "at the
+  // bottom" is true here by construction: the parked window is the *only*
+  // reason this button can be visible, which is exactly the fact under test.
+  registry.get('transcript').measure({ scrollTop: 0, scrollHeight: 0, clientHeight: 0 })
+  registry.get('transcript').emit('scroll')
+  await settle()
+
+  assert.equal(registry.get('to-bottom').hidden, false, 'the only way back must not hide itself')
+})
+
+test('sending leaves the window a search parked it in', async (t) => {
+  await searchForZebra()
+  registry.get('find-next').emit('click')
+  await settle()
+  assert.ok(Number.isInteger(host.reads.at(-1).end), 'the window is parked')
+
+  // Asking a question is the reader saying they are done looking at the past.
+  // Parked, the reply arrives outside the window and they never see the answer to
+  // the message they just sent.
+  const composer = registry.get('input')
+  composer.value = 'and now?'
+  registry.get('send').emit('click')
+  await settle()
+
+  assert.equal(host.reads.at(-1).end, undefined, 'a send must return to the newest rows')
+})
+
+test('closing the find bar clears the query and hands focus back', async (t) => {
+  const field = await searchForZebra()
+  registry.get('find-close').emit('click')
+  await settleMacrotask()
+
+  assert.equal(field.value, '', 'reopening must be a fresh search, not the previous word')
+  // Read from the button's own declaration, not `#find.hidden`: the shim does
+  // not carry the markup's `hidden` attribute, so that property reads `true`
+  // here whether the bar was closed or never opened at all.
+  assert.equal(registry.get('find-open').getAttribute('aria-expanded'), 'false')
+  // The same contract the model picker keeps: closing returns focus to the
+  // control that opened it, so the next Tab does not start from the top.
+  assert.equal(document.activeElement?.id, 'find-open')
+  // This test is also the one that leaves the bar shut for whatever runs next,
+  // which `searchForZebra` relies on: it opens only when the bar is closed, so a
+  // test that left the bar open would be toggling it shut.
+})
+
+test('the find count never leaks a placeholder', async (t) => {
+  await searchForZebra()
+
+  // Measured in a real browser: the translator leaves an unmatched `{name}` in
+  // the string verbatim, so passing `more` only when the list was truncated
+  // rendered the literal text `1/1{more}` to the reader.
+  //
+  // Asserted as the exact finished string, not as "contains no braces". The
+  // translator substitutes any key it is *given*, including one given as
+  // `undefined` — so the other obvious way to get this wrong renders `1/1undefined`,
+  // which has no braces in it and sailed through a braces-only check.
+  assert.equal(
+    registry.get('find-count').textContent,
+    zh['find.count'].replace('{position}', '1').replace('{count}', '1').replace('{more}', ''),
+  )
+})
+
+test('a query with no matches does not keep the previous count', async (t) => {
+  const field = await searchForZebra()
+  assert.match(registry.get('find-count').textContent, /1\/1/)
+
+  field.value = 'aardvark'
+  field.emit('input')
+  await settle()
+  assert.equal(
+    registry.get('find-count').textContent,
+    zh['find.none'],
+    'the previous query\'s count must not stand in for this one',
+  )
+})
+
+test('a reply to a query the reader has left is not adopted', async (t) => {
+  // The answer to `zebra` is held in flight while the reader types `aardvark`,
+  // which is the ordinary case rather than a contrived one: searching a
+  // 6969-row session takes long enough to type the next word into.
+  //
+  // `zebra` and `aardvark` are chosen so the two answers differ — one match
+  // against none. A held reply that happens to say the same thing as the current
+  // query's would make the assertion below true whether the late answer was
+  // adopted or not, which is a test that cannot fail.
+  let release = null
+  host.holdSearch = new Promise((resolve) => { release = resolve })
+  const field = await searchForZebra()
+  assert.equal(host.searches.at(-1).query, 'zebra', 'the held request must be the one being left behind')
+
+  field.value = 'aardvark'
+  field.emit('input')
+  await settle()
+  assert.equal(host.searches.at(-1).query, 'aardvark')
+
+  release()
+  await settle()
+  assert.equal(
+    registry.get('find-count').textContent,
+    zh['find.none'],
+    'the late answer to `zebra` must not be drawn under the `aardvark` query',
   )
 })
 

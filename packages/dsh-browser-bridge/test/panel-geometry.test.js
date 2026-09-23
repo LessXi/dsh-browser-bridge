@@ -565,6 +565,76 @@ function borderedUnder(bordered, selector) {
   return false
 }
 
+test('the search hit is outlined on the message, not on the row', (t) => {
+  // Measured in a real browser on the "zebra" hit: an outline on `.row` drew a
+  // 360px box around 248px of ink, because a row is a full-width flex container
+  // and a user message is an end-aligned bubble inside it. 100px of blank space
+  // was boxed on the left of the message the reader was being shown.
+  //
+  // The signal has to be the size of the thing it points at, so the outline
+  // belongs on the message. Asserted through the selector text because that is
+  // what decides which element the browser paints.
+  const outlineRule = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+    .filter((match) => /outline\s*:\s*2px solid var\(--accent\)/.test(match[2]))
+    .flatMap((match) => match[1].split(',').map((part) => part.trim()))
+
+  assert.ok(outlineRule.length > 0, 'the hit outline must exist; this test reads it to know what the browser paints')
+
+  // Named by the element that carries the ink, never by the row container alone.
+  const messageKinds = ['.bubble', '.answer', '.failure', '.reasoning-toggle']
+  for (const kind of messageKinds) {
+    assert.ok(
+      outlineRule.some((selector) => selector.endsWith(`> ${kind}`)),
+      `a hit on a row holding ${kind} must outline ${kind} itself, not the whole row`,
+    )
+  }
+
+  // And each of those has to be gated on the class the panel actually sets.
+  // `endsWith('> .bubble')` alone is satisfied by `#transcript .row.found >
+  // .bubble` — a rule that would never match, since `drawFindFocus` adds `hit`.
+  // Measured: renaming only that one selector left every test in this file
+  // green while the user bubble lost its highlight entirely.
+  for (const kind of messageKinds) {
+    assert.ok(
+      outlineRule.some((selector) => selector.endsWith(`> ${kind}`) && /\.hit\b/.test(selector)),
+      `${kind} must be outlined under the \`hit\` class the panel adds, not some other one`,
+    )
+  }
+
+  // And no rule may outline the bare row for a kind that holds a message, which
+  // is the shape the defect had.
+  assert.ok(
+    !outlineRule.includes('#transcript .row.hit'),
+    'outlining the bare row is the defect: it boxes the empty half of an end-aligned message',
+  )
+})
+
+test('a reasoning row can be highlighted at all', (t) => {
+  // A reasoning row is not a `.row` — `renderRow` gives it `className =
+  // 'reasoning'` — so `#transcript .row.hit` could never match one, and a search
+  // hit on a reasoning row drew no outline at all. Nothing caught it because the
+  // search fixture holds only user and assistant rows.
+  //
+  // The rule is read here as "some selector reaches a reasoning row", not by
+  // restating the selector, so a rename of the container does not silently
+  // disable the highlight.
+  const outlineRule = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+    .filter((match) => /outline\s*:\s*2px solid var\(--accent\)/.test(match[2]))
+    .flatMap((match) => match[1].split(',').map((part) => part.trim()))
+  assert.ok(
+    outlineRule.some((selector) => /\.reasoning\.hit/.test(selector)),
+    'a reasoning row is `.reasoning`, so `.row.hit` alone leaves it unhighlighted',
+  )
+
+  // The claim rests on the class the renderer actually sets, so it is read from
+  // the source rather than assumed here.
+  const script = readExtensionFile('sidepanel.js')
+  assert.ok(
+    /wrapper\.className = 'reasoning'/.test(script),
+    'if the reasoning row ever becomes a `.row`, this rule needs revisiting rather than keeping a second one',
+  )
+})
+
 test('every surface that floats over the page keeps an edge in High Contrast', (t) => {
   // The mode's own block, brace-matched rather than pattern-matched: it holds
   // nested rules, and a lazy `[\s\S]*?` stops at the first `}` it meets.

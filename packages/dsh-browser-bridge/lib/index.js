@@ -570,8 +570,17 @@ export async function apply(ctx, _config) {
         // One reader for both cases: the controller answers from memory for a
         // live session and from the log for a cold one, so there is no second
         // code path to drift.
-        const { messages, title, more } = await chat.readMessages(sessionId, parsed.limit, parsed.before)
-        json(200, { sessionId, messages, title, more })
+        const { messages, title, more, total } = await chat.readMessages(sessionId, parsed.limit, parsed.before, parsed.end)
+        json(200, { sessionId, messages, title, more, total })
+        return
+      }
+      if (parsed.action === 'search') {
+        const sessionId = typeof parsed.sessionId === 'string' ? parsed.sessionId : ''
+        const query = typeof parsed.query === 'string' ? parsed.query : ''
+        // Searched over the whole session, not the window the panel holds: the
+        // panel has 60 of 6969 rows, and answering from those would report a
+        // word as absent from a conversation that contains it.
+        json(200, { sessionId, ...(await chat.searchMessages(sessionId, query)) })
         return
       }
       if (parsed.action === 'create') {

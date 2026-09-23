@@ -429,6 +429,8 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 | 切换正被另一个实例持有的会话（v7） | 探针去 resume 你的 3080 正持有的会话时被拒：`SessionAlreadyOwnedError: session "…" is already owned by an active write handle`。这是**两个实例并存**才有的情况——面板连的就是持有会话的那个宿主，正常使用遇不到 |
 | 非法推理强度（v7） | `reasoningEffort:"turbo"` → `{selected:false, reason:"provider \"deepseek-official\" model \"deepseek-v4-pro\" does not support reasoning effort \"turbo\""}`，面板显示成 `切换失败：<原因>` |
 | **宿主加载了流式中继**（v9） | 插件树正常加载（`ctx.on('agent/assistant-stream', …)` 没有报错），`GET /browser-bridge/health` 里出现 `stream:{frames,ignored,flushes,notifications,dropped,ends,buffered}` 全 0 |
+| `POST {action:'search'}`（v78） | 在整个会话里**字面**查找（不区分大小写、最新在前、上限 30 条并回报 `truncated`）。搜索在宿主做而不是在面板做：面板只持有最新 60 行，让它回答会把真实存在的词报成不存在。实测 600 行夹具里 needle 只出现在第 5 与第 301 行附近，开屏窗口内 `needleWasOnScreen: false`，搜索仍返回 `1/2`；跳到命中后 `2/2` 且命中在屏 |
+| `POST {action:'messages', end}`（v78） | `end` 是**绝对行索引**（窗口终点），返回值带 `total`。从末尾数的 count 不是「还在被写入的对话」里的位置——搜索、跳到命中、模型再追加回复，读者就会向前滑走恰好新到的行数。实测任意 60 行窗口渲染 **2.4ms**，而「把窗口从 60 放大到 6869 行」要 **294.1ms / 43,043 DOM 节点**，所以跳转只换窗口、不放大窗口 |
 
 最后一步在探针上报错 `llm-deepseek: no API key for provider route "deepseek-official"`——
 **这是探针进程拿不到凭据，不是插件缺陷**。已核对 `$DSH_HOME/.credentials.yaml`：里面只有一条

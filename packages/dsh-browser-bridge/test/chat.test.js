@@ -16,12 +16,24 @@ import {
   collapseToolRuns,
   createChat,
   describeEvents,
+  findRows,
+  searchableText,
   textBlocks,
   titleFrom,
   toolFailed,
   toolFailure,
   toolSummary,
 } from '../lib/chat.js'
+
+/**
+ * The host's search cap, mirrored here.
+ *
+ * Not imported, because the module does not export it: the cap is an internal
+ * decision and the tests below are about the *behaviour* at the boundary. If
+ * the cap moves, these tests should have to be read rather than silently
+ * re-scale.
+ */
+const SEARCH_LIMIT = 30
 
 /** A user message as the harness logs it. */
 function userEvent(text, plugin = undefined) {
@@ -483,6 +495,55 @@ test('a transcript that fits is not advertised as having more', async () => {
   assert.equal(page.more, false, 'the panel would offer to load rows that do not exist')
 })
 
+test('a window named by an absolute end does not move when the session grows', async () => {
+  // This is why `end` exists beside `before`. A count from the end is not a
+  // position in a conversation that is still being written to: search, jump to a
+  // match, and then have the model append a reply, and the reader slides forward
+  // by exactly the number of rows that arrived.
+  //
+  // The session has to report as live for this to be a real scenario at all: a
+  // cold session's log is cached, because rows that are not being written cannot
+  // arrive. Growth means a turn in flight.
+  const events = []
+  for (let index = 0; index < 12; index += 1) events.push(userEvent(`line ${index}`))
+  const { chat } = chatWith([item('session-a')], { events, ports: { sessions: { get: () => ({}) } } })
+
+  // Rows 2..5 counted from a twelve-row end.
+  const jumped = await chat.readMessages('session-a', 4, undefined, 6)
+  assert.deepEqual(jumped.messages.map((row) => row.text), ['line 2', 'line 3', 'line 4', 'line 5'])
+  assert.equal(jumped.total, 12)
+
+  // The same window addressed the old way, for comparison.
+  const byCount = await chat.readMessages('session-a', 4, 6)
+  assert.deepEqual(byCount.messages.map((row) => row.text), jumped.messages.map((row) => row.text))
+
+  // Now the conversation grows by three rows. The counted window slides; the
+  // absolute one stays on the rows the reader was sent to.
+  events.push(userEvent('line 12'), userEvent('line 13'), userEvent('line 14'))
+  const afterGrowth = await chat.readMessages('session-a', 4, undefined, 6)
+  assert.deepEqual(afterGrowth.messages.map((row) => row.text), ['line 2', 'line 3', 'line 4', 'line 5'])
+  assert.equal(afterGrowth.total, 15)
+
+  const slid = await chat.readMessages('session-a', 4, 6)
+  assert.deepEqual(
+    slid.messages.map((row) => row.text),
+    ['line 5', 'line 6', 'line 7', 'line 8'],
+    'the counted window is the one that drifts; this is the defect `end` avoids',
+  )
+})
+
+test('an absolute end past the last row is clamped, not empty', async () => {
+  // A queued jump can outlive the rows it named: the reader searches, the
+  // session is compacted or replaced, and the position is now beyond the end.
+  // Returning nothing would show a blank transcript with no way back.
+  const events = [userEvent('one'), userEvent('two')]
+  const { chat } = chatWith([item('session-a')], { events })
+  const past = await chat.readMessages('session-a', 10, undefined, 99)
+  assert.deepEqual(past.messages.map((row) => row.text), ['one', 'two'])
+  assert.equal(past.more, false)
+  assert.equal(past.total, 2)
+})
+
 test('a title falls back from the header to the listing to the transcript', async () => {
   const header = chatWith([item('session-a')], { events: [userEvent('explain the parser')] })
   assert.equal((await header.chat.readMessages('session-a')).title, 'from the header')
@@ -558,7 +619,136 @@ test('a read returns an empty transcript rather than throwing', async () => {
       },
     },
   })
-  assert.deepEqual(await chat.readMessages('session-a'), { title: '', messages: [], more: false })
+  assert.deepEqual(await chat.readMessages('session-a'), { title: '', messages: [], more: false, total: 0 })
+})
+
+// ---------------------------------------------------------------------------
+// Searching a whole conversation
+// ---------------------------------------------------------------------------
+
+test('a search answers from the whole session, not from the window on screen', async () => {
+  // The panel holds 60 rows of a session that may have thousands, so a search
+  // answered from what it holds would report a word as absent from a
+  // conversation that contains it. The host reads the session in full.
+  const events = [userEvent('the first thing'), assistantEvent([{ type: 'text', text: 'a needle early on' }])]
+  for (let index = 0; index < 200; index += 1) {
+    events.push(userEvent(`filler ${index}`))
+  }
+  const { chat } = chatWith([], { events })
+
+  // The window the panel actually holds: the newest 60 rows, which do not
+  // contain the needle at all.
+  const window = await chat.readMessages('session-a', 60)
+  assert.equal(findRows(window.messages, 'needle').length, 0, 'the window must not contain it, or this proves nothing')
+
+  const found = await chat.searchMessages('session-a', 'needle')
+  assert.equal(found.matches.length, 1)
+  assert.equal(found.matches[0].row.text, 'a needle early on')
+  assert.equal(found.total, 202, 'the total is what lets a position become a `before`')
+})
+
+test('a search is literal, so regex punctuation does not throw or over-match', async () => {
+  const events = [
+    userEvent('call filter( on the array'),
+    userEvent('a.b matches only itself'),
+    userEvent('axb is a different string'),
+  ]
+  const { chat } = chatWith([], { events })
+
+  // `filter(` and `a.b` are ordinary things to search for in a transcript of
+  // code. As regexes the first throws (unbalanced paren) and the second matches
+  // `axb`, which is not what the reader typed.
+  const paren = await chat.searchMessages('session-a', 'filter(')
+  assert.equal(paren.matches.length, 1)
+  assert.match(paren.matches[0].row.text, /call filter\(/)
+
+  const dot = await chat.searchMessages('session-a', 'a.b')
+  assert.equal(dot.matches.length, 1, 'a literal dot must not match any character')
+  assert.equal(dot.matches[0].row.text, 'a.b matches only itself')
+})
+
+test('a search is case-insensitive and answers newest first', async () => {
+  const events = [
+    userEvent('Needle at the start'),
+    userEvent('nothing here'),
+    userEvent('a needle near the end'),
+  ]
+  const { chat } = chatWith([], { events })
+  const found = await chat.searchMessages('session-a', 'NEEDLE')
+  assert.equal(found.matches.length, 2)
+  // Newest first: the end of a conversation is where someone scrolling back is
+  // looking, and a list starting at the beginning of a long session is one
+  // nobody reads to the bottom of.
+  assert.equal(found.matches[0].row.text, 'a needle near the end')
+  assert.equal(found.matches[1].row.text, 'Needle at the start')
+  assert.ok(found.matches[0].index > found.matches[1].index)
+})
+
+test('a search finds the reason a tool call failed', async () => {
+  // The reason is on screen but in a different field from `text`, so a search
+  // that only read `text` would fail to find a visible word.
+  const events = [
+    callEvent('c1', 'browser_click', { selector: '#save' }),
+    resultEvent('c1', { isError: true, text: 'the element is not interactable' }),
+  ]
+  const { chat } = chatWith([], { events })
+  const found = await chat.searchMessages('session-a', 'not interactable')
+  assert.equal(found.matches.length, 1)
+  assert.equal(found.matches[0].row.kind, 'tool')
+})
+
+test('a search does not reach ids the reader cannot see', async () => {
+  // `callId` is in the row but never on screen. Searching it would return a row
+  // that does not appear to contain the word the reader typed — a result that
+  // contradicts the query that produced it, which reads as a broken search
+  // rather than as a hidden field.
+  const events = [
+    callEvent('call-9f3a-hidden', 'browser_click', { selector: '#save' }),
+    resultEvent('call-9f3a-hidden', { isError: false, text: 'clicked' }),
+  ]
+  const { chat } = chatWith([], { events })
+  const found = await chat.searchMessages('session-a', 'call-9f3a-hidden')
+  assert.equal(found.matches.length, 0, 'an invisible id must not be searchable')
+
+  // The control: the same row is still reachable by a field it does put on
+  // screen, so this asserts an exclusion rather than a search that returns
+  // nothing. The tool's *name* is the field to use — a successful call's output
+  // is deliberately not on the row (only a failure carries a reason), so
+  // searching the output text would test a second exclusion by accident.
+  const visible = await chat.searchMessages('session-a', 'browser_click')
+  assert.equal(visible.matches.length, 1)
+})
+
+test('a search for nothing finds nothing rather than everything', async () => {
+  const { chat } = chatWith([], { events: [userEvent('something')] })
+  for (const query of ['', '   ', '\t\n']) {
+    const found = await chat.searchMessages('session-a', query)
+    assert.equal(found.matches.length, 0, `a blank query must not match every row: ${JSON.stringify(query)}`)
+  }
+})
+
+test('a search past the cap says so instead of reading as complete', async () => {
+  const events = []
+  for (let index = 0; index < 40; index += 1) events.push(userEvent(`repeated word ${index}`))
+  const { chat } = chatWith([], { events })
+  const found = await chat.searchMessages('session-a', 'repeated')
+  assert.equal(found.matches.length, SEARCH_LIMIT)
+  // A capped list that reads as complete is how someone concludes their
+  // conversation does not contain a word that it does contain.
+  assert.equal(found.truncated, true)
+  assert.equal(found.total, 40, 'the total still reports the real size')
+})
+
+test('a search that reaches exactly the cap is not reported as cut short', async () => {
+  // The boundary is the interesting case: `truncated` is `matches.length >=
+  // SEARCH_MAX`, which cannot tell "there were exactly thirty" from "there were
+  // more". This pins what the panel actually shows for the exact fit.
+  const events = []
+  for (let index = 0; index < SEARCH_LIMIT; index += 1) events.push(userEvent(`exact word ${index}`))
+  const { chat } = chatWith([], { events })
+  const found = await chat.searchMessages('session-a', 'exact')
+  assert.equal(found.matches.length, SEARCH_LIMIT)
+  assert.equal(found.truncated, true)
 })
 
 // ---------------------------------------------------------------------------

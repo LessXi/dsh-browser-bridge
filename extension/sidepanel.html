@@ -74,6 +74,11 @@
         --tertiary: color-mix(in oklab, CanvasText 56%, transparent);
         --hover: color-mix(in oklab, CanvasText 7%, transparent);
         --lift: color-mix(in oklab, CanvasText 11%, transparent);
+        /* The row a search sent the reader to. Mixed from `CanvasText` rather
+           than from `--accent`, for the same reason as the status colours below:
+           one declaration that tints on light and on dark, and that High Contrast
+           can still make sense of, since it repaints the mix's own input. */
+        --hit: color-mix(in oklab, CanvasText 12%, transparent);
         --accent: #4262f0;
         --accent-soft: color-mix(in oklab, var(--accent) 15%, transparent);
         /* `--accent` is calibrated as a *fill* — white text sits on it. Used as
@@ -202,6 +207,73 @@
       }
       .icon:hover { background: var(--hover); color: CanvasText; }
       .icon:disabled { opacity: .4; }
+
+      /* ---- finding a word in the conversation ---- */
+      #find {
+        flex: none;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        padding: 6px 8px;
+        border-bottom: 1px solid var(--line-soft);
+      }
+      #find[hidden] { display: none; }
+      #find-input {
+        flex: 1;
+        min-width: 0;
+        height: 26px;
+        padding: 0 8px;
+        font: inherit;
+        font-size: var(--text-sm);
+        color: CanvasText;
+        background: Field;
+        border: 1px solid var(--line-soft);
+        border-radius: var(--radius-sm);
+      }
+      /* The focus ring is a border, not a shadow: Windows High Contrast discards
+         `box-shadow`, and the whole panel's focus treatment is drawn that way. */
+      #find-input:focus-visible { outline: 2px solid CanvasText; outline-offset: -1px; }
+      #find-count {
+        flex: none;
+        min-width: 42px;
+        text-align: center;
+        font-size: var(--text-xs);
+        color: var(--muted);
+        font-variant-numeric: tabular-nums;
+      }
+      /* The row the reader was sent to. A background alone would be the whole
+         signal, and Windows High Contrast discards backgrounds — so the outline
+         carries it and the tint is the ordinary-mode nicety.
+
+         The outline is drawn on the *message*, not on the row. A row is a
+         full-width flex container, and a user message is an end-aligned bubble
+         inside it, so outlining the row boxed the empty space beside the
+         text: measured on the "zebra" hit, a 360px outline around 248px of
+         ink, 100px of it blank on the left of the message. The signal has to
+         be the size of the thing it points at.
+
+         Matched by `:is()` over the message elements rather than by `.row`
+         alone, because a reasoning row is not a `.row` — it is `.reasoning` —
+         so a hit on one used to draw no outline at all. Selecting the message
+         inside each kind of row is what makes one rule cover every kind, and a
+         sixth kind will only need adding to this list, not a second rule. */
+      #transcript .row.hit:has(> .bubble) > .bubble,
+      #transcript .row.hit > .answer,
+      #transcript .row.hit > .failure,
+      #transcript .reasoning.hit > .reasoning-toggle {
+        background: var(--hit);
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+        border-radius: var(--radius-sm);
+      }
+      /* Rows that hold no message of their own — a context chip, a tool line —
+         are the whole row already, so the row box is the right box. */
+      #transcript .row.hit:not(:has(> .bubble)):not(:has(> .answer)):not(:has(> .failure)) {
+        background: var(--hit);
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+        border-radius: var(--radius-sm);
+      }
 
       /* ---- the stage: one scroller visible at a time ---- */
       #stage { flex: 1; min-height: 0; position: relative; display: flex; }
@@ -1104,8 +1176,28 @@
         <span id="title-text"></span>
         <span class="caret" aria-hidden="true">⌄</span>
       </button>
+      <button id="find-open" class="icon" type="button"></button>
       <button id="new" class="icon" type="button"></button>
     </header>
+
+    <!--
+      Finding a word in the conversation. A long session is the normal case —
+      one of the author's own is 6969 rows — and the panel showed the newest 60
+      of them, so anything said earlier could only be reached by paging back
+      through more than a hundred windows. This searches the whole session on the
+      host, where the rows actually are.
+
+      The count is a live region because it is the whole answer to what the
+      reader asked: "3 of 12" is how they know whether to keep pressing next.
+      Without it a screen reader user gets a field that appears to do nothing.
+    -->
+    <div id="find" hidden>
+      <input id="find-input" type="text" autocomplete="off" spellcheck="false" />
+      <span id="find-count" role="status"></span>
+      <button id="find-prev" class="icon" type="button"></button>
+      <button id="find-next" class="icon" type="button"></button>
+      <button id="find-close" class="icon" type="button"></button>
+    </div>
 
     <div id="stage">
       <main id="transcript" class="scroll"></main>

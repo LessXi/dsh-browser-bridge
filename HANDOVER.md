@@ -1,9 +1,9 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v77 已交付并入库。** 下一节就是最新的一轮改动；下面标 v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v77 那一段为止即可。
+> **当前状态：v78 已交付并入库。** 下一节就是最新的一轮改动；下面标 v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v78 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（569 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（589 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 > （真浏览器 e2e 那 4 条需要机器上有 Playwright Chromium 或 Chrome for Testing；
@@ -12,8 +12,8 @@
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
 >
-> **已入库**：v3→v77 的全部改动已提交并推送到 `origin/main`。工作区干净。
-> （v75 是 `e0ef3ee`，v74 是 `bb5af8d`，v73 是 `dae44ed`，v72 是 `82497f9`。）
+> **已入库**：v3→v78 的全部改动已提交并推送到 `origin/main`。工作区干净。
+> （v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`，v73 是 `dae44ed`。）
 
 > ## ⚠️ 两条并行版本线（2026-09-23 处理，后续轮次务必先读这段）
 >
@@ -179,6 +179,113 @@
 >   所以**真实流式态本轮没有视觉证据**。
 > - `earlier.png` 与 `hostDown.png` **sha256 相同**：那张图画的是阻塞屏，
 >   「更早的内容」胶囊根本没出现在交付的图里。成因未定位。
+
+> ### v78：会话搜索（本轮新增能力）+ 命中高亮的两个缺陷
+>
+> #### 一、新能力：在整个会话里搜索，而不是在屏幕上那 60 行里搜
+>
+> 作者自己的一个会话有 **6969 行**，而面板只持有最新 60 行（`PAGE_ROWS = 60`），
+> 所以在此之前的「找一句话」只能靠一页页往前翻——**116 次点击**。
+>
+> **搜索在宿主做，不在面板做。** 面板只持有 60 行，让它回答「我的对话里有没有
+> 这个词」会把真实存在的词报成不存在。新增 `chat.searchMessages(sessionId, query)`
+> 与纯函数 `findRows(rows, query, maximum = 30)`（导出自
+> `packages/dsh-browser-bridge/lib/chat.js`）：
+>
+> - **字面匹配，刻意不用正则**：转写本里满是 `.`、`(`、`[`、`\`，所以 `filter(`
+>   会抛、`a.b` 会误配 `axb`。读者搜的是自己敲进去的那几个字符。
+> - **从后往前遍历**，最新命中在前：6969 行里从第 1 行开始列的结果没人读到底。
+> - `searchableText(row)` 拼接 `text`/`name`/`summary`/`failure`，**刻意不含
+>   `callId`**——那会让读者搜到一个在屏幕上不存在的字符串，结果行看起来不含他搜的词。
+>
+> #### 二、窗口要能命名一个**绝对位置**，不能只数「末尾往前几行」
+>
+> `readMessages` 的签名扩为 `(sessionId, limit, before, end)`，`end` 是**绝对行索引**
+> （窗口终点），返回值新增 `total`。理由：从末尾数的 count 不是「还在被写入的对话」
+> 里的位置——搜索、跳到命中、模型再追加回复，读者就会向前滑走恰好新到的行数。
+>
+> 面板新增 `anchorEnd`（null = 最新）。**跳到命中**只是换一个 60 行窗口；实测任意
+> 60 行窗口的渲染成本都是 **2.4ms**，而「把窗口从 60 放大到命中位置」要
+> **294.1ms / 43,043 DOM 节点**（6869 行时）——所以否决了放窗口那条路。
+>
+> #### 三、三个真实缺陷（都由真实浏览器探针发现，不是推理出来的）
+>
+> **① 占位符泄漏。** `locales.js` 的 `translator` 对**未匹配的 `{name}` 原样保留**。
+> `renderFind` 原先只在截断时传 `more`，于是普通搜索把字面量 `1/2{more}` 显示给读者。
+> 修法是**永远传 `more`**（未截断时传 `''`）。对应测试断言的是**完整字符串**而不是
+> 「不含花括号」——因为另一种写错的方式（传 `undefined`）会渲染出 `1/1undefined`，
+> 它没有花括号，能大摇大摆通过「只查花括号」的断言。
+>
+> **② 跳到命中后「回到底部」失效（严重）。** `anchorEnd` 一旦设定就一直在请求里带着，
+> `scrollTop = scrollHeight` 只是把**旧窗口**拉到底。实测：`landedAtBottom: true` 但
+> `reachedNewerRows: false`，最后一行停在「第 11 个问题」（共 600），**最新内容再也回不来**。
+> 修法：点击时若 `anchorEnd !== null`，清空并**重新读取**，而不是滚滚动条。
+>
+> **③ parked 时发送，看不见自己发的消息。** 同一机制：回复落在窗口外。修法是
+> `wasParked` 为真时**先清锚点再重读**——因为下面的回声是
+> `drawTranscript([...rows, { user }])`，而 `rows` 还是被 park 的窗口，只清锚点会让
+> 消息被画进 600 行里的第 22 行之后。
+>
+> #### 四、命中高亮的两个缺陷（本轮第二轮）
+>
+> **① 描边画在整宽的 `.row` 上，把空白也框了进去。** `.row` 是 `display: flex` 的
+> 整宽容器，`.bubble` 才是 `width: fit-content` 的气泡。真实浏览器逐字符量（本仓库
+> 第 9 轮的教训：`getBoundingClientRect` 给的是行盒，会把空白算进去）：
+>
+> | 读数 | 修复前 | 修复后 |
+> | --- | --- | --- |
+> | 描边落在哪个元素 | `.row` | **`.bubble`** |
+> | 描边宽度 | 360px | **272px** |
+> | 左侧被框住的空白 | **100px** | 12px（气泡自身的内边距） |
+> | `marksEmptySpace` | `true` | **`false`** |
+>
+> **② 推理行根本没有高亮。** 推理行的 `className` 是 `'reasoning'`，**不是 `'row'`**
+> （`renderRow`，`extension/sidepanel.js`），所以 `#transcript .row.hit` 永远匹配不到它。
+> 它躲过所有检查的原因是**夹具里只有 `user`/`assistant` 两种行**——现已往
+> `.tmp-run/preview.mjs` 的 `searchableMessages()` 里加了一条带 needle 的推理行。
+>
+> 修法：描边按**消息元素**选择，而不是按行容器——
+> `#transcript .row.hit:has(> .bubble) > .bubble`、`… .row.hit > .answer`、
+> `… .row.hit > .failure`、`… .reasoning.hit > .reasoning-toggle`；无消息的行
+> （上下文 chip、工具行）保留整行描边，因为它本身就是整行。新加一种行只需往这个
+> 列表里添一项，不需要第二条规则。
+>
+> #### 五、测试基建的两个真实缺口（不修就写不出上面这些测试）
+>
+> 1. **`hit` 类此前没有任何测试**——把整条规则删掉，套件依然是绿的。现在
+>    `panel-geometry.test.js` 有两条：一条要求四种承载消息的元素各自被描边选中，
+>    一条要求推理行能被选中。
+> 2. **拿到声明不等于它就是判据。** 调试这条缺陷时我写过一个防呆断言
+>    `assert.equal(registry.get('find').hidden, false)`，它**永远成立**——因为 DOM shim
+>    不解析标记里的 `hidden` 属性（它按 id 现场造元素），所以 `#find.hidden` 无论开没开
+>    都读同一个值。守卫因此跳过了点击，而测试在「把实现整段删掉」的变异下**依然是绿的**。
+>    修法是让面板自己声明状态：`renderFind` 现在写
+>    `findOpenButton.setAttribute('aria-expanded', String(findOpen))`（与 `#model`、
+>    `#title` 一致），测试读它。
+>
+> #### 六、判据错误（本仓库第五、六次同类）
+>
+> - **变异脚本把「测试名出现在输出里」当成「那条测试红了」。** 通过的行 `✔ <name>`
+>   里同样有这个名字，于是 `includes(name)` 恒真，**15 个变异里有 8 个假报命中**。
+>   必须认准失败行 `✖ <name>`。
+> - **探针量的元素和修复后的元素不是同一个。** 第一版 `probe-hit-bounds.js` 量
+>   `.row.hit` 的盒子，而修复把描边移到了 `.bubble` 上——于是修复看起来毫无效果
+>   （读数一模一样）。改成**找出描边实际画在哪个元素上**（按计算样式找）再量它。
+>
+> #### 七、验证读数（已绿）
+>
+> - `npm test` → **589 passed, 0 failed, 0 skipped**（569 → 589）
+> - `npm run check:extension` → exit 0
+> - 变异一（搜索实现，`.tmp-run/mutate-search.mjs`）：**15/15 命中**，`restoredExactly: true`
+> - 变异二（命中高亮，`.tmp-run/mutate-hit-outline.mjs`）：**5/5 命中**，`restoredExactly: true`
+> - 真实浏览器：`zebra` → `1/2` → 跳转 → `2/2`，命中在屏且含 needle，
+>   初始窗口内**不含** needle（`needleWasOnScreen: false`，证明搜的不是屏幕上的 60 行）
+> - 高对比度与浅色：`outlinedClass: reasoning-toggle`、`marksEmptySpace: false`
+> - 两种行都有信号：`bothKindsVisible: true`（`reasoning` 由 `.reasoning-toggle` 承载，
+>   `user` 由 `.bubble` 承载）
+>
+> 截图：`.tmp-run/r14-rh-after.png`（命中居中、描边贴合气泡）、
+> `r14-find-after.png`、`r14-fc-after.png`、`r14-light-after.png`。
 
 > ### v77：推理等级的内部 id 泄漏到触发器上，而且每次打开面板都泄漏一次（本轮）
 >

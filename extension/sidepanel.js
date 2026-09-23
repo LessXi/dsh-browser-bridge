@@ -68,10 +68,29 @@ const POLL_MS = 8000
  */
 const PAGE_ROWS = 60
 
+/**
+ * Rows drawn below a search match, so it can be centred rather than pinned.
+ *
+ * A window that ends on the match puts it in the bottom row of the screen —
+ * flush against the composer, with nothing after it. Photographed, that reads as
+ * the end of the conversation rather than as a place inside it, and the reader
+ * loses the answer that followed the question they searched for. These rows cost
+ * nothing to fetch (they are in the same window) and give the browser something
+ * to centre the match against.
+ */
+const MATCH_CONTEXT_ROWS = 12
+
 const backButton = document.getElementById('back')
 const titleButton = document.getElementById('title')
 const titleText = document.getElementById('title-text')
 const newButton = document.getElementById('new')
+const findOpenButton = document.getElementById('find-open')
+const findBar = document.getElementById('find')
+const findInput = document.getElementById('find-input')
+const findCount = document.getElementById('find-count')
+const findPrev = document.getElementById('find-prev')
+const findNext = document.getElementById('find-next')
+const findClose = document.getElementById('find-close')
 const transcript = document.getElementById('transcript')
 const history = document.getElementById('history')
 const toBottom = document.getElementById('to-bottom')
@@ -115,6 +134,28 @@ let retrying = false
 let hasEarlier = false
 /** How many rows of the current conversation the panel is showing. */
 let depth = PAGE_ROWS
+/**
+ * The absolute row index the window ends at, or null while it ends at the newest row.
+ *
+ * A count back from the end is the right way to name "the newest 60 rows", and
+ * the wrong way to name a position in a conversation that is still being written
+ * to: search, jump to a match, and then let the model append a reply, and the
+ * reader slides forward by exactly the rows that arrived. So a jump names its
+ * window by absolute index and keeps naming it that way until the reader returns
+ * to the end.
+ *
+ * @type {number | null}
+ */
+let anchorEnd = null
+/**
+ * How many rows the session has in all, as the host last reported it.
+ *
+ * The panel's window is a slice, and without the session's own size there is no
+ * way to tell "the bottom of the window" from "the bottom of the conversation".
+ * Zero until a read answers, which reads as "nothing below" — the safe default,
+ * because it never promises rows that may not exist.
+ */
+let windowTotal = 0
 /** Whether a "load earlier" request is in flight. */
 let loadingEarlier = false
 /**
@@ -127,6 +168,26 @@ let loadingEarlier = false
 let grewEarlier = false
 /** Whether the host answered, but with a shape this panel does not understand. */
 let hostStale = false
+/**
+ * The open search field's text, or an empty string when search is closed.
+ *
+ * Held as state rather than read off the input because the poll re-renders, and
+ * a search that only existed in the DOM would be cleared by a repaint the reader
+ * never asked for.
+ */
+let searchQuery = ''
+/** The matches the host returned for `searchQuery`, newest first. */
+let searchHits = []
+/** How many rows the searched session has in all, for the position line. */
+let searchTotal = 0
+/** Whether the host's cap cut the match list short. */
+let searchTruncated = false
+/** Whether a search request is in flight. */
+let searching = false
+/** Whether the find bar is open. */
+let findOpen = false
+/** Which match the reader is on, as an index into `searchHits`. */
+let searchPosition = 0
 /** Whether the shown selection should travel with the next send. */
 let selectionAttached = false
 /** Port of the running harness, mirrored from the options page. */
@@ -411,6 +472,17 @@ function paintStaticCopy() {
   newButton.textContent = '＋'
   newButton.title = t('action.new.title')
   newButton.setAttribute('aria-label', t('action.new'))
+  findOpenButton.textContent = '⌕'
+  findOpenButton.title = t('action.find.title')
+  findOpenButton.setAttribute('aria-label', t('action.find'))
+  findPrev.textContent = '↑'
+  findPrev.setAttribute('aria-label', t('action.find.prev'))
+  findNext.textContent = '↓'
+  findNext.setAttribute('aria-label', t('action.find.next'))
+  findClose.textContent = '✕'
+  findClose.setAttribute('aria-label', t('action.find.close'))
+  findInput.setAttribute('aria-label', t('action.find'))
+  findInput.placeholder = t('find.placeholder')
   toBottom.textContent = '↓'
   toBottom.setAttribute('aria-label', t('action.toBottom'))
   input.placeholder = t('composer.placeholder')
@@ -1424,7 +1496,15 @@ function atBottom() {
 
 /** Show or hide the way back down. */
 function updateToBottom() {
-  toBottom.hidden = view !== 'chat' || stickToBottom || transcript.scrollHeight <= transcript.clientHeight
+  // A search jump parks the window inside the conversation. The scrollbar can sit
+  // at the bottom of that window while the conversation continues far below, so
+  // "is the scrollbar at the bottom" is the wrong question here — measured, a
+  // reader who searched and then scrolled down had the only control that leaves
+  // the window hide itself, and the newest rows were unreachable.
+  const parked = anchorEnd !== null && anchorEnd < windowTotal
+  toBottom.hidden = view !== 'chat'
+    || (stickToBottom && !parked)
+    || (!parked && transcript.scrollHeight <= transcript.clientHeight)
 }
 
 /**
@@ -1665,6 +1745,151 @@ function reconcileRows(next) {
       ?.node.querySelector(`.${carried.control}`)
       ?.focus()
   }
+}
+
+/**
+ * Search the whole conversation, or clear the results.
+ *
+ * The query goes to the host because the rows are not here: this panel holds a
+ * window (60 rows by default) of a conversation that may have thousands, so
+ * answering from what is on screen would report a word as absent from the
+ * reader's own conversation — the most misleading thing a search box can do.
+ *
+ * @returns {Promise<void>} Resolves once the results have been drawn.
+ */
+async function runSearch() {
+  const query = searchQuery.trim()
+  // A blank query clears the results rather than searching for nothing: an empty
+  // needle matches every row, and a count of "600 of 600" is not an answer to
+  // anything.
+  if (query.length === 0 || currentSessionId.length === 0) {
+    searchHits = []
+    searchTotal = 0
+    searchTruncated = false
+    searchPosition = 0
+    searching = false
+    renderFind()
+    return
+  }
+  searching = true
+  // The previous query's matches are dropped before the request goes out, not
+  // when the answer lands. Left in place they are the count shown for a query
+  // that has not been answered yet, so "zebra 1/1" stands while the reader is
+  // typing "aardvark" — and if the new query matches nothing, the old count is
+  // the one that stays.
+  searchHits = []
+  searchTotal = 0
+  searchTruncated = false
+  searchPosition = 0
+  renderFind()
+  try {
+    const { payload } = await bridge('/browser-bridge/chat', {
+      method: 'POST',
+      body: { action: 'search', sessionId: currentSessionId, query },
+    })
+    // A reply that arrives after the reader has typed on is about a query they
+    // have already left; adopting it would flash stale results under the caret.
+    if (searchQuery.trim() !== query) return
+    searchHits = Array.isArray(payload?.matches) ? payload.matches : []
+    searchTotal = typeof payload?.total === 'number' ? payload.total : 0
+    searchTruncated = payload?.truncated === true
+  } finally {
+    searching = false
+    renderFind()
+  }
+}
+
+/**
+ * Show one match, by moving the window to it.
+ *
+ * The window is named by an absolute row index rather than by a count from the
+ * end, so the model appending a reply while the reader is reading a match from
+ * ten turns ago does not carry them off it.
+ *
+ * @param {number} position - Index into `searchHits`, newest match first.
+ * @returns {Promise<void>} Resolves once the match is on screen.
+ */
+async function goToMatch(position) {
+  const hit = searchHits[position]
+  if (hit === undefined) return
+  const index = typeof hit.index === 'number' ? hit.index : 0
+  // The window ends a little *past* the match rather than on it. Ending on the
+  // match puts it in the last row of the screen, pressed against the composer
+  // with nothing after it — photographed, and it reads as the end of the
+  // conversation rather than as a place inside it. These rows below are what let
+  // the browser centre the match when it scrolls to it.
+  anchorEnd = index + 1 + MATCH_CONTEXT_ROWS
+  depth = Math.max(PAGE_ROWS, depth)
+  // Not `stickToBottom`: the reader asked for this row, not for the newest one.
+  stickToBottom = false
+  grewEarlier = false
+  await refreshTranscript()
+  drawFindFocus(index)
+}
+
+/**
+ * Put the reader's eye on the matched row, without moving their keyboard focus.
+ *
+ * Focus stays in the search field: the reader is stepping through matches with
+ * Enter, and moving focus onto the row would make the next Enter do nothing.
+ *
+ * @param {number} index - The row's absolute index.
+ * @returns {void}
+ */
+function drawFindFocus(index) {
+  for (const entry of drawnRows) entry.node.classList.remove('hit')
+  // The rows on screen are a window ending at `anchorEnd`, so the match is
+  // found by the name the window itself is built from rather than by counting.
+  const key = findHitKey(index)
+  if (key === null) return
+  const entry = drawnRows.find((candidate) => candidate.key === key)
+  if (entry === undefined) return
+  entry.node.classList.add('hit')
+  entry.node.scrollIntoView({ block: 'center' })
+}
+
+/**
+ * The row key of an absolute row index, or null when it is off screen.
+ *
+ * @param {number} index - The absolute row index.
+ * @returns {string | null} The key, or null.
+ */
+function findHitKey(index) {
+  // `rows` is the drawn window and `anchorEnd` is where it ends, so the offset
+  // into the window is arithmetic on the two — no second index to keep in sync.
+  const end = anchorEnd ?? rows.length
+  const offset = index - (end - rows.length)
+  const row = rows[offset]
+  if (row === undefined) return null
+  return rowKey(row)
+}
+
+/** Draw the find bar. */
+function renderFind() {
+  findBar.hidden = !findOpen
+  // The button is a toggle, and a toggle has to say which way it is set. This is
+  // the same declaration `#model` and `#title` make for their own layers, and it
+  // is also the only place the open state is stated in terms a test can read:
+  // the `hidden` attribute in the markup is not carried by the DOM shim, so a
+  // test asking "is the bar open" would otherwise read the same value whether it
+  // was or not — and a guard built on that asks nothing.
+  findOpenButton.setAttribute('aria-expanded', String(findOpen))
+  if (!findOpen) return
+  if (findInput.value !== searchQuery) findInput.value = searchQuery
+  const count = searchHits.length
+  findCount.textContent = count === 0
+    ? (searching ? t('find.searching') : t('find.none'))
+    : t('find.count', {
+      position: String(searchPosition + 1),
+      count: String(count),
+      // Always supplied, even when empty: the translator leaves an unmatched
+      // `{name}` in the string as-is, so a placeholder passed only in the
+      // truncated case renders the literal text `1/2{more}` on every ordinary
+      // search. Measured in a real browser before this line existed.
+      more: searchTruncated ? t('find.more') : '',
+    })
+  findPrev.disabled = count === 0
+  findNext.disabled = count === 0
 }
 
 /**
@@ -2081,6 +2306,11 @@ async function refreshTranscript() {
       // de-duplicate: the window slides, and the reader's depth is the only
       // state that grows.
       limit: depth,
+      // Except after a search jump, where the window is named by an absolute row
+      // index so that rows arriving underneath cannot carry the reader off the
+      // match they asked for. `null` is "the newest rows", which is the ordinary
+      // case and the one every other caller wants.
+      ...(anchorEnd === null ? {} : { end: anchorEnd }),
     },
   })
   if (status === 0) {
@@ -2096,6 +2326,7 @@ async function refreshTranscript() {
     renderTitle()
   }
   hasEarlier = payload?.more === true
+  if (typeof payload?.total === 'number') windowTotal = payload.total
   drawTranscript(messages)
   renderEarlier()
 }
@@ -2469,6 +2700,15 @@ function selectSession(sessionId) {
     hasEarlier = false
     grewEarlier = false
     loadingEarlier = false
+    // A match belongs to the conversation it was found in. Kept across a switch,
+    // the count would describe rows in a session that is no longer on screen, and
+    // stepping through them would jump the new conversation to an index that
+    // means something else there.
+    anchorEnd = null
+    searchHits = []
+    searchTotal = 0
+    searchTruncated = false
+    searchPosition = 0
     restoreDraft()
   }
   const session = currentSession()
@@ -2676,6 +2916,19 @@ async function sendMessage() {
   sending = true
   drawSend()
   stickToBottom = true
+  // Sending is the reader saying they are done looking at the past. While a
+  // search has the window parked, the reply — and their own message — arrives
+  // outside it, so leaving the anchor set means asking a question and never
+  // seeing the answer. Measured: after a jump, a send left the last row at
+  // 「第 11 个问题」 of 600.
+  //
+  // Clearing the anchor is not enough on its own. The echo below appends to
+  // `rows`, and `rows` is still the parked window — so the message would be
+  // drawn after row 22 of 600 while the reply lands at the end. The read comes
+  // first, which is what makes `rows` the newest window again.
+  const wasParked = anchorEnd !== null
+  anchorEnd = null
+  if (wasParked) await refreshTranscript()
   const result = await bridge('/browser-bridge/chat', {
     method: 'POST',
     body: { action: 'send', sessionId: currentSessionId, text, attachments: pendingAttachments() },
@@ -2829,6 +3082,83 @@ backButton.addEventListener('click', () => {
 
 newButton.addEventListener('click', () => {
   newSession().catch((error) => say(t('error.generic', { reason: error.message })))
+})
+
+/**
+ * Open or close the find bar.
+ *
+ * Closing clears the query rather than only hiding the field: the next `⌕` is a
+ * fresh search, and a field that reopens holding the previous word makes the
+ * panel look like it is still filtering the transcript in the background.
+ *
+ * @param {boolean} next - Whether the bar should be open.
+ * @returns {void}
+ */
+function setFind(next) {
+  findOpen = next
+  if (!next) {
+    searchQuery = ''
+    searchHits = []
+    searchTotal = 0
+    searchTruncated = false
+    searchPosition = 0
+    findInput.value = ''
+  }
+  renderFind()
+  if (next) findInput.focus()
+  else if (document.activeElement === findInput) findOpenButton.focus()
+}
+
+findOpenButton.addEventListener('click', () => {
+  setFind(!findOpen)
+})
+
+findClose.addEventListener('click', () => {
+  setFind(false)
+})
+
+findInput.addEventListener('input', () => {
+  searchQuery = findInput.value
+  // Back to the newest match: the reader has asked a new question, and holding
+  // the old position would open the results at a match they did not search for.
+  searchPosition = 0
+  runSearch().catch((error) => say(t('error.generic', { reason: error.message })))
+})
+
+/**
+ * Step to another match, wrapping at both ends.
+ *
+ * @param {number} step - `1` for the next match, `-1` for the previous.
+ * @returns {void}
+ */
+function stepMatch(step) {
+  if (searchHits.length === 0) return
+  searchPosition = (searchPosition + step + searchHits.length) % searchHits.length
+  renderFind()
+  goToMatch(searchPosition).catch((error) => say(t('error.generic', { reason: error.message })))
+}
+
+findNext.addEventListener('click', () => {
+  stepMatch(1)
+})
+
+findPrev.addEventListener('click', () => {
+  stepMatch(-1)
+})
+
+findInput.addEventListener('keydown', (event) => {
+  // Enter is how a reader steps through matches without leaving the field: the
+  // caret is where they are typing, and reaching for a button would cost them
+  // the position in their query. Shift+Enter goes back.
+  if (event.key === 'Enter') {
+    event.preventDefault()
+    stepMatch(event.shiftKey ? -1 : 1)
+    return
+  }
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    setFind(false)
+  }
 })
 
 modelButton.addEventListener('click', (event) => {
@@ -3006,6 +3336,17 @@ transcript.addEventListener('click', (event) => {
 
 toBottom.addEventListener('click', () => {
   stickToBottom = true
+  // Scrolling is not enough once a search has parked the window: the newest rows
+  // are not in it, so reaching the bottom of the scrollbar lands on the last row
+  // of the window and the conversation appears to end there. Measured before
+  // this: after a jump, "jump to latest" left the last row at 「第 11 个问题」 of
+  // 600 and the real newest content was unreachable. Clearing the anchor is what
+  // returns the panel to the newest rows; the scroll then follows the redraw.
+  if (anchorEnd !== null) {
+    anchorEnd = null
+    refreshTranscript().catch((error) => say(t('error.generic', { reason: error.message })))
+    return
+  }
   transcript.scrollTop = transcript.scrollHeight
   updateToBottom()
 })
