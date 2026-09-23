@@ -1,9 +1,9 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v73 已交付并入库。** 下一节就是最新的一轮改动；下面标 v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v73 那一段为止即可。
+> **当前状态：v74 已交付并入库。** 下一节就是最新的一轮改动；下面标 v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v74 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（557 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（559 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 > （真浏览器 e2e 那 4 条需要机器上有 Playwright Chromium 或 Chrome for Testing；
@@ -12,8 +12,8 @@
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
 >
-> **已入库**：HEAD = `dae44ed`（2026-09-23），v3→v73 的全部改动已提交并推送到
-> `origin/main`。工作区干净。（此前 `82497f9` 是 v72，`2ea6baf` 是 v2 的最后一个提交。）
+> **已入库**：HEAD = `92be533`（2026-09-23），v3→v74 的全部改动已提交并推送到
+> `origin/main`。工作区干净。（此前 `dae44ed` 是 v73，`82497f9` 是 v72。）
 
 > ## ⚠️ 两条并行版本线（2026-09-23 处理，后续轮次务必先读这段）
 >
@@ -179,6 +179,75 @@
 >   所以**真实流式态本轮没有视觉证据**。
 > - `earlier.png` 与 `hostDown.png` **sha256 相同**：那张图画的是阻塞屏，
 >   「更早的内容」胶囊根本没出现在交付的图里。成因未定位。
+
+> ### v74：浮层压住正文——把「胶囊」这个实例，改成「浮层」这一类（本轮）
+>
+> **缺陷**：`#earlier`（「更早的内容」胶囊）是 `position: absolute; top: 8px`，相对
+> `#stage` 固定在视口顶部；而给它让位的规则写的是
+> `#transcript { padding-top: calc(...) }`。**`padding-top` 属于可滚动内容，一滚就
+> 移出视口**，而胶囊固定在原地不动，于是它压住「正好滚过顶部的那一行」。
+>
+> **A/B 实测（同一把尺子，逐字符，`.tmp-run/probe-char-occlusion.js`）**：
+>
+> | 读数 | 修复前 `padding-top` | 修复后 `margin-top` |
+> |---|---|---|
+> | `#earlier` 最坏被盖字数 | **24 个字** | **0** |
+> | 盖住的文字 | `"n/是MV3扩展，wser-bridge/是宿主"` | —— |
+> | `#to-bottom` 最坏被盖字数 | **7 个字** | **0** |
+> | 盖住的文字 | `"：Type，来"` | —— |
+> | 行盒级读数（**夸大，见下**） | 3093px² | 0 |
+> | `clientHeight` | 559 | **519**（视口真的短了 40px） |
+> | `scrollTop: 0` 处遮挡 | 0 | 0 |
+>
+> 注意那一行「行盒级读数」：3093px² 是**错的尺子**量出来的（见下面「测量本身
+> 错了三次」），保留在这里是为了说明它夸张了多少——真实被盖住的是 24 个字。
+>
+> **为什么活了这么久（已查清）**：`panel-geometry.test.js` 里那条断言把**缺陷本身**
+> 钉住了——它要求让位必须是 `padding-top`，于是「通过旧修复、拒绕正确修复」，
+> 正确修复反而成了回归。**把缺陷写进断言的测试比没有测试更糟。**
+>
+> **修法**：改成 `margin-top`。它缩短 `#transcript` 自己的盒子（`#stage` 是 flex row，
+> 该元素在交叉轴被 stretch），留出的空条**永远不属于内容**，任何滚动位置都动不了它。
+>
+> **同一类缺陷的第二个实例**：`#to-bottom`（「回到底部」按钮）是**同一个形状**——
+> 绝对定位的浮层画在可滚动容器之上，两者是兄弟。它一直在盖约 7 个字。上一轮把它
+> 当成孤立的排版问题修，所以漏了它。本轮加了 `#stage:has(#to-bottom:not([hidden])) #transcript { margin-bottom: ... }`。
+>
+> **怎么发现漏了第二个的**：换掉判据。原来只测 `#earlier` 一个元素；本轮改成
+> `probe-stage-overlays.js`——**遍历 `#stage` 的全部绝对定位子元素**（判据是定位方式，
+> 不是元素 id），新加的浮层自动进入测量范围。
+>
+> **测量本身错了三次，每次都夸大了遮挡**（这三个都值得记住）：
+> 1. 行的 `getBoundingClientRect`——行盒是**整行宽**的，右对齐的用户消息左半边全空。
+> 2. `Range.getClientRects()`——**返回行盒，不是字形盒**。`<pre>` 代码块里浮层压在
+>    「json」与「Copy」之间的空白上，也会被算成压住 686px² 的文字。
+> 3. `elementFromPoint` 命中测试——命中的同样是整行包装元素。
+>
+> 只有**逐字符**（对每个字符单独 `Range.getBoundingClientRect()`）才回答得了那个唯一
+> 要紧的问题：**有没有字被挡住**。前三次都是一次误报，而且第 2 次还让我短暂地
+> 相信「底部不需要修」。
+>
+> **反馈回路检查**：`#to-bottom` 的可见性读 `clientHeight`（`updateToBottom` 与
+> `atBottom` 都读），而 `margin-bottom` 会改 `clientHeight`，所以「按钮出现 → 视口变矮
+> → 判定变化」是一条闭合回路。实测**不发散**：`flickers: false`、
+> `clickLandedAtBottom: true`、`clickHidTheButton: true`。视口高度在 519 ↔ 473 之间
+> 变化（`.tmp-run/probe-bottom-viewport-swing.js`），这是让位的成本，不是抖动。
+>
+> **测试**：`panel-geometry.test.js` 原来那条改为断言 `margin-top`；新增
+> `the pill reservation is outside the scrollable content`（断言 `padding-top` 为
+> `null`，写成「不是 padding」而非「是 margin」，保留重设计空间）；新增
+> `every floating overlay over the transcript reserves its own room`——**从标记里
+> 枚举** `#stage` 的子元素，判据是定位方式而非 id，所以以后新加的浮层必须一并回答
+> 这个问题。两个结构性例外都写明了理由：`#blocked` 是 `inset: 0` 的不透明整屏替换
+> （不是压在字上的小圆片）；`#history` 与浮层从不同屏（浮层都在 chat 视图，`#history`
+> 只在历史视图可见）。
+>
+> **变异**（两个真实坏法全部命中）：删掉底部保留 → 该条变红；底部保留改用
+> `padding-bottom` → 变红并报出 `#to-bottom reserves its room inside #transcript's
+> content, where scrolling removes it`。
+>
+> **验证读数**：`npm test` **559 passed, 0 failed, 0 skipped**；
+> `npm run check:extension` exit 0。
 
 > ### v72：重绘一次，就把读者正在做的事丢掉（历史）
 >

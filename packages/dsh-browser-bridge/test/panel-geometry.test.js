@@ -13,9 +13,19 @@
  *      because the card's 12px padding was the whole inset on one line while the
  *      toolbar's first control added 8px of its own on the other. Measured 22
  *      against 30.
- *   3. The "earlier messages" pill floated over the first message with a
- *      measured 2617px² overlap, and because that state has no overflow there is
- *      no scroll position that reveals the covered line.
+ *   3. The "earlier messages" pill floated over a message with a measured
+ *      2617px² overlap. That was fixed by reserving room — as `padding-top` on
+ *      the scroller, which is the wrong side of the boundary: padding is inside
+ *      the scrollable content, so it scrolls away, and the reader who scrolls is
+ *      the one the pill exists for. Measured on that fix: no overlap at
+ *      `scrollTop: 0`, 3093px² once scrolled. It is a margin on the scroller now,
+ *      which shrinks the scroller's own box instead.
+ *
+ * Point 3 is the reason this file asserts *where* the reservation is rather than
+ * only that one exists. The first version of that assertion required
+ * `padding-top`, so it passed against the broken fix and would have failed
+ * against a correct one — a test that pins a defect in place is worse than no
+ * test, because it turns a fix into a regression.
  *
  * These are written against the *shape* of the fix rather than against the pixel
  * values it happens to use now, so the panel keeps room to be redesigned. The
@@ -56,6 +66,77 @@ function declarationOf(selector, property) {
   if (body === null) return null
   const match = body.match(new RegExp(`(?:^|;)\\s*${property}\\s*:([^;]+)`))
   return match === null ? null : match[1].trim()
+}
+
+/** The raw markup, comments removed, for asking what the document contains. */
+const html = readExtensionFile('sidepanel.html').replace(/<!--[\s\S]*?-->/g, '')
+
+/**
+ * The `id` and classes of each direct child of an element, read from the markup.
+ *
+ * The overlays are found by enumerating what the document actually holds instead
+ * of by naming them, so a chip added later is covered by the same assertion
+ * without anyone remembering to add it here.
+ *
+ * @param {string} parentId - The `id` of the parent element.
+ * @returns {{id: string, classes: string[]}[]} Each direct child that has an `id`.
+ */
+function markupOf(parentId) {
+  const open = html.indexOf(`id="${parentId}"`)
+  if (open === -1) return []
+  // Walk from the opening tag to its matching close, counting depth so that a
+  // nested element with children of its own does not end the scan early.
+  const tag = html.slice(open).match(/^id="[^"]+"[^>]*>/)
+  if (tag === null) return []
+  const bodyStart = open + tag[0].length
+
+  const children = []
+  const depth = { value: 0 }
+  const token = /<(\/?)([a-zA-Z][\w-]*)((?:"[^"]*"|[^>"])*)>/g
+  token.lastIndex = bodyStart
+  for (let match = token.exec(html); match !== null; match = token.exec(html)) {
+    const [whole, closing, tagName, attributes] = match
+    // Void elements never nest.
+    const isVoid = /^(br|hr|img|input|meta|link|source|path|circle|rect|use)$/i.test(tagName)
+    if (closing === '/') {
+      if (depth.value === 0) break
+      depth.value -= 1
+      continue
+    }
+    if (depth.value === 0) {
+      const id = attributes.match(/id="([^"]+)"/)
+      if (id !== null) {
+        const classAttribute = attributes.match(/class="([^"]+)"/)
+        children.push({
+          id: id[1],
+          classes: classAttribute === null ? [] : classAttribute[1].split(/\s+/).filter(Boolean),
+        })
+      }
+    }
+    if (!isVoid && !whole.endsWith('/>')) depth.value += 1
+  }
+  return children
+}
+
+/**
+ * One property's value, from the element's own rule or from a class it carries.
+ *
+ * `#transcript` is a scroller because of the `.scroll` class rather than because
+ * of anything in its own rule, so resolving only `#id` rules reads it as a
+ * non-scroller and the check below then proves nothing.
+ *
+ * @param {{id: string, classes: string[]}} element - A child from `markupOf`.
+ * @param {string} property - The property to look up.
+ * @returns {string|null} The first declaration found, or null.
+ */
+function styleOf(element, property) {
+  const own = declarationOf(`#${element.id}`, property)
+  if (own !== null) return own
+  for (const className of element.classes) {
+    const fromClass = declarationOf(`.${className}`, property)
+    if (fromClass !== null) return fromClass
+  }
+  return null
 }
 
 test('the editor draws no focus ring of its own', (t) => {
@@ -196,13 +277,10 @@ test('the earlier-content pill states its height once', (t) => {
     `#earlier must take its height from the token, found ${JSON.stringify(pillHeight)}`,
   )
 
-  // And the rule that reserves the space must exist, or the pill floats over the
-  // first message again — a measured 2617px² occlusion with no way to scroll it
-  // into view.
-  const reservation = declarationOf('#stage:has(#earlier:not([hidden])) #transcript', 'padding-top')
+  const reservation = declarationOf('#stage:has(#earlier:not([hidden])) #transcript', 'margin-top')
   assert.ok(
     reservation !== null,
-    'the transcript must reserve room while the pill is up, or the pill covers the first message',
+    'the transcript must reserve room while the pill is up, or the pill covers a row',
   )
   assert.ok(
     reservation.includes('--pill-height'),
@@ -210,17 +288,171 @@ test('the earlier-content pill states its height once', (t) => {
   )
 })
 
+test('the pill reservation is outside the scrollable content', (t) => {
+  // This is the invariant the padding version broke, and it is worth stating as
+  // its own rule because the two look interchangeable and are not.
+  //
+  // `#earlier` is absolutely positioned against `#stage`, so it stays at the top
+  // of the viewport. Padding on `#transcript` belongs to the *content*, so it
+  // scrolls away — and the reader who scrolls is exactly the reader the pill
+  // exists for. Measured on the padding version: 0px² overlap at `scrollTop: 0`
+  // and 3093px² once scrolled, covering whichever row was passing the top,
+  // including the reader's own messages. As a margin on the scroller it shrinks
+  // the scroller's own box (the cross axis of the `#stage` flex row) and the
+  // reserved strip never becomes content, so no scroll position can move it.
+  //
+  // Asserted as "not padding" rather than "is margin", so the panel keeps room to
+  // reserve the space some other way that has the same property.
+  const guard = '#stage:has(#earlier:not([hidden])) #transcript'
+  assert.equal(
+    declarationOf(guard, 'padding-top'),
+    null,
+    'reserving room as padding on the scroller puts the reservation inside the content, where scrolling removes it',
+  )
+
+  const reservation = declarationOf(guard, 'margin-top')
+  assert.ok(
+    reservation !== null,
+    'the reservation must be on the scroller’s own box rather than in its content',
+  )
+})
+
+/** The `id` each element is bound to in the renderer, e.g. `to-bottom` → `toBottom`. */
+function variableNames(script) {
+  const names = new Map()
+  const binding = /const\s+(\w+)\s*=\s*document\.getElementById\('([^']+)'\)/g
+  for (let match = binding.exec(script); match !== null; match = binding.exec(script)) {
+    names.set(match[2], match[1])
+  }
+  return names
+}
+
+/**
+ * Whether an element is only ever shown in the chat view.
+ *
+ * Read from each `<variable>.hidden = …` assignment's own right-hand side, and
+ * from the definition of a single named flag when the right-hand side is one.
+ * Both parts are needed because the renderer states the same condition three
+ * ways: `view !== 'chat'` inline, `next !== 'chat'` after a view switch, and
+ * `!wanted` where `wanted` is computed a line above from `view === 'chat' && …`.
+ *
+ * The right-hand side has to be isolated to the end of its own line: `#transcript`
+ * and `#history` are hidden on adjacent lines, so any window wide enough to
+ * include a neighbouring line reads `#history` as chat-gated too.
+ *
+ * @param {string} script - The renderer source.
+ * @param {string} variable - The element's binding name.
+ * @returns {boolean} True when every assignment that shows it gates on the chat view.
+ */
+function chatViewOnly(script, variable) {
+  const assignments = [...script.matchAll(new RegExp(`${variable}\\.hidden\\s*=\\s*([^\\n]+)`, 'g'))]
+  if (assignments.length === 0) return false
+  return assignments.every((match) => {
+    const expression = match[1]
+    if (expression.includes("'chat'")) return true
+    // A bare flag: find where it was computed in the preceding lines.
+    const flag = expression.match(/^!?\s*(\w+)\s*$/)?.[1]
+    if (flag === undefined) return false
+    const before = script.slice(0, match.index)
+    const definition = [...before.matchAll(new RegExp(`${flag}\\s*=\\s*([^\\n]+)`, 'g'))].at(-1)
+    return definition !== undefined && definition[1].includes("'chat'")
+  })
+}
+
+test('every floating overlay over the transcript reserves its own room', (t) => {
+  // The class rule, rather than a rule about the pill.
+  //
+  // The pill's occlusion was found and fixed as an isolated defect — the assert
+  // above required `padding-top` and nothing else. But the pill was not special:
+  // `#to-bottom` is the same shape, and it was covering seven characters
+  // (`"：Type，来"`, measured per character) while the suite stayed green. Fixing
+  // instances one at a time is how the second one gets missed, so this asserts
+  // the property that makes them the same defect:
+  //
+  //   an absolutely positioned overlay drawn over a scroll container, where the
+  //   two are siblings, cannot be reserved for by anything inside that container.
+  //
+  // Enumerated from the markup rather than hardcoded, so an overlay added later
+  // has to answer this too. Two things are excluded, and each is excluded for a
+  // structural reason rather than to make the test pass:
+  //
+  //   - `#blocked` is `inset: 0` with an opaque background: it replaces the panel
+  //     on purpose rather than floating a chip over text.
+  //   - `#history` never shares the screen with an overlay. Both overlays are
+  //     chat-view only and `#history` is shown outside it, so asserting a
+  //     reservation across the two would ask for room that can never be needed.
+  const stageChildren = markupOf('stage')
+  assert.ok(stageChildren.length > 0, 'expected to find the children of #stage in the markup')
+
+  const script = readExtensionFile('sidepanel.js')
+  const names = variableNames(script)
+  const chatGated = (child) => names.has(child.id) && chatViewOnly(script, names.get(child.id))
+
+  const scrollContainers = stageChildren.filter((child) => {
+    const overflow = styleOf(child, 'overflow-y')
+    return overflow === 'auto' || overflow === 'scroll'
+  })
+  assert.ok(
+    scrollContainers.length > 0,
+    'expected #stage to contain the scroller the overlays float over',
+  )
+
+  const chatScroller = scrollContainers.filter(chatGated)
+  assert.equal(
+    chatScroller.length,
+    1,
+    `expected exactly one scroller shown in the chat view, found ${JSON.stringify(chatScroller.map((c) => c.id))}`,
+  )
+
+  const overlays = stageChildren.filter((child) => {
+    const position = styleOf(child, 'position')
+    if (position !== 'absolute' && position !== 'fixed') return false
+    // A full-cover panel replaces what is under it on purpose.
+    const inset = styleOf(child, 'inset')
+    if (inset !== null && inset.replace(/\s/g, '') === '0') return false
+    return chatGated(child)
+  })
+  assert.ok(
+    overlays.length > 0,
+    'expected to find the chat-view overlays in #stage — if this is 0 the check below proves nothing',
+  )
+
+  for (const overlay of overlays) {
+    for (const scroller of chatScroller) {
+      const guard = `#stage:has(#${overlay.id}:not([hidden])) #${scroller.id}`
+      const body = ruleBody(guard)
+      assert.ok(
+        body !== null,
+        `#${overlay.id} floats over #${scroller.id} with no reservation rule; measured, that covers the characters passing underneath it`,
+      )
+      // And the reservation must be outside the content — see the test above for
+      // why padding on the scroller does not work.
+      const inside = declarationOf(guard, 'padding-top') ?? declarationOf(guard, 'padding-bottom')
+      assert.equal(
+        inside,
+        null,
+        `#${overlay.id} reserves its room inside #${scroller.id}'s content, where scrolling removes it`,
+      )
+      const outside = declarationOf(guard, 'margin-top') ?? declarationOf(guard, 'margin-bottom')
+      assert.ok(
+        outside !== null,
+        `#${overlay.id} must reserve its room on #${scroller.id}'s own box`,
+      )
+    }
+  }
+})
+
 test('the pill reservation is conditional, not permanent', (t) => {
   // An unconditional strip of empty space at the top of every conversation would
   // be a worse defect than the occlusion it fixes. The `:has()` guard is what
-  // makes the padding appear only when the pill does.
+  // makes the reservation appear only when the pill does.
   const guarded = '#stage:has(#earlier:not([hidden])) #transcript'
   assert.ok(
     ruleBody(guarded) !== null,
     'the reservation must be guarded by the pill actually being visible',
   )
-  // The base rule must stay at its own padding: if the guard were dropped and the
-  // rule written unconditionally, this is where it would show.
+  // The base rule must keep only its own padding and margin: if the guard were
+  // dropped and the rule written unconditionally, this is where it would show.
   const base = declarationOf('#transcript', 'padding')
   assert.ok(
     base !== null && !base.includes('--pill-height'),

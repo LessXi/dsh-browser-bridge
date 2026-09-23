@@ -55,6 +55,8 @@
            number written twice is a number that drifts apart. */
         --pill-height: 26px;
         --pill-inset: 8px;
+        --to-bottom-size: 28px;
+        --to-bottom-inset: 12px;
 
         /* WCAG 2.2 AA needs 4.5:1 for body text, so every text token here is
            held above that against the surface it is actually painted on —
@@ -202,17 +204,33 @@
         gap: 14px;
         font-size: var(--text-base);
       }
-      /* Room for the floating pill, so it covers empty air instead of the first
-         message. Only while the pill is actually up: an unconditional reserved
-         strip would be a visible gap at the top of every ordinary conversation,
-         which is a worse defect than the one being fixed.
+      /* Room for the floating pill, so it covers empty air instead of the row
+         that happens to be at the top. Only while the pill is actually up: an
+         unconditional reserved strip would be a visible gap at the top of every
+         ordinary conversation, which is a worse defect than the one being fixed.
+         `margin-top`, not `padding-top`, and that is the whole fix. Padding is
+         part of the scrollable content, so it scrolls away: measured per
+         character, the pill covered 24 characters of a message once the reader
+         scrolled up, which is the moment the pill exists for. A margin on the
+         scroller shrinks the scroller's own box instead — `#stage` is a flex row
+         and this element is stretched on the cross axis, so the margin is taken
+         out of its height — and the strip it reserves is never part of the
+         content and never moves.
          `:has()` is doing what it is good at here — the pill lives beside the
          scroller, not inside it, so there is no descendant selector that could
          express this, and the alternative is a class the renderer keeps in step
          with `hidden`. The two call sites that set that flag are the only ones
          that can change the pill's visibility. */
       #stage:has(#earlier:not([hidden])) #transcript {
-        padding-top: calc(var(--pill-inset) + var(--pill-height) + 6px);
+        margin-top: calc(var(--pill-inset) + var(--pill-height) + 6px);
+      }
+      /* The same reservation for the way back down, and for the same reason: it is
+         an absolutely positioned overlay drawn over the scroller, so without this
+         it covers seven characters of whichever message is passing the bottom
+         edge, measured per character. Bottom rather than top, so the margin is on
+         the other side. */
+      #stage:has(#to-bottom:not([hidden])) #transcript {
+        margin-bottom: calc(var(--to-bottom-inset) + var(--to-bottom-size) + 6px);
       }
       #history { padding: 4px 6px 12px; }
 
@@ -717,9 +735,9 @@
         position: absolute;
         left: 50%;
         transform: translateX(-50%);
-        bottom: 12px;
-        width: 28px;
-        height: 28px;
+        bottom: var(--to-bottom-inset);
+        width: var(--to-bottom-size);
+        height: var(--to-bottom-size);
         display: grid;
         place-items: center;
         border-radius: 999px;
