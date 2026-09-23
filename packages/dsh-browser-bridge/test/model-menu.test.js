@@ -71,6 +71,38 @@ test('no catalog and no selection is an empty label, not a placeholder', () => {
   assert.equal(modelLabel(null, { provider: 'deepseek-official', model: 'deepseek-flash' }), 'deepseek-flash')
 })
 
+test('a level is named only when there is a catalog to name it from', () => {
+  // The panel paints the trigger before the catalog read comes back: `catalog`
+  // starts as `null` and `refreshCatalog` is awaited at the end of
+  // `loadEverything`, after the repaint `refreshGroups` already did. A selection
+  // stores the id the host was given (`max`); the readable name (`Max`) exists
+  // only in the catalog. Rendering the id in the meantime put an internal token
+  // on screen from the first paint of every opening, which then swapped itself
+  // for the real name a beat later.
+  //
+  // The model name is a different case and falls back to the raw id on purpose —
+  // the session's record carries only the id, so nothing else can name it, and
+  // the model really is in use. A level has a name available in the catalog, so
+  // showing the id instead is the panel's own delay leaking out, not a fact.
+  const selection = { provider: 'deepseek-official', model: 'deepseek-flash', reasoningEffort: 'max' }
+  assert.equal(modelLabel(null, selection), 'deepseek-flash')
+  assert.equal(modelLabel({ groups: [] }, selection), 'deepseek-flash')
+  // With a catalog present both the model and the level are named.
+  assert.equal(modelLabel(CATALOG, selection), 'DeepSeek-V41-Flash · Max')
+})
+
+test('an unread catalog never leaks a raw effort id onto the trigger', () => {
+  // Stated as the property rather than as one expected string, so a future model
+  // whose id happens to differ from its name is still covered. The id is what a
+  // reader must never be shown here: it is the wire token, not a label.
+  const ids = ['max', 'high', 'low']
+  for (const id of ids) {
+    const label = modelLabel(null, { provider: 'deepseek-official', model: 'deepseek-flash', reasoningEffort: id })
+    assert.equal(label.includes(`· ${id}`), false, `the raw id "${id}" reached the trigger: ${label}`)
+    assert.equal(label, 'deepseek-flash')
+  }
+})
+
 test('an empty catalog is reported as a code, not as a sentence', () => {
   // The panel translates it; a module that shipped English here would render
   // English inside a Chinese panel.

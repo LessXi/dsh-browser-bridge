@@ -1,9 +1,9 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v76 已交付并入库。** 下一节就是最新的一轮改动；下面标 v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v76 那一段为止即可。
+> **当前状态：v77 已交付并入库。** 下一节就是最新的一轮改动；下面标 v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v77 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（567 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（569 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 > （真浏览器 e2e 那 4 条需要机器上有 Playwright Chromium 或 Chrome for Testing；
@@ -12,7 +12,7 @@
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
 >
-> **已入库**：v3→v76 的全部改动已提交并推送到 `origin/main`。工作区干净。
+> **已入库**：v3→v77 的全部改动已提交并推送到 `origin/main`。工作区干净。
 > （v75 是 `e0ef3ee`，v74 是 `bb5af8d`，v73 是 `dae44ed`，v72 是 `82497f9`。）
 
 > ## ⚠️ 两条并行版本线（2026-09-23 处理，后续轮次务必先读这段）
@@ -180,7 +180,86 @@
 > - `earlier.png` 与 `hostDown.png` **sha256 相同**：那张图画的是阻塞屏，
 >   「更早的内容」胶囊根本没出现在交付的图里。成因未定位。
 
-> ### v76：模型选择器声明了 menu，却没有一样兑现（本轮）
+> ### v77：推理等级的内部 id 泄漏到触发器上，而且每次打开面板都泄漏一次（本轮）
+>
+> **先更正 v75/v76 留下的一条错误记录。** 那两轮记的是「`noCatalog` 态触发器
+> 显示 `high`，与正常态 `High` 只差大小写」——结论对，但**把它读成了
+> 「没有模型服务的 profile 才会遇到」**。实际不是：`catalog` 的初值是 `null`
+> （`sidepanel.js` L234），`refreshCatalog()` 是异步的，且在 `loadEverything()`
+> 里排在**最后**（L3171）；而 `refreshGroups()`（L3158）→ `renderChrome()`
+> （L2235）→ `drawModel()`（L2237）**早已画过一次触发器**。
+>
+> 所以 `noCatalog` 只是这个回退**永久停留**的样子；**正常配置下每次打开面板
+> 都会短暂出现它**。缺陷面比原来记录的大得多。
+>
+> **机制**：会话记录里只存原始 id（`chat.js` L319 只保留 `reasoningEffort`
+> 字符串，不带给显示名），而可读名 `High` **只存在于目录里**。于是目录未读到时：
+>
+> | 输入 | 修复前 | 修复后 |
+> | --- | --- | --- |
+> | `catalog: null` + 会话选择 | `deepseek-v4-pro · high` | `deepseek-v4-pro` |
+> | `catalog` 已到 + 会话选择 | `deepseek-v4-pro · High` | `deepseek-v4-pro · High` |
+> | `catalog` 已到 + 模型不在列表中 | `gone-from-catalog · high` | `gone-from-catalog · high`（**不变，这是对的**） |
+>
+> **为什么第三行必须不变**：目录在、只是这个模型确实不在列表里，此时显示原始 id
+> 是**有据可依**的（会话真的在用这个 id）。而第一行没有这个依据——可读名就在目录
+> 里，只是还没读到，那是**面板自己的延迟泄漏了出去**。这一条区分是本轮最容易修错的
+> 地方，变异 `unknown-model`（把两种情况一起吞掉）被**既有测试**抓住，证明没修过头。
+>
+> **修法**：`extension/model-menu.js` 新增 `hasNames(catalog)`（`groups` 是非空数组），
+> `modelLabel` 只在有目录可查时才拼等级名。
+>
+> **★ 但「文字不再变化」这个说法是错的，而且我用错了判据。** 修复后第一帧是
+> `deepseek-v4-pro`，目录到达后变成 `deepseek-v4-pro · High`——**文字仍然变**。
+> 真正变的是**变化的性质**，这需要逐字符求最长公共前缀才看得出来
+> （`.tmp-run/probe-append-vs-rewrite.mjs`）：
+>
+> | | 公共前缀 | 追加还是改写 | 被推翻的内容 |
+> | --- | --- | --- | --- |
+> | 修复后 | 15 字符 | **追加**（`isAppendOnly: true`） | `""`（空） |
+> | 修复前 | 18 字符 | **改写**（`wasRewrite: true`） | `"high"` |
+>
+> 修复后**没有任何已显示的内容被推翻**；修复前有一个词必须被读者重新解读。
+> 「闪烁」与「补充」的分别在这里，不在「变没变」。**只看「文字是否变化」会把
+> 正确实现判成坏的**——这是本仓库第四次栽在同一类判据错误上。
+>
+> **测试**：`model-menu.test.js` 新增 2 条（13 passed）——一条按**性质**断言
+> `label.includes('· ' + id) === false` 而不是断言某个具体字符串，这样将来
+> 某个模型的 id 恰好不同于它的名字时仍然被覆盖。全量 `npm test` **569 passed**。
+>
+> **变异**（`.tmp-run/mutate-label-before-catalog.mjs`）3 种坏法全部命中、
+> `restoredExactly: true`：`revert`（完全恢复旧行为）、`groups-only`
+> （只问是不是数组、不问有没有内容）、`unknown-model`（过度修复）。
+>
+> **真实浏览器**：`noCatalog` 态触发器从 `deepseek-v4-pro · high` 变为
+> `deepseek-v4-pro`（`isLowercaseId: false`）；正常态 `deepseek-v4-pro · High`
+> **完全未变**，菜单仍正常打开（`rowCount: 2`）——修复是精确的。
+>
+> ---
+>
+> ### 本轮顺带核实的三条**阴性结论**（都量过，不是没测）
+>
+> 目标要求「商业产品水准」，所以本轮系统扫了几条此前**从未测过**的标准维度，
+> 结果全部达标——记下来免得下次重复挖：
+>
+> 1. **对比度**：`node .tmp-run/audit-all.mjs` → **32 个场景 × 2 配色，0 findings**
+>    （含 options 设置页）。这套审查器已经处理了三件容易做错的事：`Canvas` 系统色
+>    背景（不是 `body` 背景色）、透明度栈合成、以及跳过 `opacity: 0` 的 `#blocked`
+>    子树（否则会贡献 6 条不可能的 `ratio: 1`）。
+> 2. **触摸目标**：`.tmp-run/probe-tap-targets.js` 按 WCAG 2.2 SC 2.5.8 逐个量
+>    可交互元素，**4 个场景全部 `failingCount: 0`**。这里的关键是**正确实现了
+>    Spacing 例外**（24px 圆不与任何其他目标相交）——直接把所有 <24px 的报成失败
+>    会误报一批本来合规的密集图标按钮，从而指向错误的修复方向。
+> 3. **键盘 / 减弱动效**：`prefers-reduced-motion` 覆盖了 `sweep` 与 `caret` 两处
+>    动画；Escape 关闭浮层并把焦点交回触发按钮；菜单契约已在上轮补齐。
+>
+> **仍未修、也已确认**：`high` 恢复成 `High` 时，触发器的 `aria-label` 与 `title`
+> 同样会变一次（它们由同一个 `label` 派生）。修复后这个变化是**纯追加**，读屏
+> 播报的是「Select model · deepseek-v4-pro」→「Select model · deepseek-v4-pro · High」，
+> 不构成需要重读的信息；但如果将来有人改动 `drawModel` 让 `aria-label` 与可见文字
+> 不同步，这里会重新变成一个播报错误。
+
+> ### v76：模型选择器声明了 menu，却没有一样兑现（历史轮）
 >
 > **缺陷是两处，同一类**：`#model` 触发按钮写着 `aria-haspopup="menu"`
 > （`sidepanel.html`），而它打开的 `#model-menu` **没有任何 role**；

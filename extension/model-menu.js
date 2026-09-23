@@ -62,6 +62,21 @@ function catalogDefault(catalog) {
 }
 
 /**
+ * Whether there is a catalog that could name a reasoning level.
+ *
+ * `null` covers two states the panel cannot tell apart — "the read has not come
+ * back yet" and "the host has no catalog at all", because `refreshCatalog`
+ * assigns `payload?.catalog ?? null`. Neither one can name a level, and that is
+ * the only question asked of it here.
+ *
+ * @param {object|null} catalog - The catalog from the host's `models` action.
+ * @returns {boolean} True when there is something to look a name up in.
+ */
+function hasNames(catalog) {
+  return Array.isArray(catalog?.groups) && catalog.groups.length > 0
+}
+
+/**
  * The text a composer trigger shows for one session's model.
  *
  * The effort is appended only when the selection carries one, so a model that
@@ -69,6 +84,14 @@ function catalogDefault(catalog) {
  * A selection naming a model the catalog does not list — a model that was
  * removed, or a session last used on another machine — still renders its raw id
  * rather than nothing, because the session really is using it.
+ *
+ * A level is named only when a catalog is there to name it. A selection stores
+ * the id the host was given (`high`), which is not the same string as the
+ * catalog's name for that level (`High`) — so with no catalog the trigger shows
+ * the raw token and then swaps it a beat later, on every opening of the panel.
+ * The model itself comes from the session's own record rather than the catalog,
+ * so the trigger still names the model from its first paint and only the level
+ * arrives late.
  *
  * @param {object|null} catalog - The catalog from the host's `models` action.
  * @param {{ provider: string, model: string, reasoningEffort?: string } | null} selection - The session's selection.
@@ -79,7 +102,7 @@ export function modelLabel(catalog, selection) {
   if (current === null) return ''
   const entry = findModel(catalog, current.provider, current.model)
   const name = asText(entry?.name) || current.model
-  if (current.reasoningEffort === undefined) return name
+  if (current.reasoningEffort === undefined || !hasNames(catalog)) return name
   const level = (Array.isArray(entry?.reasoning?.efforts) ? entry.reasoning.efforts : [])
     .find((effort) => asText(effort?.id) === current.reasoningEffort)
   return `${name} · ${asText(level?.name) || current.reasoningEffort}`
