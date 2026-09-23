@@ -1,9 +1,9 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v102 已交付并入库。** 下一节就是最新的一轮改动；下面标 v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v102 那一段为止即可。
+> **当前状态：v103 已交付并入库。** 下一节就是最新的一轮改动；下面标 v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v103 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（706 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（707 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 > （真浏览器 e2e 那 4 条需要机器上有 Playwright Chromium 或 Chrome for Testing；
@@ -16,8 +16,59 @@
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
 >
-> **已入库**：v3→v101 的全部改动已提交并推送到 `origin/main`。工作区干净。
-> （v101 是 `cc33dd9`，v99 是 `bff292d`，v92 是 `e3ad6ba`，v91 是 `3d96bf1`，v90 是 `767e4cd`，v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
+> **已入库**：v3→v103 的全部改动已提交并推送到 `origin/main`。工作区干净。
+> （v102 是 `77b75e3`，v101 是 `cc33dd9`，v99 是 `bff292d`，v92 是 `e3ad6ba`，v91 是 `3d96bf1`，v90 是 `767e4cd`，v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
+
+> ## v103：放大字号之后，输入框里能看到的行数反而少了一半
+
+**症状**：读者把系统字号放大到 200%（因为字太小看不清），输入框的可视高度**没有跟着变大**——实测能看到 **3.5 行**，而默认字号下是 **7 行**。放大是为了看清，结果看到的内容少了一半。
+
+**机制**：上限被写了两遍，而两遍的单位不同。
+
+样式表说 `max-height: 10em`——`em` 跟着元素自己的字号走，14px 下是 140px，32px 下是 280px。脚本说 `input.style.height = Math.min(140, input.scrollHeight) + 'px'`——**一个硬编码的像素值，不跟随任何东西**，而且这个表达式在文件里出现**五次**。
+
+按 CSS 的优先级，样式表的 `max-height` 本该赢过内联的 `height`。但**内联样式赢过样式表**，所以那个 140 是最终的：CSS 那条跟随字号的规则从来没机会生效。
+
+```
+默认字号：max-height 140px  →  Math.min(140, 内容)  →  140px  ✓ 看起来对
+200%   ：max-height 280px  →  Math.min(140, 内容)  →  140px  ✗ 上限压住了
+```
+
+**为什么 43 轮没被发现**：默认字号下两个数**恰好相等**，缺陷完全不可见。这类「两条规则在默认参数下取值相同、只在读者改变参数时分开」的问题，本仓库已记录多次（v93 的 `em`/`rem` 漂移、v97 的 options 页字号），这是第三次。
+
+**修法**（`extension/sidepanel.js`）：把上限**完全交给 CSS**，脚本只负责测量。
+
+```js
+function growInput() {
+  input.style.height = 'auto'
+  input.style.height = `${input.scrollHeight}px`
+}
+```
+
+内联值会是内容的完整高度（长内容时实测 4008px），而 `max-height` 自己封顶——`cappedByCss: true` 在 100% 与 200% 两档都成立。上限因此**只有一处来源**，天然跟随字号。
+
+**试过并否决的写法**：`height = min(getComputedStyle(input).maxHeight, scrollHeight)`。功能上正确，但**面板此前从不读计算样式**，而测试的 `dom-shim.js` 没有 `getComputedStyle`——实测造成 `panel-stream` **101 个测试失败**（`getComputedStyle is not defined`），只剩 52 passed。引入它就得同时给 shim 补一个新 API。让 CSS 封顶不需要任何新 API，`panel-stream` **153 passed 无需改动**。
+
+**否决的第二个写法**：只设 `height: auto`。实测盒子停在 **28px**（1.4 行）——textarea 的 `auto` 停在 `rows="1"` 属性上，**不会按内容撑开**，所以测量是承重的（`sameAtDefault: false`）。
+
+**唯一保留 `auto` 的地方**是发送后清空输入框（`extension/sidepanel.js`）：那时内容为空，`auto` 就是正确高度。
+
+| 读数 | 修复前 | 修复后 |
+|---|---|---|
+| 默认字号 boxHeight / 可见行数 | 140px / 7 行 | 140px / 7 行（**未变**） |
+| **200% boxHeight** | **140px** | **280px** |
+| **200% 可见行数** | **3.5 行** | **7 行** |
+| `inlineFollowed` | false | true |
+| `visibleLinesShrank` | **true** | **false** |
+| `cappedByCss`（两档） | —— | **true / true** |
+| 内容完整性 / 内部滚动 | true / true | true / true |
+
+**验证**：`npm test` **707 passed, 0 failed, 0 skipped**；`check:extension` exit 0；变异 `.tmp-run/mutate-input-ceiling.mjs` **5/5 命中**、每条 `suiteRan: true`、`restoredExactly: true`（`back-to-a-hard-coded-ceiling`、`ceiling-by-a-different-number`、`grow-by-fixed-steps`、`ceiling-becomes-absolute`、`send-does-not-reset-height`）；15 张截图重渲后**逐字节未变**（默认字号下完全守恒）。
+
+**新测试**：`packages/dsh-browser-bridge/test/panel-geometry.test.js` 的 `the composer states its ceiling once, in the stylesheet`。断言的是**脚本里没有那个数**（`Math.min\(\s*(\d+)\s*,\s*input\.scrollHeight\s*\)` 必须匹配不到任何东西），因为缺陷正是「脚本里存在第二个上限」。`ceiling-by-a-different-number` 变异证明它抓的是「存在上限」而不是「等于 140」——换个数字同样变红。
+
+**探针**（`.tmp-run/`，被 gitignore）：`probe-paste.js`（用**真实粘贴事件**而非直接赋 `value`，量内容完整性、内部滚动、两档可见行数、内联是否跟随）、`probe-grow-experiment.js`（否决 `auto`）、`probe-css-cap.js`（采纳 CSS 封顶）、`mutate-input-ceiling.mjs`（含一条锚点缩进写错导致「假等价变异」的教训——锚点没找到会报成 `anchor not found`，看起来像等价变异而不像笔误）。
+
 
 > ## v102：面板给了一个它自己会拒绝执行的指令
 

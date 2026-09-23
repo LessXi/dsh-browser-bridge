@@ -1199,8 +1199,7 @@ function acceptMention(at) {
   // because two tabs in one message is something the chip row cannot show.
   mentioned = option
   closeMention()
-  input.style.height = 'auto'
-  input.style.height = `${Math.min(140, input.scrollHeight)}px`
+  growInput()
   setDraft(currentSessionId, input.value)
   renderContexts()
   input.focus()
@@ -3615,11 +3614,39 @@ function selectSession(sessionId) {
   refreshTranscript().catch(() => {})
 }
 
+/**
+ * Grow the composer to fit what has been typed into it.
+ *
+ * A textarea does not grow on its own: `height: auto` leaves it at its `rows`
+ * attribute, one line, so the editor has to be measured and given a height. What
+ * it must *not* be given is a ceiling, and that is the whole point of this
+ * function existing rather than the expression it replaced.
+ *
+ * The panel used to write `Math.min(140, scrollHeight)` here — a ceiling of its
+ * own, in pixels, in five places. The stylesheet states the same ceiling as
+ * `max-height: 10em`, which is 140px at the default text size and 280px once the
+ * reader doubles it, and it was that second case that broke: an inline height
+ * beats a stylesheet's `max-height`, so the 140 was final. Measured at a 32px
+ * root, the reader saw 3.5 lines where the default size shows 7 — enlarging the
+ * text because it was hard to read left less of it visible.
+ *
+ * Handing the whole height to the element and letting `max-height` cap it keeps
+ * the ceiling in one place, where it follows the reader's font size on its own.
+ * It also means the panel still never reads a computed style, which matters here:
+ * the test shim has no `getComputedStyle`, and a fix that needed one would be
+ * unverifiable in the suite that exists to verify it.
+ *
+ * @returns {void}
+ */
+function growInput() {
+  input.style.height = 'auto'
+  input.style.height = `${input.scrollHeight}px`
+}
+
 /** Put the selected session's draft back in the composer. */
 function restoreDraft() {
   input.value = drafts.get(currentSessionId) ?? ''
-  input.style.height = 'auto'
-  input.style.height = `${Math.min(140, input.scrollHeight)}px`
+  growInput()
   drawSend()
 }
 
@@ -4236,8 +4263,7 @@ input.addEventListener('keydown', (event) => {
 })
 
 input.addEventListener('input', () => {
-  input.style.height = 'auto'
-  input.style.height = `${Math.min(140, input.scrollHeight)}px`
+  growInput()
   setDraft(currentSessionId, input.value)
   drawMention()
   drawSend()
@@ -4360,8 +4386,7 @@ transcript.addEventListener('click', (event) => {
   if (question.length === 0) return
   const typed = input.value.trim()
   input.value = typed.length === 0 ? question : `${question}\n\n${typed}`
-  input.style.height = 'auto'
-  input.style.height = `${Math.min(140, input.scrollHeight)}px`
+  growInput()
   setDraft(currentSessionId, input.value)
   drawSend()
   input.focus()

@@ -1338,6 +1338,50 @@ test('the reader’s own font size reaches the text, and the boxes grow with it'
   }
 })
 
+test('the composer states its ceiling once, in the stylesheet', () => {
+  // The editor has to be measured and given a height, because a textarea does not
+  // grow on its own — `height: auto` leaves it at its `rows` attribute, one line.
+  // What it must not be *given* is a ceiling.
+  //
+  // It was. The panel wrote `Math.min(140, scrollHeight)` in five places while the
+  // stylesheet said `max-height: 10em` — the same 140px at the default text size,
+  // and 280px once the reader doubles it. An inline height beats a stylesheet's
+  // `max-height`, so the 140 was final: measured at a 32px root, the reader saw
+  // 3.5 lines where the default size shows 7. Enlarging the text because it was
+  // hard to read left less of it visible.
+  //
+  // The assertion is on the *absence* of a number in the script, because that is
+  // what the defect was. Any ceiling written there has to be kept in step with the
+  // stylesheet by hand, and it was not.
+  const script = readExtensionFile('sidepanel.js')
+  const ceilings = [...script.matchAll(/Math\.min\(\s*(\d+)\s*,\s*input\.scrollHeight\s*\)/g)]
+  assert.deepEqual(
+    ceilings.map((match) => match[1]),
+    [],
+    'the composer caps its own height in the script; the stylesheet already states the ceiling and it follows the reader\'s font size',
+  )
+  // And it grows by measurement rather than by a fixed step: the point of reading
+  // `scrollHeight` is that it is the content's own height.
+  assert.ok(
+    /input\.style\.height = `\$\{input\.scrollHeight\}px`/.test(script),
+    'the composer grows by handing its content height to the element; other expressions there are a second ceiling by another name',
+  )
+  // The one place the height is still assigned from a literal is the reset after a
+  // send, where the field is empty and `auto` is the honest answer.
+  assert.ok(
+    /input\.value = ''\s*\n\s*input\.style\.height = 'auto'/.test(script),
+    'the composer must return to its own resting height after a send',
+  )
+
+  // The stylesheet keeps the ceiling, and keeps it relative — `10em` resolves
+  // against the element's own font size, which is what makes it follow the reader.
+  const ceiling = declarationOf('#input', 'max-height')
+  assert.ok(
+    (ceiling ?? '').endsWith('em'),
+    `#input's ceiling is ${ceiling}; it must be relative so it grows with the text`,
+  )
+})
+
 test('reduced motion stops the motion, not the fades, and not by naming elements', (t) => {
   const block = mediaBlock('prefers-reduced-motion: reduce')
   assert.ok(
