@@ -1,23 +1,166 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v101 已交付并入库。** 下一节就是最新的一轮改动；下面标 v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v101 那一段为止即可。
+> **当前状态：v102 已交付并入库。** 下一节就是最新的一轮改动；下面标 v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v102 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（705 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（706 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 > （真浏览器 e2e 那 4 条需要机器上有 Playwright Chromium 或 Chrome for Testing；
 > 没有时会**跳过并说明**，不会失败。）
 >
 > **要看界面**：`README.md` 的「界面」一节有 3 张主视觉海报（`docs/posters/`）与
-> 14 张界面状态（`docs/screenshots/`）。`node tools/poster.mjs` 重渲海报，
+> 15 张界面状态（`docs/screenshots/`）。`node tools/poster.mjs` 重渲海报，
 > `node tools/gallery.mjs` 重渲界面状态，`node tools/preview.mjs --list` 列出全部场景。
 >
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
 >
-> **已入库**：v3→v100 的全部改动已提交并推送到 `origin/main`。工作区干净。
-> （v99 是 `bff292d`，v92 是 `e3ad6ba`，v91 是 `3d96bf1`，v90 是 `767e4cd`，v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
+> **已入库**：v3→v101 的全部改动已提交并推送到 `origin/main`。工作区干净。
+> （v101 是 `cc33dd9`，v99 是 `bff292d`，v92 是 `e3ad6ba`，v91 是 `3d96bf1`，v90 是 `767e4cd`，v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
+
+> ## v102：面板给了一个它自己会拒绝执行的指令
+
+本轮从一个已有的状态出发：宿主太旧时面板怎么办。答案比预期糟——
+它**说了错的话，还给了一个按下去什么都不会发生的按钮**。
+
+### 缺陷：第三个状态一直不存在
+
+`extension/sidepanel.js` 的 `refreshGroups`（L3524-3529）这样判：
+
+```js
+const understood = status === 200 && Array.isArray(payload?.groups)
+if (status === 200 && !understood && !hostStale) {
+  hostStale = true
+  say(t('error.restartHost'))
+}
+```
+
+即「答了 200 但 body 里没有 `groups` 数组」= 宿主比面板旧。这个判断本身是对的。
+
+问题在 `renderOffline`（L660）只有**两个**状态：
+
+```js
+const hostDown = !hostReachable
+const noSessions = !hostDown && groups.length === 0
+const shown = hostDown || noSessions
+```
+
+`hostStale` **不在其中**。旧宿主下 `hostReachable` 为真（它确实答了）、`groups`
+被置为 `[]`，于是落进 `noSessions` —— 一块写着「还没有会话 / 新建一个，就可以开始
+问了。」并配一个醒目「新建会话」按钮的面板。
+
+而那个按钮的处理器（L4626）走 `newSession()`，它的**第一行**就是
+`if (hostStale) { say(t('error.restartHost')); return }`。
+
+**实测**（新场景 `staleHost` + `.tmp-run/probe-stale-host.js`，包装 `fetch` 计数）：
+
+| 读数 | 修复前 |
+|---|---|
+| `createRequestsSent` | **0**——请求根本没发出 |
+| `anythingChanged` | **false**——点击后界面毫无变化 |
+| `toastRepeatedItself` | **true**——同一句话再弹一次，然后淡出 |
+| `stillEnabled` | **true**——按钮看起来仍然可用 |
+| `persistentNoticeCount`（非 toast 的持续说明） | **0** |
+
+界面把一个它自己会拒绝执行的指令，用最醒目的样式递给读者。这不是文案问题：
+读者正确地照做，得到的是零反馈。
+
+### 修法：补上第三个状态，并且**不给按钮**
+
+`renderOffline` 新增 `hostStaleNow`，从 `noSessions` 与播报状态里排除，
+并加一支专属分支：
+
+```js
+const hostStaleNow = !hostDown && hostStale
+const noSessions = !hostDown && !hostStaleNow && groups.length === 0
+const shown = hostDown || hostStaleNow || noSessions
+const state = hostDown ? 'host' : hostStaleNow ? 'stale' : 'empty'
+```
+
+新建的 stale 分支做两件事：说清问题是「dsh web 需要重启」（`blocked.staleTitle`
+/ `blocked.staleBody`），以及 `blockedAction.hidden = true`。
+
+**为什么是「隐藏」而不是「禁用」**：重启 `dsh web` 只能在面板外完成，所以这里有
+任何按钮都是面板兑现不了的承诺。禁用按钮把「你现在不能做这件事」和「这件事根本
+不在这里做」混成同一种视觉。样式上「新建会话」是**实心强调色**的，比什么都显眼
+——把一个空承诺做得最醒目，正是这个缺陷最坏的部分。另两个分支各补
+`blockedAction.hidden = false`，因为 `hidden` 是持久状态。
+
+### 同一个缺陷的第二个通道：读屏读者听到的是另一句话
+
+屏幕文字改对了之后，变异 `stale-not-announced`（把 `stale` 从 `state` 三元里去掉）
+**存活**——说明那条测试只验了看得见的一半。补上播报断言后它立刻变红，原因不在产品
+而在我的等待方式：
+
+`announce()`（L546）的写入排在 `setTimeout` 上（先清空、下一个宏任务再写），
+而 `settle()` **只清微任务**。测试文件里早就有 `settleMacrotask()`，注释写着
+「The announcer writes its sentence on a later task on purpose」——我该读它。
+
+改用它之后 **4/4 变异全部命中**：`stale-falls-into-empty`、
+`stale-action-still-shown`、`stale-says-the-wrong-thing`、`stale-not-announced`。
+
+### 顺带修好：截图里的光标是一个随机变量（并纠正 v96 的记录）
+
+改完 `extension/` 必须重渲画廊（v96 的指纹守卫），重渲后 `reasoning.png` 变了。
+先做对照：**用 HEAD 的代码渲同一场景 → `DIFFERENT 0`**，所以确实是我的改动带来的。
+再渲 4 次：得到 0、0、70、0 个差异像素，那 70 个恒定落在 CSS (30, 645..662)
+的一条 17px 竖线上。
+
+**是 composer 的文本插入符。** `longReasoningOpen` 场景里 `#input` 持有焦点，
+Chromium 按墙钟闪烁它。15 张图里有 **8 张**带着它（`conversation.png`、
+`sessions.png`、`approval.png`、`working.png`、`triggered.png`、`picture.png`、
+`failure-recourse.png`、`conversation-light.png`），每张差异都恰好是同一个矩形。
+`sessions.png` 是 747 像素而非 70，因为历史视图盖在 composer 之上，插入符沿边缘
+露出两块。
+
+后果与 v96 记录的那次一样：**每次 `node tools/gallery.mjs` 都无理由重写 8 张图，
+README 的图取决于拍的那一瞬间。**
+
+修法在**渲染工具**里，不动产品：`tools/preview.mjs` 注入
+`textarea, input { caret-color: transparent !important; }`。这是相机设置不是产品
+改动——面板有意保留光标（`sidepanel.html` L188 的注释：「caret still says where
+the text will go」），而用 `caret-color` 而不是取消焦点是必要的：好几个场景存在的
+意义就是展示聚焦状态，丢掉焦点会变成另一张图。`prefers-reduced-motion` 管不到它，
+因为那是浏览器自己的行为，不是面板声明的动画。
+
+**修复读数**：`longReasoningOpen` 连渲 5 次 **0 差异**；`historyOpen` 连渲 3 次
+**0 差异**。守卫写进 `screenshots.test.js` 既有的那条确定性测试里
+（`a screenshot is a function of the code, not of when it was taken`），变异
+`caret-pin-removed` / `caret-pin-without-important` / `caret-pinned-on-textarea-only`
+**3/3 命中**。
+
+**同时纠正 v96 的一条记录**：v96 把 `search.png` 的一点差异记成「已记录的焦点环
+抗锯齿抖动」。根因其实就是这个插入符，当时没查到，现在补上。
+
+### 词典约束是一次真实的设计约束，不是障碍
+
+`npm test` 报了 `no dictionary entry is a sentence`：`en:blocked.staleBody has 14
+words`、`is punctuated as a sentence`。测试的豁免名单是**指名**的（`blocked.hostTitle`
+/ `hostBody` / `emptyTitle` / `emptyBody`），并用 `assert.equal(ALLOWED.length, 4,
+'the exempt list grew; was that intentional?')` 挡住悄悄增长。
+
+这条规则本身是这个产品的一部分：注释记载它来自「面板读起来像帮助页」那次重写。
+第三状态属于**同一块面板、同一种陈述**，所以是有意的增长——但只豁免 `staleBody`，
+标题「dsh web 需要重启」短得可以做标签，仍受规则约束。名单改为 5 条并写明理由。
+
+### 验证读数（已绿，不必重跑）
+
+- `npm test` → **706 passed, 0 failed, 0 skipped**
+- `npm run check:extension` → exit 0
+- 变异一（`.tmp-run/mutate-stale-host.mjs`）：**4/4 命中**、`restoredExactly: true`
+- 变异二（`.tmp-run/mutate-caret-pin.mjs`）：**3/3 命中**、`restoredExactly: true`
+- 真实浏览器（`staleHost` 场景）：标题「dsh web 需要重启」、`persistentNoticeCount: 3`、
+  `blocked-action.hidden: true`、`offersAnActionItWontDo: false`（修复前为 `true`）
+- 画廊 15 张重渲，9 张变化，**全部可归因到那一根插入符**
+- 截图：`.tmp-run/r43-fixed.png`、`.tmp-run/r43-stale.png`（修复前）
+
+### 本轮新增探针（`.tmp-run/`，被 gitignore）
+
+`probe-stale-host.js`（判据本体：包装 `fetch` 数请求、要求「按钮可见 + 未禁用 +
+点了之后零请求」三条同时成立才算缺陷）、`why-stale-silent.js`、`whats-at-pixel.js`
+（回答「这个像素是什么元素」）、`whats-at-sessions.js`、`mutate-stale-host.mjs`、
+`mutate-caret-pin.mjs`。
 
 > ## v101：一半的回合，读者从来没说过话
 

@@ -446,7 +446,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 705 条
+npm test                          # 全部 706 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -536,7 +536,7 @@ Chrome for Testing 都装进带版本号的目录，写死路径会在一台机�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 705 条
+npm test                 # 706 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -567,7 +567,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面五层测试，705 条。包括真实 Chrome 驱动的快照、点击、输入、截图，
+**已自动化验证**：上面五层测试，706 条。包括真实 Chrome 驱动的快照、点击、输入、截图，
 以及**载入真实扩展的真实 Chromium** 走完整协议并核对页面真的被点到了。扩展的首次连接也已
 在真实 Chrome 里端到端验证过：清空 storage 后，扩展自己读了 health、取了令牌、带着正确令牌
 发起升级（`.tmp-run/probe-enrol-real-browser.js`）。
@@ -663,6 +663,10 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 | ★ 断言里写死「必须是 rem」会误伤两种合法写法（v97） | 写这段检查时连踩两次：①`font: inherit`（按钮上的合法重置，**根本不带字号**）被判失败——只应检查含斜杠的简写；②`var(--text-base)` 里没有字面量 `rem`，被正则判失败——**判据要禁的是「绝对长度」，不是「不是字面量 rem」**。两次都是测试先红，我才发现自己把判据写窄了 |
 | ★ `Range.getClientRects()` 不遵守祖先的 `overflow: hidden`（v99） | 扫面板宽度时，240px 报「会话标题被 ⌄ 压住 7px」。追下去：`#title-text` 有 `overflow: hidden`，文字**已经被省略号裁掉**，但 `getClientRects()` 返回的是**布局矩形**，仍然延伸到 caret 下面。实测 caret 与文字之间恒定有 4px 间隙（`caretOverlapsTextBy: -4`，两档一样）——`#title { min-width: 0 }` 正在按设计工作。**判据错的时候，正确的实现在读数里和坏掉的一模一样。** 修法：每个文字矩形与**所有祖先的裁剪框**求交，只有交集里还剩 2px 以上才算 |
 | ★ 浮层遮住正文不是缺陷，遮住之后读者揭不开才是（v99） | 窄面板下模型菜单报「Example Domain 被 deepseek-v4-pro 压住 87x6」。但那是**读者自己打开的**菜单，点外面或按 Escape 就关，关掉之后被盖的内容一字不少地读得到——浮层盖住底下正是它存在的意义。与之对比，v74 修的 `#earlier` 胶囊是**常驻**的：一直悬在滚动容器上方，读者无法解除，那才是缺陷。区分写进判据：`role="menu"/"listbox"/"dialog"` 之内的元素不参与遮挡判定——这不是把判据调绿，这三个角色正是「读者主动打开的、可解除的层」的机器可读定义 |
+| ★★ 界面给了一个它自己会拒绝执行的指令（v102） | 宿主太旧时它答 `200` 但 body 里没有 `groups`，面板因此判定「没有会话」，显示「还没有会话」加一个醒目的「新建会话」按钮。而 `newSession()` 第一行就是 `if (hostStale) return`——**按下去不发任何请求、界面毫无变化、只重复一句已经淡出的 toast**（实测 `createRequestsSent: 0`、`anythingChanged: false`）。读者被指示去做一件界面上做不到的事。修法是给这块面板补上它一直缺的**第三个状态**：说清问题是「dsh web 需要重启」，并且**不给按钮**——重启只能在面板外完成。**注意是「隐藏」而不是「禁用」**：禁用按钮仍然是一种邀约 |
+| ★★ 「屏幕上对了」不等于「读者收到了」（v102） | 同一份修复，屏幕文字正确（`dsh web 需要重启`），而播报器写的是**空字符串**——读屏读者什么也没听到。变异 `stale-not-announced` 存活，暴露出那条测试只断言了看得见的那一半。补上断言后又红了：因为 `announce()` 的写入排在 `setTimeout` 上，而 `settle()` **只清微任务**，必须用同文件里早就写好的 `settleMacrotask()`。**同一条修复有两个通道，只验一个等于验了一半** |
+| ★★ 截图里的光标是一个随机变量（v102） | 同一份代码连渲 4 次，得到 0、0、70、0 个差异像素，那 70 个恒定落在 CSS (30, 645..662) 的一条 17px 竖线上——composer 的**文本插入符**，由 Chromium 按墙钟闪烁。15 张图里有 8 张带着它，于是每次 `node tools/gallery.mjs` 都会无理由重写 8 张图，README 的图**取决于拍的那一瞬间**。`prefers-reduced-motion` 管不到它（那是浏览器自己的行为，不是面板声明的动画），需要单独钉住。**同一次还纠正了上一轮的记录**：v96 把 `search.png` 的一点差异记成「焦点环抗锯齿」，根因其实就是这个光标，只是当时没查到 |
+| ★ 判据不随被测变量变化时，先怀疑判据（v93，v102 再次印证） | 要证明「光标被钉住了」，唯一的办法是**连渲多次比 sha256**，而不是看某一次的眼神。第一次量到 70 像素差异时，我差点把它归给「渲染抖动」放过——是我先渲了 HEAD 的代码做对照（`DIFFERENT 0`），才确认它是我的改动带来的，再渲 4 次才认出它是随机的。**「像是抖动」和「是抖动」之间隔着一次对照实验** |
 | ★ 一个到处报绿的判据必须证明它会报红（v99） | 四条假阳性修完之后，11 个场景 × 5 档宽度全部 `ok: true`。这个结果本身不可信——**一条永远为真的断言也「全部通过」**。所以注入一个真实缺陷验证判据：给 `header` 加 `position: absolute; z-index: 40`，立刻报红 3 处，具体到「打造类似codex的dsh网页插件 × 更早的内容 47x15」。没有这一步，「全绿」只能说明判据跑了，不能说明它能分辨 |
 
 最后一步在探针上报错 `llm-deepseek: no API key for provider route "deepseek-official"`——

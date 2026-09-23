@@ -662,8 +662,15 @@ function renderOffline() {
   // nothing to say about sessions, because the list on screen cannot be trusted
   // to be current.
   const hostDown = !hostReachable
-  const noSessions = !hostDown && groups.length === 0
-  const shown = hostDown || noSessions
+  // A host that answered but did not understand the question. It reports an empty
+  // list, because `refreshGroups` could not read one — so without this branch it
+  // fell into `noSessions` and the panel offered 「新建会话」 to a host that would
+  // refuse to create one. Measured on the emulated old host: pressing that button
+  // sent no request at all, changed nothing on screen, and repeated the same
+  // sentence — the panel was giving an instruction it would not carry out.
+  const hostStaleNow = !hostDown && hostStale
+  const noSessions = !hostDown && !hostStaleNow && groups.length === 0
+  const shown = hostDown || hostStaleNow || noSessions
   surface.hidden = !shown
   // Announced only when the surface appears, because this runs on every poll and
   // the host can stay away for minutes: a reader told "cannot reach dsh web" once
@@ -671,9 +678,10 @@ function renderOffline() {
   // `loadedOnce` guard covers the other end — the first paint happens before any
   // request has answered, so without it every ordinary start announces a problem
   // that is not there.
-  if (shown && loadedOnce && announcedOffline !== (hostDown ? 'host' : 'empty')) {
-    announcedOffline = hostDown ? 'host' : 'empty'
-    announce(t(hostDown ? 'blocked.hostTitle' : 'blocked.emptyTitle'))
+  const state = hostDown ? 'host' : hostStaleNow ? 'stale' : 'empty'
+  if (shown && loadedOnce && announcedOffline !== state) {
+    announcedOffline = state
+    announce(t(state === 'host' ? 'blocked.hostTitle' : state === 'stale' ? 'blocked.staleTitle' : 'blocked.emptyTitle'))
   } else if (!shown && announcedOffline !== '') {
     // The surface went away, so the sentence in the announcer is now stale.
     // Leaving it there is not merely untidy: anything that reads the region later
@@ -688,12 +696,23 @@ function renderOffline() {
     blockedBody.textContent = t('blocked.hostBody')
     // The retry is the panel's whole startup, so it is the same work the first
     // load did rather than a second, thinner path that could drift from it.
+    blockedAction.hidden = false
     blockedAction.disabled = retrying
     blockedAction.textContent = retrying ? t('blocked.retrying') : t('blocked.retry')
     return
   }
+  if (hostStaleNow) {
+    blockedTitle.textContent = t('blocked.staleTitle')
+    blockedBody.textContent = t('blocked.staleBody')
+    // No action at all, and this is the point of the whole branch: restarting
+    // `dsh web` is done outside the panel, so every button here would be one the
+    // panel cannot honour. A disabled button would still be an offer.
+    blockedAction.hidden = true
+    return
+  }
   blockedTitle.textContent = t('blocked.emptyTitle')
   blockedBody.textContent = t('blocked.emptyBody')
+  blockedAction.hidden = false
   blockedAction.disabled = creating
   blockedAction.textContent = creating ? t('blocked.creating') : t('blocked.emptyAction')
 }

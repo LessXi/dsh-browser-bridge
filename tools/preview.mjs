@@ -261,6 +261,11 @@ function makeHost(scenario, state) {
                 session.id === 'session-a' ? { ...session, running: true } : session),
             }))
             : DEFAULT_GROUPS)
+          // A host older than the panel answers 200 with a body that has no
+          // `groups` at all. That is not an empty list, and the panel is built to
+          // tell the difference — so the preview has to be able to produce it, or
+          // the state can only ever be reached by installing an old host.
+          if (scenario.staleHost === true) return send(200, { ok: true })
           return send(200, { groups: [...groups, ...state.created] })
         }
         const parsed = body.length > 0 ? JSON.parse(body) : {}
@@ -951,6 +956,13 @@ const SCENARIOS = {
   },
   /** Extension installed, host never started. The state that was invisible for 33 rounds. */
   hostDown: { hostDown: true },
+  /**
+   * A host running code from before this panel existed: it answers, but its body
+   * has no session list. Measured on a real one, `newSession` gets a bare 400 and
+   * every session button fails with a status code, which reads as "the panel is
+   * broken" rather than "the host is old".
+   */
+  staleHost: { staleHost: true },
   /** Host is up, extension is not connected. */
   noBridge: { bridgeConnected: false },
   /** Long conversation, so the "earlier" pill is reachable. */
@@ -1365,6 +1377,44 @@ async function main() {
 
     await cdp.send('Page.addScriptToEvaluateOnNewDocument', {
       source: bootstrapSource(hostPort, scenario, 'https://github.com/LessXi/dsh-browser-bridge'),
+    }, sessionId)
+
+    // Pin the text caret's blink phase, so the same code renders the same bytes.
+    //
+    // The composer's textarea takes focus as the panel opens, and Chromium blinks
+    // its caret on a wall-clock timer. A screenshot taken while it is drawn
+    // differs from one taken while it is hidden by a 17px-tall line at
+    // CSS (30, 645..662) — measured by rendering the same code four times: two
+    // runs agreed exactly and two differed by 70 pixels at that rectangle, which
+    // is the caret and nothing else.
+    //
+    // That matters more than tidiness. `docs/screenshots/` is what the README
+    // shows the product to be, and `test/screenshots.test.js` compares a
+    // fingerprint of the sources — but a scene that renders differently each time
+    // cannot show a regression, because every render is one, and each gallery run
+    // produces a meaningless diff. An earlier round hit the same thing at one
+    // pixel and recorded it as "focus-ring antialiasing"; the cause was left
+    // unnamed then, and it is named now.
+    //
+    // This is a rendering-tool concern, not a product change: the panel keeps its
+    // caret on purpose (`textarea:focus-visible` says so where it removes the
+    // outline). Suppressing the blink here changes only what the camera catches,
+    // the same way `--reduced-motion` does — and a reader who asks their system
+    // for less motion sees the identical rendering.
+    //
+    // `caret-color: transparent` rather than disabling focus: the focus state is
+    // load-bearing in several scenes, and a render that dropped it would be a
+    // different picture of a different state.
+    await cdp.send('Page.addScriptToEvaluateOnNewDocument', {
+      source: `(() => {
+        const pin = () => {
+          const style = document.createElement('style')
+          style.textContent = 'textarea, input { caret-color: transparent !important; }'
+          ;(document.head ?? document.documentElement).append(style)
+        }
+        if (document.head === null) document.addEventListener('DOMContentLoaded', pin, { once: true })
+        else pin()
+      })()`,
     }, sessionId)
 
     const load = new Promise((ok) => cdp.on('Page.loadEventFired', ok))

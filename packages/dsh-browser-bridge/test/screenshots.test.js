@@ -221,6 +221,29 @@ test('a screenshot is a function of the code, not of when it was taken', () => {
     /color:\s*var\(--/.test(reduceBlock[1]),
     'the working row drops its gradient without naming a colour, so it renders invisible',
   )
+
+  // A second, independent source of the same churn, found later and by accident:
+  // the composer's caret. The textarea holds focus as the panel opens, so
+  // Chromium blinks its insertion point on a wall-clock timer. Rendering the same
+  // code four times gave 0, 0, 70 and 0 differing pixels — the 70 sitting in a
+  // 17px-tall line at CSS (30, 645..662), which is that caret. Eight of the
+  // fifteen scenes carried it, so `node tools/gallery.mjs` rewrote eight images
+  // for no reason and the README's pictures depended on when they were taken.
+  //
+  // `prefers-reduced-motion` does not cover it — the blink is the browser's, not
+  // an animation the panel declares — so it needs its own pin.
+  assert.ok(
+    /caret-color:\s*transparent\s*!important/.test(preview),
+    'the caret blink is no longer pinned, so screenshots vary with the clock',
+  )
+  // Pinned by colouring the caret, not by dropping focus. Several scenes exist to
+  // show what focus looks like (`#composer:has(textarea:focus-visible)` draws the
+  // card ring), and a render that blurred focus would be a picture of a different
+  // state rather than a stable picture of this one.
+  assert.ok(
+    /textarea,\s*input\s*\{\s*caret-color/.test(preview),
+    'the caret is pinned on the wrong selector, so a scene with another field still flickers',
+  )
 })
 
 test('the screenshots were rendered from the code that is here now', () => {

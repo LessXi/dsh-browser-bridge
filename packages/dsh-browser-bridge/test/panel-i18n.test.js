@@ -77,13 +77,21 @@ test('no dictionary entry is a sentence', (t) => {
   // It grew once, deliberately: the same pane now also answers "no sessions yet",
   // which is the first thing a new reader sees and was 559px of blank transcript
   // before. That is the same surface making the same kind of statement.
+  //
+  // It grew again for the third state of that same pane. A host older than the
+  // panel answers with a body the panel cannot read, and the sentence there is
+  // load-bearing for exactly the reason above: the reader's move is to restart
+  // `dsh web`, which no label can say. Only the body is exempt — the title is
+  // 「dsh web 需要重启」, short enough to be a label, and it stays subject to the
+  // rule like everything else.
   const ALLOWED = [
     'blocked.hostTitle',
     'blocked.hostBody',
     'blocked.emptyTitle',
     'blocked.emptyBody',
+    'blocked.staleBody',
   ]
-  assert.equal(ALLOWED.length, 4, 'the exempt list grew; was that intentional?')
+  assert.equal(ALLOWED.length, 5, 'the exempt list grew; was that intentional?')
 
   const offenders = []
   for (const [locale, dictionary] of Object.entries(DICTIONARIES)) {

@@ -146,6 +146,16 @@ const host = {
   ],
   /** Extra fields for the health body; `approvalPending` is set per test. */
   health: {},
+  /**
+   * Answer the groups poll with a 200 whose body has no `groups` key.
+   *
+   * That is what a host running older code looks like from here: it understood
+   * the request well enough to answer, but not well enough to include the list.
+   * The panel cannot tell that apart from an empty conversation list by the
+   * status code alone, which is exactly why the distinction needs a fixture —
+   * without one, "the host is older than the panel" is not reachable from a test.
+   */
+  staleHost: false,
 }
 
 const groupsPayload = () => ({
@@ -343,7 +353,13 @@ globalThis.fetch = async (url, options = {}) => {
         gate.then(resolve, reject)
       })
     }
-    if ((options.method ?? 'GET') === 'GET') return respond(groupsPayload())
+    if ((options.method ?? 'GET') === 'GET') {
+      // A host older than the panel answers 200 with a body this panel cannot
+      // read. Modelled at the response rather than at the panel's flag, so the
+      // test drives the same detection the real host would.
+      if (host.staleHost) return respond({})
+      return respond(groupsPayload())
+    }
     const body = options.body === undefined ? {} : JSON.parse(options.body)
     if (body.action === 'messages') {
       host.reads.push(body)
@@ -958,6 +974,72 @@ test('with no sessions at all, the panel says how to start one, and the button d
     host.groups = undefined
     await clockOf('groups')
     await settle()
+  }
+})
+
+test('a host older than the panel says so, and offers nothing it cannot do', async () => {
+  // The host answers 200 without a `groups` list. The panel cannot create a
+  // session against that host — `newSession` refuses on the same flag — but the
+  // surface only knew two states, so this fell into the empty one and said
+  // 「还没有会话」 next to a 「新建会话」 button. Pressing it sent no request,
+  // changed nothing on screen, and repeated a toast that had already faded:
+  // measured on an emulated old host, `anythingChanged: false`,
+  // `createRequestsSent: 0`, `persistentNoticeCount: 0`.
+  //
+  // An interface that instructs the reader to press a button it will not honour
+  // is worse than one that stays quiet, so what this test is really pinning is
+  // the absence of the invitation.
+  host.down = false
+  host.staleHost = true
+  host.groups = undefined
+  try {
+    await clockOf('groups')
+    await settle()
+
+    assert.equal(registry.get('blocked').hidden, false, 'an unreadable host left the area blank')
+    // Not the empty state's sentence. The reader has not been told there are no
+    // sessions, because nobody knows whether there are.
+    assert.equal(registry.get('blocked-title').textContent, 'dsh web 需要重启')
+    assert.equal(registry.get('blocked-body').textContent, '面板比宿主新：重启 dsh web 之后就能用。')
+
+    // The load-bearing assertion. Restarting `dsh web` happens outside the panel,
+    // so there is no button here that could work; a disabled one would still be
+    // an offer, which is why this asks for hidden rather than disabled.
+    const action = registry.get('blocked-action')
+    assert.equal(action.hidden, true, 'the panel still offered an action it cannot carry out')
+
+    host.created.length = 0
+    action.emit('click')
+    await settle()
+    assert.equal(host.created.length, 0, 'a click on a hidden action still reached the host')
+
+    // And the reader who is not looking at the screen hears the same thing the
+    // screen says. Without this the surface could be announced as 「还没有会话」
+    // while showing 「dsh web 需要重启」 — the two channels disagreeing, which is
+    // the failure this whole branch exists to prevent, moved from the eye to the
+    // ear. Mutation `stale-not-announced` survived until this assertion existed.
+    //
+    // `settleMacrotask` rather than `settle`, because `announce` writes on a
+    // later task on purpose: a microtask drain reads the region while it is
+    // still empty and would report the defect this is here to catch.
+    await settleMacrotask()
+    assert.ok(
+      announcerWrites.includes('dsh web 需要重启'),
+      `the stale state was never announced; the announcer said ${JSON.stringify(announcerWrites)}`,
+    )
+    // Read from the end: the surface's earlier states wrote their own sentences,
+    // and the assertion is about what the reader is told *now*.
+    assert.ok(
+      !announcerWrites.slice(announcerWrites.lastIndexOf('dsh web 需要重启')).includes('还没有会话'),
+      'the announcer contradicted the surface after the stale state appeared',
+    )
+  } finally {
+    // Every test after this one shares the same panel instance, so an unreachable
+    // host left behind would poison the rest of the file.
+    host.staleHost = false
+    await clockOf('groups')
+    await settle()
+    assert.equal(registry.get('blocked').hidden, true, 'the stale surface outlived the old host')
   }
 })
 

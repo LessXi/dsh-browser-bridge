@@ -201,6 +201,13 @@ export const zh = Object.freeze({
   'blocked.emptyBody': '新建一个，就可以开始问了。',
   'blocked.emptyAction': '新建会话',
   'blocked.creating': '新建中…',
+  // The third state of the same surface. Without it a host running older code
+  // lands in the empty state above: the panel offers 「新建会话」 and then refuses
+  // to create one, so the reader presses a button that answers with nothing.
+  // The title says what is wrong and the body says the one thing that fixes it —
+  // restarting is the reader's move, so the action is gone rather than disabled.
+  'blocked.staleTitle': 'dsh web 需要重启',
+  'blocked.staleBody': '面板比宿主新：重启 dsh web 之后就能用。',
   // The host answers every send with what it staged and what it refused. A
   // refusal used to be invisible: the chip promised an attachment, the message
   // went out without it, and nothing said so.
@@ -353,6 +360,8 @@ export const en = Object.freeze({
   'blocked.emptyBody': 'Start one, and ask away.',
   'blocked.emptyAction': 'New chat',
   'blocked.creating': 'Starting…',
+  'blocked.staleTitle': 'dsh web needs a restart',
+  'blocked.staleBody': 'The panel is newer than the host. Restart dsh web and it will work.',
   'error.attachmentRefused': 'Attachment refused: {reason}',
   'error.reportStale': 'Reload the page',
   'error.notCopied': 'Could not copy',
