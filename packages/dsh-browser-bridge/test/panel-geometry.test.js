@@ -378,10 +378,20 @@ test('the earlier-content pill states its height once', (t) => {
   const pills = css.match(/--pill-height\s*:\s*([^;]+);/)
   assert.ok(pills !== null, 'the pill height must be a token so both places read one value')
 
-  const pillHeight = declarationOf('#earlier', 'height')
+  // `min-height` and not `height`: the pill holds a label, so it has to be able
+  // to grow past this when the reader enlarges the font. A fixed `height` here
+  // would clip the label — measured at a 32px root, the 26px box held a 52px
+  // two-line label. The token still states the resting size, which is what the
+  // reservation needs, so the contract this test is about is unchanged.
+  const pillHeight = declarationOf('#earlier', 'min-height')
   assert.ok(
     pillHeight !== null && pillHeight.includes('--pill-height'),
     `#earlier must take its height from the token, found ${JSON.stringify(pillHeight)}`,
+  )
+  assert.equal(
+    declarationOf('#earlier', 'height'),
+    null,
+    'the pill must not pin its own height, or the label is clipped when the font grows',
   )
 
   const reservation = declarationOf('#stage:has(#earlier:not([hidden])) #transcript', 'margin-top')
@@ -1079,7 +1089,7 @@ test('the reader’s own font size reaches the text, and the boxes grow with it'
   // grows makes the lines paint on top of each other. Measured at a 32px root,
   // the editor's font reached 28px inside a 20px line — three typed lines
   // overlapped and the reader could not read back what they were writing.
-  const textBoxes = ['#input', '#model', '#find-input', '.approval-actions button', '.menu-effort']
+  const textBoxes = ['#input', '#model', '#find-input', '.approval-actions button', '.menu-effort', '#blocked-action']
   for (const selector of textBoxes) {
     const lineHeight = declarationOf(selector, 'line-height')
     assert.ok(
@@ -1142,6 +1152,72 @@ test('the reader’s own font size reaches the text, and the boxes grow with it'
     assert.ok(
       /^calc\(\d+em \/ 12\)$/.test(value ?? ''),
       `${selector}'s floor is ${value}; it is set in 12px, so the denominator must be 12`,
+    )
+  }
+
+  // The retry button is the same shape as the rest of this group and was missed
+  // when the others were done. Measured at a 32px root: a frozen 32px held a 26px
+  // font on a 39px line, so `scrollHeight - clientHeight` was 7px and the label
+  // painted past its own edge — 33px of text in a 32px box.
+  assert.equal(
+    declarationOf('#blocked-action', 'min-height'),
+    'calc(32em / 13)',
+    '#blocked-action is set in 13px, so its 32px floor is 32em/13',
+  )
+
+  // The two pills. They are the pair that made this a rule rather than a fix:
+  // both are positioned with `left: 50%`, which leaves *half the panel* as their
+  // available width, so at a 32px root the 26px pill wrapped its label onto two
+  // lines (measured: 2 line boxes, 66.5px of text in a 26px box) and clipped it.
+  //
+  // The unit is the load-bearing part. These tokens are read in two places — the
+  // pill, set in 12px, and the reservation on `#transcript`, set in 13px — and
+  // `em` resolves against whichever element reads it, so one number would become
+  // 26px and 28.2px. At the default root that is a 2px drift and invisible; it is
+  // only the enlarged sizes that show it. `rem` resolves against the root.
+  for (const [token, value] of [['--pill-height', '1.625rem'], ['--to-bottom-size', '1.75rem']]) {
+    const declared = css.match(new RegExp(`${token}\\s*:\\s*([^;]+);`))
+    assert.ok(declared !== null, `${token} must exist`)
+    assert.equal(
+      declared[1].trim(),
+      value,
+      `${token} is ${declared[1].trim()}; it must be a root-relative length so the pill and the reservation resolve it alike`,
+    )
+  }
+
+  // A pill that pins its own height cannot grow, and its label is clipped rather
+  // than moved — the failure is silent in every screenshot taken at the default
+  // font size.
+  for (const selector of ['#earlier', '#to-bottom']) {
+    assert.equal(
+      declarationOf(selector, 'height'),
+      null,
+      `${selector} pins its own height (${declarationOf(selector, 'height')}); the label inside must be able to grow`,
+    )
+    assert.ok(
+      (declarationOf(selector, 'min-height') ?? '').includes('var(--'),
+      `${selector} must take its resting height from the shared token`,
+    )
+  }
+
+  // `left: 50%` is what starved the pill of width in the first place. Stretching
+  // the box edge to edge and centring with `margin: 0 auto` gives it the whole
+  // panel, and the pill still sits exactly in the middle — verified by measurement
+  // (`offCentreBy: 0` at 16/24/32px roots, equal gaps either side).
+  for (const selector of ['#earlier', '#to-bottom']) {
+    assert.equal(
+      declarationOf(selector, 'left'),
+      '0',
+      `${selector} must stretch edge to edge; 'left: 50%' leaves it half the panel to grow into`,
+    )
+    assert.equal(
+      declarationOf(selector, 'right'),
+      '0',
+      `${selector} must stretch edge to edge so its available width is the panel, not half of it`,
+    )
+    assert.ok(
+      (declarationOf(selector, 'margin') ?? '').includes('auto'),
+      `${selector} centres with an automatic margin now that it stretches`,
     )
   }
 })

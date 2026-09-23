@@ -62,9 +62,19 @@
            between it and the edge. Both are named because the transcript has to
            reserve exactly this much room — see the `padding-top` rule below. A
            number written twice is a number that drifts apart. */
-        --pill-height: 26px;
+        /* Both pills hold text, so both grow with the reader's font size. The
+           unit is `rem` and not `em`, and that is the load-bearing part: these
+           tokens are read in two places — the pill itself and the reservation on
+           `#transcript` — and `em` resolves against the font of whichever element
+           uses it, so the pill (12px) and the reservation (13px) would resolve one
+           number into two values and drift apart by exactly that ratio. `rem`
+           resolves against the root in every context, so both stay equal.
+
+           The ratio to the font is preserved exactly: 26/12 at a 16px root is the
+           same proportion as 52/24 at a 32px root. */
+        --pill-height: 1.625rem;
         --pill-inset: 8px;
-        --to-bottom-size: 28px;
+        --to-bottom-size: 1.75rem;
         --to-bottom-inset: 12px;
 
         /* How wide a line of long-form text is allowed to get.
@@ -1017,7 +1027,12 @@
       }
       #blocked-action {
         margin-top: 6px;
-        height: 32px;
+        /* The denominator is this control's own font size, 13px, not the root's.
+           `2em` here would give 26px against a design that had 32px, and no
+           reading of the stylesheet reveals that — it has to be measured. The
+           fixed 32px this replaces held a 26px line at a 32px root: the label was
+           33px inside a 32px box and painted past its own edge. */
+        min-height: calc(32em / 13);
         padding: 0 16px;
         border-radius: var(--radius-xl);
         background: CanvasText;
@@ -1076,11 +1091,16 @@
       /* ---- the way back down ---- */
       #to-bottom {
         position: absolute;
-        left: 50%;
-        transform: translateX(-50%);
+        /* Centred the same way as the pill above and for the same reason, though
+           this one holds a single glyph rather than a label: `left: 50%` leaves
+           half the panel as the available width, which is invisible here only
+           while the glyph is smaller than its box. */
+        left: 0;
+        right: 0;
+        margin: 0 auto;
         bottom: var(--to-bottom-inset);
         width: var(--to-bottom-size);
-        height: var(--to-bottom-size);
+        min-height: var(--to-bottom-size);
         display: grid;
         place-items: center;
         border-radius: 999px;
@@ -1102,10 +1122,22 @@
          pill's height instead (rule below), so the pill floats over empty air. */
       #earlier {
         position: absolute;
-        left: 50%;
+        /* Centred by stretching the box edge to edge and letting it shrink to
+           its content, not by `left: 50%` + `translateX(-50%)`. Those two look
+           equivalent and are not: `left: 50%` puts the element's left edge at the
+           panel's midline, which leaves it *half the panel* as its available
+           width. Measured at a 32px root, that ceiling — 190px of a 380px panel —
+           wrapped the label onto two lines inside a one-line-tall pill. Edge to
+           edge, the available width is the whole panel. */
+        left: 0;
+        right: 0;
         top: var(--pill-inset);
-        transform: translateX(-50%);
-        height: var(--pill-height);
+        margin: 0 auto;
+        width: fit-content;
+        max-width: calc(100% - 2 * var(--pill-inset));
+        min-height: var(--pill-height);
+        display: flex;
+        align-items: center;
         padding: 0 12px;
         border-radius: 999px;
         background: Canvas;
