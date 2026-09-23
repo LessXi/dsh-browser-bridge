@@ -3587,6 +3587,35 @@ function closeFindBar() {
   if (findBarOpen()) registry.get('find-open').emit('click')
 }
 
+/**
+ * Put the session list on screen however the previous test left the view.
+ *
+ * `#title` is a toggle, and the suite shares one panel — so a test that clicked it
+ * unconditionally *closed* a list the previous test had left open, and the
+ * failure surfaced there rather than here. Same hazard, same fix, as
+ * `closeFindBar` one screen up.
+ *
+ * @returns {Promise<void>} Resolves once the view has settled.
+ */
+async function openHistory() {
+  if (currentViewInPanel() === 'chat') registry.get('title').click()
+  await settle()
+}
+
+/**
+ * Put the conversation on screen however the previous test left the view.
+ *
+ * The counterpart to `openHistory`, and needed for the same reason: a test that
+ * means to type "over the conversation" has to know it is looking at one, or it
+ * types the word into the session list on the other side of the toggle.
+ *
+ * @returns {Promise<void>} Resolves once the view has settled.
+ */
+async function openChat() {
+  if (currentViewInPanel() === 'history') registry.get('title').click()
+  await settle()
+}
+
 /** Put a long transcript on screen and open the find bar, with no query yet. */
 async function openFindBar() {
   // An earlier test can leave a turn running, and while one is the send button is
@@ -4225,6 +4254,96 @@ test('Escape closes the find bar and hands focus back', async () => {
     registry.get('find-open'),
     'and focus must go back to the control that opened it, not to the body',
   )
+})
+
+test('the session list narrows with the find bar instead of searching the conversation', async (t) => {
+  await settleToIdle()
+  // The suite's own fixture is used as-is: two sessions titled "A session" and
+  // "Another session". No fixture surgery — an earlier version of this test
+  // replaced `host.groups`, and that changed which session the panel considered
+  // current, breaking an unrelated test much later in the file. A test that
+  // reconfigures the shared fixture is not testing this behaviour, it is editing
+  // every test after it.
+  t.onCleanup(() => closeFindBar())
+  closeFindBar()
+  await openHistory()
+
+  const rows = () => registry.get('history').querySelectorAll('button.session')
+  assert.equal(rows().length, 2, 'both sessions are listed before anything is typed')
+
+  registry.get('find-open').click()
+  await settle()
+  assert.equal(findBarOpen(), true, 'the bar must be open, or this proves nothing')
+
+  const field = registry.get('find-input')
+  field.value = 'another'
+  field.emit('input', { target: field })
+  await settle()
+
+  assert.equal(rows().length, 1, 'only the session whose title matches stays')
+  assert.ok(
+    rows()[0].textContent.includes('Another session'),
+    'and the row kept is the matching one, not merely the first',
+  )
+  assert.equal(
+    registry.get('find-count').textContent,
+    '1 个会话',
+    'the count is sessions, because sessions are what the reader is narrowing',
+  )
+  // The step-through arrows belong to the conversation: they walk matches inside
+  // one session, and over a list of sessions there is no second match to step to.
+  // Leaving them visible offers a control that cannot act on what is on screen.
+  assert.equal(registry.get('find-prev').hidden, true, 'no match arrows over a session list')
+  assert.equal(registry.get('find-next').hidden, true, 'in either direction')
+  // The box names its subject. Guessing wrong is not recoverable by looking:
+  // both views have a find bar that looks identical.
+  assert.equal(field.placeholder, '按标题查找…', 'the box says what it searches')
+
+  // Clearing restores the list rather than leaving it short for no visible reason.
+  field.value = ''
+  field.emit('input', { target: field })
+  await settle()
+  assert.equal(rows().length, 2, 'clearing the query brings the whole list back')
+})
+
+test('a query typed over a conversation does not filter the session list', async (t) => {
+  await settleToIdle()
+  t.onCleanup(() => closeFindBar())
+  closeFindBar()
+  // Over the conversation, where the bar searches the transcript. Said explicitly
+  // rather than assumed: the previous test leaves the session list on screen, and
+  // typing "over the conversation" while looking at the list writes the word into
+  // the wrong view — which then reads as a product bug when it is the test's.
+  await openChat()
+  await openFindBar()
+  const field = registry.get('find-input')
+  field.value = 'zzzznothingmatchesthis'
+  field.emit('input', { target: field })
+  await settle()
+  assert.equal(registry.get('find-count').textContent, '无结果', 'nothing in the conversation matches')
+
+  // Now cross into the list with the bar open. The word was a question about the
+  // conversation and means nothing here; left in force it empties a list of two
+  // sessions the reader can see, which is the failure mode that makes a filter
+  // untrustworthy — a list that is short for a reason nobody can see.
+  await openHistory()
+  assert.equal(currentViewInPanel(), 'history', 'the list is on screen')
+  assert.equal(findBarOpen(), true, 'the bar is still open, so a stale value would be visible')
+  assert.equal(
+    registry.get('find-input').value,
+    '',
+    'the other view\'s query is dropped on the way in',
+  )
+  assert.equal(
+    registry.get('history').querySelectorAll('button.session').length,
+    2,
+    'so the whole list is drawn',
+  )
+  // And the count describes what is on screen rather than what the conversation
+  // answered: measured, a repaint skipped here left 「无结果」 above two rows that
+  // were plainly there.
+  assert.equal(registry.get('find-count').textContent, '2 个会话', 'the count follows the view')
+  assert.equal(field.placeholder, '按标题查找…', 'and so does the box')
 })
 
 test('a picture the reader sent is drawn, and its bytes are fetched by URL', async () => {

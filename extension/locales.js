@@ -78,10 +78,16 @@ export const zh = Object.freeze({
   // count says which match the reader is on, because that is the answer to the
   // question they asked: "is this the only one?".
   'find.placeholder': '查找…',
+  // 同一个框在会话列表里筛的是标题，说清楚比让读者猜好。
+  'find.placeholder.sessions': '按标题查找…',
   'find.count': '{position}/{count}{more}',
   'find.none': '无结果',
   'find.searching': '查找中…',
   'find.more': '+',
+  // Over the session list the count is sessions rather than matches, so it is
+  // its own word: "{count} 个会话" answers "how much is left" without implying
+  // there is a first-of-several to step through.
+  'find.sessions': '{count} 个会话',
   'context.tab': '当前标签页',
   'context.selection': '选中内容',
   // Shown on the attachment chip only while the extension is not attached to the
@@ -253,10 +259,12 @@ export const en = Object.freeze({
   'transcript.earlier': 'Earlier messages',
   'transcript.loading': 'Loading…',
   'find.placeholder': 'Find…',
+  'find.placeholder.sessions': 'Find by title…',
   'find.count': '{position}/{count}{more}',
   'find.none': 'No results',
   'find.searching': 'Searching…',
   'find.more': '+',
+  'find.sessions': '{count} sessions',
   'context.tab': 'this tab',
   'context.selection': 'the selection',
   'context.offline': 'Browser tools offline',

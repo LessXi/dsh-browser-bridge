@@ -379,6 +379,67 @@ const DEFAULT_GROUPS = [
   },
 ]
 
+/**
+ * The session list a few months of real use produces.
+ *
+ * Counts and titles come from `C:\Users\hj\.dsh\sessions` on the machine this was
+ * built on: four workspaces holding 83, 36, 23 and 14 sessions. Only a handful of
+ * rows are spelled out and the rest are generated, because the point is the
+ * *length* of the list and the shape of the titles, not 156 hand-written names.
+ */
+const FULL_GROUPS = (() => {
+  // Titles that make scanning hard on purpose: some are long enough to be cut
+  // off, and several open with the same words, so the distinguishing part is the
+  // part the row hides.
+  const titles = [
+    '打造类似codex的dsh网页插件',
+    'Fix the snapshot pipeline',
+    'Investigate the flaky snapshot test',
+    'Add attachment support to the browser bridge',
+    'Add attachment support for tool results',
+    'Make the panel readable in Windows High Contrast',
+    'Make the panel readable at 200 pixels',
+    'Record the two parallel version lines',
+    'Set up the release checklist',
+    'Rename the bridge package before publishing',
+  ]
+  const shapes = [
+    { workspace: 'dsh-bridge', count: 83 },
+    { workspace: 'daily', count: 36 },
+    { workspace: '黑田', count: 23 },
+    { workspace: '', count: 14 },
+  ]
+  const day = 24 * 60 * 60_000
+  let seed = 7
+  /** A small deterministic wobble, so ages do not all land on the same tier. */
+  const nextAge = () => {
+    seed = (seed * 1103515245 + 12345) % 2147483648
+    return seed / 2147483648
+  }
+
+  return shapes.map((shape, groupIndex) => ({
+    id: `ws-${groupIndex + 1}`,
+    title: shape.workspace,
+    sessions: Array.from({ length: shape.count }, (_, index) => {
+      const age = nextAge()
+      // Spread across every tier the label knows: minutes, hours, days, and past
+      // a year, so the generated list exercises all of them at once.
+      const ago = age < 0.15 ? age * 60 * 60_000
+        : age < 0.4 ? age * day
+        : age < 0.85 ? age * 30 * day
+        : age * 500 * day
+      return {
+        id: `session-${groupIndex + 1}-${index}`,
+        title: titles[(index + groupIndex * 3) % titles.length],
+        updatedAt: Date.now() - ago,
+        running: false,
+        blank: false,
+        model: { provider: 'deepseek', model: 'deepseek-v4-pro', reasoningEffort: 'high' },
+      }
+    }),
+  }))
+})()
+
 const DEFAULT_CATALOG = {
   groups: [
     {
@@ -854,6 +915,21 @@ const SCENARIOS = {
   streaming: { streaming: true },
   /** The session list, open. */
   historyOpen: { click: '#title' },
+  /**
+   * The session list at the size a reader's actually is.
+   *
+   * `historyOpen` shows five rows across two groups, which fits on one screen and
+   * therefore cannot show what finding a session *costs*. The machine this panel
+   * was built on has **156** session files across four workspaces — 83, 36, 23 and
+   * 14 — and the same is true of anyone who has used the harness for a few months.
+   * So the list is a long scroll with no way to narrow it, and that is only
+   * visible here.
+   *
+   * The titles are drawn from the real directories, including the two things that
+   * make a list hard to scan: titles long enough to be cut off by the row's
+   * ellipsis, and several that begin with the same words.
+   */
+  historyFull: { click: '#title', groups: FULL_GROUPS },
   /** The model menu, open. */
   modelMenu: { click: '#model' },
   /** The at-mention menu, open over typed text. */

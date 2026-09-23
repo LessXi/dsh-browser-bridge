@@ -197,6 +197,17 @@ let findOpen = false
 /** Which match the reader is on, as an index into `searchHits`. */
 let searchPosition = 0
 /**
+ * The session-list filter, lowercased and trimmed: `searchQuery` when the
+ * history view is on screen, `''` otherwise.
+ *
+ * The find bar means "narrow what I am looking at", and what the reader is
+ * looking at differs by view. One query string, two subjects, and the state is
+ * kept separate so that a query typed over the transcript does not silently
+ * filter the session list the next time it is opened — a list that came up short
+ * for a reason the reader cannot see is worse than one that did not narrow at all.
+ */
+let sessionFilter = ''
+/**
  * The absolute row index the reader is being shown, or null when no search has
  * taken them anywhere.
  *
@@ -1906,6 +1917,22 @@ function reconcileRows(next) {
  */
 async function runSearch() {
   const query = searchQuery.trim()
+  // In the history view there is nothing to ask the host: the session list is
+  // already entirely in memory, so the filter is a comparison and the result is
+  // immediate. Asking the host here would search the *conversation* while the
+  // reader looks at a list of session titles — measured, it answered "无结果"
+  // over 156 sessions whose titles contained the word.
+  if (view === 'history') {
+    sessionFilter = query.toLowerCase()
+    searching = false
+    searchHits = []
+    searchTotal = 0
+    searchTruncated = false
+    searchPosition = 0
+    drawHistory()
+    renderFind()
+    return
+  }
   // A blank query clears the results rather than searching for nothing: an empty
   // needle matches every row, and a count of "600 of 600" is not an answer to
   // anything.
@@ -2213,6 +2240,32 @@ function renderFind() {
   findOpenButton.setAttribute('aria-expanded', String(findOpen))
   if (!findOpen) return
   if (findInput.value !== searchQuery) findInput.value = searchQuery
+  // The same box narrows two different things, so it says which. Without this the
+  // reader over the session list is looking at a box that says "Find…" and has to
+  // guess whether it searches conversations or their titles — and the guess that
+  // matters is the wrong one, because the two are not the same question.
+  const placeholder = view === 'history' ? t('find.placeholder.sessions') : t('find.placeholder')
+  if (findInput.placeholder !== placeholder) findInput.placeholder = placeholder
+  // Over the session list the count is sessions, not conversation rows: the
+  // reader is narrowing a list, and "1/3" with arrows to step between matches
+  // describes a thing this view does not have. The arrows are hidden for the
+  // same reason — a control that cannot act on what is on screen is a control
+  // that lies about what is possible.
+  if (view === 'history') {
+    const matching = groups.reduce((total, group) => total + group.sessions
+      .filter((session) => session.blank !== true || session.id === currentSessionId)
+      .filter((session) => sessionFilter.length === 0 || sessionMatches(session, sessionFilter)).length, 0)
+    const all = groups.reduce((total, group) => total + group.sessions
+      .filter((session) => session.blank !== true || session.id === currentSessionId).length, 0)
+    findCount.textContent = sessionFilter.length === 0
+      ? t('find.sessions', { count: String(all) })
+      : (matching === 0 ? t('find.none') : t('find.sessions', { count: String(matching) }))
+    findPrev.hidden = true
+    findNext.hidden = true
+    return
+  }
+  findPrev.hidden = false
+  findNext.hidden = false
   const count = searchHits.length
   findCount.textContent = count === 0
     ? (searching ? t('find.searching') : t('find.none'))
@@ -2678,7 +2731,35 @@ async function refreshTranscript() {
 }
 
 /**
+ * Does this session match what the reader typed into the find bar?
+ *
+ * The session list is the one list in this panel that is already entirely here:
+ * `refreshGroups` fetches every workspace and every session in one response, so
+ * filtering it is a local comparison rather than a request. That is the opposite
+ * of the conversation search, which has to go to the host because the panel holds
+ * one window of a transcript that may be thousands of rows long.
+ *
+ * Matched against the title as the reader sees it — including the substitutes,
+ * because "Untitled" is the word on the row and searching for it should find it.
+ *
+ * @param {object} session One entry of a group's `sessions`.
+ * @param {string} needle Already lowercased and trimmed.
+ * @returns {boolean} True when the row should stay on screen.
+ */
+function sessionMatches(session, needle) {
+  const title = session.title || (session.blank ? t('session.new') : t('session.untitled'))
+  return title.toLowerCase().includes(needle)
+}
+
+/**
  * Rebuild the history view from the workspace groups.
+ *
+ * Narrowed by the find bar when it holds a query, because a session list is a
+ * thing people search: the machine this was built on has 156 sessions across four
+ * workspaces, which is ten screens of scrolling with nothing to narrow it. The
+ * filter is applied per group and a group with no survivors is dropped whole —
+ * the point of typing is to stop reading headings that lead nowhere.
+ *
  * @returns {void}
  */
 function drawHistory() {
@@ -2698,7 +2779,8 @@ function drawHistory() {
     // own sidebar keeps exactly one of them per workspace as its "new session"
     // row; keeping the one on screen is enough here, because `+` is always
     // available and a list of empty rows is what made this unreadable.
-    const visible = group.sessions.filter((session) => session.blank !== true || session.id === currentSessionId)
+    let visible = group.sessions.filter((session) => session.blank !== true || session.id === currentSessionId)
+    if (sessionFilter.length > 0) visible = visible.filter((session) => sessionMatches(session, sessionFilter))
     if (visible.length === 0) continue
 
     if (group.title.length > 0) {
@@ -2852,6 +2934,28 @@ function showView(next) {
   history.hidden = next !== 'history'
   renderTitle()
   titleButton.setAttribute('aria-expanded', String(next === 'history'))
+  // The find bar narrows whatever is on screen, so crossing views drops the query
+  // the other view was narrowed by. Entering the list clears unconditionally
+  // rather than only when a query happens to be set, because the text sitting in
+  // the field is not the state: `renderFind` writes the state back into the field,
+  // so a field left holding a word while the query is empty pops that word back in
+  // on the next repaint and filters the list by a search nobody made here.
+  if (next === 'history') {
+    sessionFilter = ''
+    searchQuery = ''
+    findInput.value = ''
+    searchHits = []
+    searchTotal = 0
+    searchPosition = 0
+  } else if (sessionFilter.length > 0) {
+    sessionFilter = ''
+    findInput.value = ''
+  }
+  // Unconditionally, not only when a query was dropped: the count and the arrow
+  // buttons are painted per view, so a switch that skipped this repaint left the
+  // conversation's "No results" and its step-through arrows sitting over the
+  // session list. Measured — the bar read 「无结果」 above 156 unfiltered rows.
+  renderFind()
   if (next === 'history') {
     drawHistory()
   } else {
