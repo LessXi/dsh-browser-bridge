@@ -40,6 +40,88 @@
 
 ---
 
+## 界面
+
+侧栏面板是这个产品**全部可见的表面**，所以这里把它逐张放出来。每一张都由
+`node tools/gallery.mjs` 在真实 Chrome 里渲染真实的 `extension/sidepanel.html` 得到，
+不是设计稿——图上能看到的状态，装上去就是这些。
+
+<p align="center">
+  <img src="docs/screenshots/conversation.png" width="330" alt="对话：正文、代码块、工具行">
+  <img src="docs/screenshots/search.png" width="330" alt="在 600 行的会话里搜索，命中行被描边，匹配的字本身被高亮">
+</p>
+
+**左：日常对话。** 用户气泡、正文、带语言标签与「复制」的代码块、带 ✓ 的工具行、可折叠的
+「思考」。**右：跨越整段会话的搜索。** 计数 `1/3`，命中的那一行被描边，而**匹配的字本身**被
+高亮——因为「跳到那一行」在 600 行里等于什么都没告诉你。
+
+<p align="center">
+  <img src="docs/screenshots/approval.png" width="330" alt="审批卡：三个等权按钮，没有默认项">
+  <img src="docs/screenshots/model-menu.png" width="330" alt="模型菜单：推理等级与模型列表">
+</p>
+
+**左：唯一一处「提问」而不是「汇报」的地方。** 三个按钮**等权、没有默认项**——给同意界面
+的一侧加权重是记录在案的暗黑模式，Chrome 自己的权限界面也是扁平三按钮。
+**右：推理等级与模型。** 焦点环画在 `Low` 上、选中的 ✓ 在 `High` 上——**焦点和选中是两种
+不同的东西**，它们用两种不同的视觉语言表达。
+
+<p align="center">
+  <img src="docs/screenshots/sessions.png" width="330" alt="会话列表：按工作区分组，带相对时间与运行指示">
+  <img src="docs/screenshots/reasoning.png" width="330" alt="长会话里展开一个推理行">
+</p>
+
+**左：会话列表。** 按工作区分组、相对时间、正在运行的会话有绿点。
+**右：长会话里的推理行。** 展开的那一行是你付了等待时间换来的东西，`思考 ⌄` 折叠起来时它
+什么也不说。
+
+<p align="center">
+  <img src="docs/screenshots/tool-failure.png" width="330" alt="工具调用失败，原因就地展开">
+  <img src="docs/screenshots/working.png" width="330" alt="一轮进行中：等待行，发送键变成停止">
+</p>
+
+**左：失败的工具调用。** ✓ 与 ✗ 分得开，失败原因就地展开，用的是等宽字——它是一段要拿去
+搜索的字，不是一句要读的话。**右：一轮正在跑。** 等待行 `思考中…`，发送键变成停止方块。
+
+<p align="center">
+  <img src="docs/screenshots/host-down.png" width="330" alt="宿主没有运行：说明白并给一个有用的动作">
+  <img src="docs/screenshots/high-contrast.png" width="330" alt="Windows 高对比度模式下的同一个面板">
+</p>
+
+**左：宿主没在跑。** 死掉的面板要能解释自己，并给出**唯一有用的那个动作**。
+**右：Windows 高对比度。** 系统会重绘每一个颜色，**结构必须活下来**——代码块的边界、气泡、
+上下文 chip 都还在。这一张是若干轮修复的理由：把状态可见性押在会被该模式丢弃的绘制上
+（`box-shadow`、`--accent`）就会在这里消失。
+
+<p align="center">
+  <img src="docs/screenshots/conversation-light.png" width="330" alt="浅色方案下的同一屏">
+</p>
+
+**浅色方案。** 两种配色都被支持，所以两种都展示——一个在实际使用里通不过对比度的调色板，
+往往在另一种里是通的。
+
+<details>
+<summary>重新生成这些截图</summary>
+
+```powershell
+node tools/gallery.mjs          # 重新渲染 docs/screenshots/
+node tools/gallery.mjs --check  # 只检查是否齐全（CI 友好）
+```
+
+`tools/gallery.mjs` 里每张图都写着**为什么它在画廊里**。`tools/preview.mjs` 可以把任意
+场景渲染成 PNG，也可以只回答一个问题：
+
+```powershell
+node tools/preview.mjs --list                                  # 有哪些场景
+node tools/preview.mjs normal out.png --width 380 --height 720 # 渲染一屏
+node tools/preview.mjs normal out.png --probe probe.js         # 在页面里求值并打印结果
+node tools/preview.mjs normal out.png --ax-tree "#transcript"  # 平台实际暴露的无障碍子树
+node tools/preview.mjs normal out.png --keys "Tab,PageDown"    # 发真实按键
+```
+
+</details>
+
+---
+
 ## 安装
 
 ### 1. 载入扩展
@@ -258,7 +340,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 606 条
+npm test                          # 全部 609 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -348,7 +430,7 @@ Chrome for Testing 都装进带版本号的目录，写死路径会在一台机�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 606 条
+npm test                 # 609 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
