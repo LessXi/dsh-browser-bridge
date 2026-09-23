@@ -1,9 +1,9 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v96 已交付并入库。** 下一节就是最新的一轮改动；下面标 v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v95 那一段为止即可。
+> **当前状态：v97 已交付并入库。** 下一节就是最新的一轮改动；下面标 v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v96 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（686 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（688 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 > （真浏览器 e2e 那 4 条需要机器上有 Playwright Chromium 或 Chrome for Testing；
@@ -16,8 +16,70 @@
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
 >
-> **已入库**：v3→v96 的全部改动已提交并推送到 `origin/main`。工作区干净。
+> **已入库**：v3→v97 的全部改动已提交并推送到 `origin/main`。工作区干净。
 > （v92 是 `e3ad6ba`，v91 是 `3d96bf1`，v90 是 `767e4cd`，v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
+
+> ## v97：设置页不听读者的话
+
+本轮换到 **`extension/options.html`** —— 这是本扩展的**第二个界面**，与 `sidepanel.html` 并列。
+v91/v92/v93 三轮把「读者的字号设置」这条轴走了一遍，但**只扫了 `sidepanel.html`**。
+设置页从未进入这条轴，于是它是全仓库唯一一个**还在用绝对 px 写字号**的界面。
+
+**缺陷读数**（`.tmp-run/probe-options-scaling.js`，一次求值内量两档）：根字号 16px → 32px，
+**23 个文字元素 `grewCount: 0`、`frozenCount: 23`** —— 一个都没动。200% 的截图与 100% 的
+截图 **sha256 完全相同**（`b9f39e8b…`）。这不是「放大得不好看」，是**完全没放大**，
+违反 WCAG 1.4.4（要求 200%）。
+
+**修法**：`:root` 新增三个 **rem** token，默认根字号下与原来的 px **完全等值**
+（`--text-xs: 0.78125rem` = 12.5px、`--text-sm: 0.8125rem` = 13px、`--text-base: 0.875rem` = 14px），
+所有 px 字号改引 token；`h1` 用 `1.1875rem`（=19px）。
+
+**★ 三处 `font:` 简写里的 px 同样是承重的**：输入框与 `#result` 原本写
+`font: 13px/1.4 ui-monospace, …` / `font: 12.5px/1.5 …`，简写里的字号与行高都不跟随。
+必须拆成 `font-family`/`font-size`/`line-height` —— **只改 `font-size` 声明是不够的，
+因为出问题的那两个元素根本没有 `font-size` 声明。**
+
+**★ `max-width: 640px` → `40rem`**：px 写死时，200% 会把每行字数**减半**——页面服从了设置，
+却因此更难读。这与本仓库 v74 记下的教训同源（让位必须画在盒子外面而不是内容里面）。
+
+**★ 复选框不继承 `font-size`**：`label.check` 里的 `input[type=checkbox]` 是**替换元素**，
+字号不继承。文字改 rem 之后，200% 下同一行里是 **28px 的字配 13px 的方块**，
+读起来像一个坏掉的控件。加 `inline-size`/`block-size: 0.8125rem`（正好是 Chrome 默认画的 13px，
+所以默认视图一格都不动）。
+
+**★ 但那个方块不是可访问性缺陷，这点必须写清楚**：探针量到 `#autopush` 盒子 13×13，
+看着该判 WCAG 2.2 SC 2.5.8（24×24）失败——**实测承载点击的是 `label[for=autopush]`，606×28**，
+`perSideMet: true`。全页 `failingCount: 0`。这正是 v75 记录的 **Spacing 例外**。
+**「盒子小于 24」不等于「目标小于 24」**，本仓库已第二次踩这条。
+
+**守恒证据**：默认字号下改前改后 **`DIFFERENT 0 of 2952000`** —— 逐像素完全一致。
+改动只在读者真的放大时才生效。
+
+**验证读数**：`grewCount` 23/23、控件 7/7、`overflowAt100: 0`、`overflowAt200: 0`。
+
+**★ 变异第一轮 5/6，没红的那条抓出了我自己测试的缺口**：
+`body-font-size-back-to-px` 把 `font: var(--text-base)/1.55` 改回 `font: 14px/1.55`，而我的正则
+`/font-size:\s*([^;]+);/g` **只看 `font-size` 声明，看不见简写里的字号**——与 v93「断言单位而不断言值」同类。
+补上简写解析后 **6/6 命中**。
+写这段时又踩两次：①`font: inherit`（按钮上的合法重置，根本不带字号）被我的检查误判，
+必须只判**含斜杠**的简写；②`var(--text-base)` 里没有字面量 `rem`，判据必须接受**指向 token 的引用**——
+「绝对长度」才是要禁的东西。
+
+**★ v96 设的截图指纹守卫当场生效**：改完 `options.html` 跑全量，`screenshots.test.js` 立刻报
+「面板变了而截图没重渲」，因为指纹包含 `extension/options.html`。按 `AGENTS.md` 的规则在同一提交里
+重渲了画廊。**重渲后发现 `tool-failure.png` 真的变了一张**：旧图里有一条**竖线**，
+是 `.live-body::after` 的闪烁光标恰好被拍到可见的半个周期（70 像素，位于 CSS (30, 645–662)）；
+该场景并没有正在流式的回答，那条线**本来就不该在**。重渲后消失。三条读数佐证：
+新图与 `--reduced-motion no-preference` 逐像素相同、旧图与它差 70 像素、两种设置各自连渲两次都稳定。
+
+**新增探针**：`.tmp-run/probe-options-scaling.js`（两档配对，报 grew/frozen/overflow）、
+`probe-options-controls.js`（控件盒子是否跟随）、`probe-options-targets.js`（按**承载点击的元素**
+判 2.5.8，含 Spacing 例外）、`probe-options-set-root.js`、`mutate-options-scale.mjs`（6 真坏法全命中、
+`restoredExactly: true`）。
+
+**新增测试**（`packages/dsh-browser-bridge/test/options.test.js`，688 条）：
+`every text size on the settings page is relative to the reader`（含 token 的具体值与简写检查）、
+`the settings page does not pin its measure or its controls to pixels`。
 
 > ## v96：对话被压缩了，而面板不知道
 

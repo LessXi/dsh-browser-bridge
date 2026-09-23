@@ -645,3 +645,93 @@ test('the shape note is advisory, so a wrong-looking token can still be tested',
   assert.ok(host.upgrades() >= 1, 'a short token was blocked from reaching the harness')
   assert.match(shown, /refused the connection/i, `expected the probe to still run, got: ${shown}`)
 })
+
+/**
+ * The settings page is the second surface this extension ships, and it was
+ * outside the text-scaling work the panel went through: every size on it was an
+ * absolute `px`, so a reader who asked their system for larger text got a page
+ * that did not move at all — measured at 200%, all 23 text elements were frozen
+ * and the screenshot was byte-identical to the 100% one. WCAG 1.4.4 asks for
+ * 200%.
+ *
+ * These two tests read the declared CSS rather than a rendered page, because the
+ * suite has no layout engine. That is enough to catch the failure mode that
+ * actually happened: a `px` length written where a relative one belongs. The
+ * measurement lives in `tools/preview.mjs` probes; what is asserted here is the
+ * unit and the value, and both — asserting only "is not px" would pass for a
+ * `rem` with the wrong numerator, which is the trap this repository already
+ * recorded when a line-height was checked for its unit but not its scale.
+ */
+const optionsPageCss = () => readFileSync(join(extensionDir, 'options.html'), 'utf8')
+
+test('every text size on the settings page is relative to the reader', (t) => {
+  const css = optionsPageCss()
+  const declarations = [...css.matchAll(/font-size:\s*([^;]+);/g)].map((match) => match[1].trim())
+
+  assert.ok(declarations.length >= 4, `expected the page to state several text sizes, found ${declarations.length}`)
+
+  for (const value of declarations) {
+    assert.ok(
+      /(?:var\(--text-|rem)/.test(value),
+      `a text size is absolute and will ignore the reader's setting: ${value}`,
+    )
+  }
+
+  // The `font` shorthand carries a size too, and a `px` in it freezes the text
+  // just as surely as a `font-size` declaration — but the loop above cannot see
+  // it. A mutation that put `14px` back into the body's shorthand stayed green
+  // until this check existed, which is the same shape of gap this repository
+  // recorded when a test asserted a line-height's unit but not its scale.
+  const shorthands = [...css.matchAll(/font:\s*([^;]+);/g)].map((match) => match[1].trim())
+  assert.ok(shorthands.length > 0, 'expected the page to use the font shorthand somewhere')
+  let sized = 0
+  for (const value of shorthands) {
+    // `font: inherit` states no size at all — it is a reset on a form control,
+    // and taking its size from the element around it is exactly right. Only the
+    // shorthands that carry a size are judged.
+    if (!value.includes('/')) continue
+    sized += 1
+    // `font: <size>/<line-height> <family>` — the size is what precedes the
+    // slash, and it is the only part of the shorthand that has to be relative.
+    // Either spelling is fine: a `rem` length, or a `var()` reference to one of
+    // the tokens pinned to `rem` above. What is not fine is an absolute length,
+    // which is what a mutation put back here.
+    const size = value.split('/')[0].trim().split(/\s+/).pop()
+    assert.ok(
+      /rem/.test(size) || /^var\(--text-/.test(size),
+      `the font shorthand pins its size and will ignore the reader's setting: ${value}`,
+    )
+  }
+  assert.ok(sized > 0, 'no font shorthand on the page states a size, so this check proved nothing')
+
+  // The tokens are the other half: a relative `font-size` pointing at a `px`
+  // token is still frozen. These are the three the page uses, at the values that
+  // equal what they replaced (12.5 / 13 / 14px at the default 16px root), so a
+  // reader who has not changed anything sees no movement.
+  for (const [name, expected] of [['--text-xs', '0.78125rem'], ['--text-sm', '0.8125rem'], ['--text-base', '0.875rem']]) {
+    const declared = new RegExp(`${name}:\\s*([^;]+);`).exec(css)
+    assert.ok(declared !== null, `${name} is not declared in options.html`)
+    assert.equal(declared[1].trim(), expected, `${name} should be ${expected}`)
+  }
+})
+
+test('the settings page does not pin its measure or its controls to pixels', (t) => {
+  const css = optionsPageCss()
+
+  // A reading measure in px halves its characters per line once the text grows.
+  const body = /body\s*\{[\s\S]*?\}/.exec(css)
+  assert.ok(body !== null, 'options.html has no body rule')
+  const measure = /max-width:\s*([^;]+);/.exec(body[0])
+  assert.ok(measure !== null, 'the body states no max-width')
+  assert.equal(measure[1].trim(), '40rem', `the reading measure should be relative, found ${measure[1].trim()}`)
+
+  // A checkbox does not inherit `font-size`, so it has to be told in `rem` or it
+  // stays 13px while the label beside it grows — one row, two rates.
+  const checkbox = /label\.check\s+input\[type="checkbox"\]\s*\{[\s\S]*?\}/.exec(css)
+  assert.ok(checkbox !== null, 'options.html does not size the checkbox in its label row')
+  // 0.8125rem is exactly the 13px Chrome draws by default, so the default view
+  // is unchanged; the value is asserted, not just the unit.
+  assert.match(checkbox[0], /inline-size:\s*0\.8125rem;/, 'the checkbox inline size should be 0.8125rem')
+  assert.match(checkbox[0], /block-size:\s*0\.8125rem;/, 'the checkbox block size should be 0.8125rem')
+})
+

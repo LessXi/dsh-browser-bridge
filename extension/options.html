@@ -13,14 +13,29 @@
            different blues for the same primary action across two surfaces of
            one product is a difference the eye reads as a mistake. */
         --accent: #4262f0;
+        /* The same three sizes the panel uses, and in `rem` for the same reason.
+           Written as px they were immune to the reader's own font size: measured
+           with the root at 32px against 16px, all 23 text elements on this page
+           rendered byte-identical, so a reader who asks their system for larger
+           text got a settings page that ignored them. WCAG 1.4.4 asks for 200%.
+           The values are the px they replace at the default root, so nothing
+           moves for anyone who never changes it. */
+        --text-xs: 0.78125rem;
+        --text-sm: 0.8125rem;
+        --text-base: 0.875rem;
       }
       body {
         margin: 0 auto;
         padding: 28px 24px 48px;
-        max-width: 640px;
-        font: 14px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+        /* The measure, in `rem` rather than px, so the line keeps the same number
+           of characters when the reader's text grows. Fixed in px, 200% text
+           would halve it — the page would obey the setting and be worse to read
+           for it, which is the failure this project already recorded once when a
+           panel's width was allowed to become its line's length. */
+        max-width: 40rem;
+        font: var(--text-base)/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
       }
-      h1 { font-size: 19px; margin: 0 0 4px; }
+      h1 { font-size: 1.1875rem; margin: 0 0 4px; }
       p.lede { margin: 0 0 24px; color: var(--muted); }
       fieldset {
         border: 1px solid var(--line);
@@ -35,26 +50,42 @@
          under the 24px WCAG 2.2 AA minimum (2.5.8); the padding brings it to 28
          without moving the text. */
       label.check { display: flex; align-items: center; gap: 6px; padding: 3px 0; }
+      /* The box itself is drawn in `rem` so it grows with the words beside it.
+         A checkbox does not inherit `font-size`, so once the text started
+         following the reader's setting this stayed 13px: at 200% the row read as
+         28px text next to a 13px square, which looks like a disabled control
+         rather than a small one. The target was never the problem — the label is
+         606x28 — but the two halves of one row growing at different rates is.
+         0.8125rem is exactly the 13px Chrome draws by default, so nothing moves
+         at the default size. */
+      label.check input[type="checkbox"] {
+        inline-size: 0.8125rem;
+        block-size: 0.8125rem;
+        margin: 0;
+        flex: none;
+      }
       input[type="text"], input[type="password"], input[type="number"] {
         width: 100%;
         box-sizing: border-box;
         padding: 8px 10px;
         border: 1px solid var(--line);
         border-radius: 7px;
-        font: 13px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace;
+        font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+        font-size: var(--text-sm);
+        line-height: 1.4;
         background: transparent;
         color: inherit;
       }
       .row { margin-bottom: 16px; }
-      .hint { margin: 6px 0 0; font-size: 12.5px; color: var(--muted); }
+      .hint { margin: 6px 0 0; font-size: var(--text-xs); color: var(--muted); }
       /* The token is the one field a person pastes blind — sixty-four hex
          characters copied from another window — so it gets a reveal control and
          an inline shape check. The button sits on the input's own line, where
          the eye already is when the paste lands. */
       .token-row { display: flex; gap: 8px; align-items: stretch; }
       .token-row input { flex: 1; min-width: 0; }
-      .token-row button { flex: none; padding: 8px 12px; font-size: 13px; }
-      #shape { margin: 6px 0 0; font-size: 12.5px; color: var(--muted); }
+      .token-row button { flex: none; padding: 8px 12px; font-size: var(--text-sm); }
+      #shape { margin: 6px 0 0; font-size: var(--text-xs); color: var(--muted); }
       /* Only shown once the field has something in it and the length is wrong:
          a warning that is always visible is one nobody reads. */
       #shape[data-state="bad"] { color: #d1453b; }
@@ -76,7 +107,9 @@
         border-radius: 7px;
         border: 1px solid var(--line);
         white-space: pre-wrap;
-        font: 12.5px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+        font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+        font-size: var(--text-xs);
+        line-height: 1.5;
       }
       #result[data-state="ok"] { border-color: #2f9e63; }
       #result[data-state="bad"] { border-color: #d1453b; }

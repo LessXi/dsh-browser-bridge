@@ -439,7 +439,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 686 条
+npm test                          # 全部 688 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -529,7 +529,7 @@ Chrome for Testing 都装进带版本号的目录，写死路径会在一台机�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 686 条
+npm test                 # 688 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -560,7 +560,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面五层测试，686 条。包括真实 Chrome 驱动的快照、点击、输入、截图，
+**已自动化验证**：上面五层测试，688 条。包括真实 Chrome 驱动的快照、点击、输入、截图，
 以及**载入真实扩展的真实 Chromium** 走完整协议并核对页面真的被点到了。扩展的首次连接也已
 在真实 Chrome 里端到端验证过：清空 storage 后，扩展自己读了 health、取了令牌、带着正确令牌
 发起升级（`.tmp-run/probe-enrol-real-browser.js`）。
@@ -646,6 +646,10 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 | ★★ 存在不等于新鲜：README 的图连着四个提交在说旧产品（v96） | 三条截图守卫问的全是「文件在不在」，没有一条问它是否还像现在的产品。实测用 HEAD 的源文件渲出来的图与已提交的图差 **661756 / 1094400 像素**，而根因是四个提交前一次改排版没重渲画廊。修法是让画廊记录**渲染所依据的文件指纹**，测试自己重算它 |
 | ★★ 比颜色要合成之后比，不能比声明的字符串（v96） | 高对比度下分界线实测是 `rgba(0,0,0,0.08)` 压在 `rgb(0,0,0)` 上——**同一种颜色**，线不可见。而第一版探针比字符串，判为「不同」，报 `rulesVisible: true`：缺陷在自己写的判据里消失了。alpha 合成之后立刻读出真相 |
 | ★ 用 PowerShell 的 `Set-Content` 写源码会改掉行尾，而 `git show` 经管道会骗你（v96） | 我据此以为整棵树丢了 CRLF，准备写脚本改回去。`.gitattributes` 写着 `* text=auto eol=lf`——**磁盘上 LF 才是对的**，是 `core.autocrlf=true` 下 `git show` 出来时被重新编码。判据用 `git diff --numstat`：真实改动 `95 1`，行尾重写是成千行对成千行。已写进 `AGENTS.md` |
+| ★★ 缩放这条轴要逐界面走，不能扫一个文件就收工（v97） | v91/v92/v93 三轮把「读者的字号设置」走了一遍，判据却**只扫 `extension/sidepanel.html`**。于是本扩展的**第二个界面** `extension/options.html` 从未进入这条轴，成了全仓库唯一还在用绝对 px 写字号的界面：根字号 16px→32px，**23 个文字元素一个都没动**，两档截图 **sha256 完全相同**。**按文件收工，等于按「我想起来的那个文件」收工** |
+| ★★ 字号也可能躲在 `font:` 简写里，只查 `font-size` 声明看不见它（v97） | 出问题的两个元素（输入框、`#result`）**根本没有 `font-size` 声明**——它们写的是 `font: 13px/1.4 ui-monospace, …`。所以 `font-size` 逐个改完，页面上仍有两处纹丝不动。必须拆成 `font-family`/`font-size`/`line-height` 三个长写。变异 `body-font-size-back-to-px` 第一次没红，正是因为我的正则只认 `font-size` 声明 |
+| ★★ 「盒子小于 24」不等于「目标小于 24」（v97，v75 同类第二次） | 探针量到 `#autopush` 是 **13×13**，看着该判 WCAG 2.2 SC 2.5.8 失败。再量一层：承载点击的是 `label[for=autopush]`，**606×28**，全页 `failingCount: 0`。**判据必须问「谁接收这次点击」**，13px 的方块只是画在那个目标里面。差一步就把合规的东西报成缺陷 |
+| ★ 断言里写死「必须是 rem」会误伤两种合法写法（v97） | 写这段检查时连踩两次：①`font: inherit`（按钮上的合法重置，**根本不带字号**）被判失败——只应检查含斜杠的简写；②`var(--text-base)` 里没有字面量 `rem`，被正则判失败——**判据要禁的是「绝对长度」，不是「不是字面量 rem」**。两次都是测试先红，我才发现自己把判据写窄了 |
 
 最后一步在探针上报错 `llm-deepseek: no API key for provider route "deepseek-official"`——
 **这是探针进程拿不到凭据，不是插件缺陷**。已核对 `$DSH_HOME/.credentials.yaml`：里面只有一条
@@ -3912,7 +3916,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 686 条，含真实 Chrome 端到端与真扩展 e2e
+└─ test/                  # 688 条，含真实 Chrome 端到端与真扩展 e2e
 
 extension/
 ├─ manifest.json
