@@ -1,9 +1,9 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v90 已交付并入库。** 下一节就是最新的一轮改动；下面标 v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v90 那一段为止即可。
+> **当前状态：v91 已交付并入库。** 下一节就是最新的一轮改动；下面标 v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v91 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（668 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（669 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 > （真浏览器 e2e 那 4 条需要机器上有 Playwright Chromium 或 Chrome for Testing；
@@ -16,8 +16,109 @@
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
 >
-> **已入库**：v3→v90 的全部改动已提交并推送到 `origin/main`。工作区干净。
+> **已入库**：v3→v91 的全部改动已提交并推送到 `origin/main`。工作区干净。
 > （v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
+
+> ## v91：读者自己的字号设置，在这个面板里什么都做不了
+>
+> **缺陷是硬性的、且一直存在**：Chrome 的「字体大小」设置（以及任何改根字号的
+> 手段）**对本面板完全无效**。实测（`.tmp-run/probe-text-scaling.js`）：把根字号
+> 从 16px 调到 24px（+50%），正文**仍是 14px**——`rootScalesText: false`、
+> `grewCount: 0`。
+>
+> 机制：三个文字 token 写的是 **`px` 绝对值**
+> （`extension/sidepanel.html` 的 `--text-xs: 12px` 等）。`px` 不随根字号缩放，
+> 所以「读者把字调大」这条路一像素都不动。**这不是审美问题**：WCAG 1.4.4 要求
+> 文本能放大到 200%，而这里读者唯一的放大手段只剩页面缩放。
+>
+> **两条判据都单独成立过**（不是一条读数的推论）：
+> - 改根字号 → 正文不动（`rootScalesText: false`）
+> - 页面缩放 → 布局不破（`.tmp-run/probe-page-zoom.js`，200% 下无溢出、composer 仍在视口）
+> - 而缩放判据本身**先被验证过是有效的**：`.tmp-run/probe-zoom-works.js` 量到同一个
+>   `.answer` 在 zoom 前后高度 199 → 609（`zoomTookEffect: true`）。**不先验判据，
+>   「什么都没变所以没坏」会被读成「缩放没问题」。**
+>
+> **修法（三处，缺一不可）**：
+> 1. 文字 token 改 `rem`：`--text-xs: 0.75rem` / `--text-sm: 0.8125rem` /
+>    `--text-base: 0.875rem`（默认根字号 16px 下与 12/13/14px **完全等值**）。
+> 2. 固定高度的盒子改**地板**：`header` 的 `height: 44px` → `min-height: 44px`，
+>    `.icon`/`#send` 的 28px → `min-width/min-height: 1.75rem`，`.copy` 的 24px →
+>    `min-height: 1.5rem`。**字涨了盒子不涨，字就会压到邻居身上。**
+> 3. 字形尺寸也改 `rem`（`.icon` 0.9375rem、`#send` 0.875rem），否则圈变大了箭头没变。
+>
+> ### 放大后真的坏在哪（`.tmp-run/probe-covered-text.js` 第五版判据）
+>
+> | 根字号 | 正文实际 | 被盖住的字 |
+> | --- | --- | --- |
+> | 16px（默认） | 14px | **0** |
+> | 24px（150%） | 21px | **0** |
+> | 32px（200%，WCAG 线） | 28px | 修复前 **20** → 修复后 **0** |
+>
+> 修复前 32px 下三处可见破损（截图 `.tmp-run/r32-at200.png`）：页头标题的省略号
+> 与 `˅` 箭头重叠、代码块的 "json" 与「复制」按钮挤在一起、底下的 chip 压住代码块。
+>
+> ### ★ 判据错了**六次**（本仓库最多的一次，值得单独记）
+>
+> 同一件事我写了六版探针，每一版都因为漏掉一个「什么都不算」的条件而误报：
+>
+> | 版本 | 判据 | 错在哪 |
+> | --- | --- | --- |
+> | ① | 遮挡物用 `getBoundingClientRect` | 滚出滚动容器的元素**不被绘制**，布局盒却还在 → 报出「滚动区里的代码块盖住了 footer 里的 chip」这种不可能的事 |
+> | ② | 改用 `elementFromPoint` | 只返回**被绘制**的元素（这一步对），但对滚出去的字符它返回「恰好画在那个位置的东西」 |
+> | ③ | 加「在滚动容器可见区内」 | `visibleClip` 找的是**最近的滚动祖先**，而命中返回的 `.composer-bar` 不是滚动容器，两者不可比 |
+> | ④ | 加 ellipsis 排除 | 对（标题的正常省略是真的不该报），但仍带着 ②③ 的病 |
+> | ⑤ | 加几何相交验证 | 对（`notIntersecting: 0` 证明坐标没偏），但仍带着 ③ |
+> | ⑥ | 只看**可达性**：字符相对容器内容的偏移是否落在 `[0, scrollHeight]`，横向是否在 `clientWidth` 内 | 正确 |
+>
+> 第⑥版还要再排两类：**`.sr-only`**（`clip-path: inset(50%)` 刻意移出视觉布局，
+> 读屏照样读得到——把无障碍设施报成缺陷）与 **`opacity: 0`**（`.answer-actions`
+> 平时透明，`elementFromPoint` 照样命中它；v75 的对比度审查器处理过同一件事）。
+>
+> **教训**：`elementFromPoint` 只在「这个点画的是什么」上可信；一旦要与「谁在谁
+> 上面」结合，必须**同一套几何**回答，不能一半 hit-test、一半布局盒。而读者真正
+> 关心的是**可达性**（能滚到吗），不是**此刻的可见性**——这两者我混了整整五版。
+>
+> ### 一次被判据救下的想当然
+>
+> `findJumped` 在 200% 下报复制按钮 64×124 盖住正文。我**先入为主**判断是
+> 「文字换行了」，加了 `white-space: nowrap`。写完探针一量：
+> `lineBoxes: 1`、`whiteSpace: nowrap`——**根本没换行**，我的修改是多余的。
+> 真正原因是 `.answer-actions` 是 flex 容器，`align-items` 默认 `stretch`
+> 把按钮拉到了容器满高。改的是 `align-items: flex-start`（那一处留下了）。
+> **先量再改，不要先改再量。**
+>
+> ### 验证读数（已绿，不必重跑）
+>
+> - `npm test` → **669 passed, 0 failed, 0 skipped**（668 → 669）
+> - `npm run check:extension` → exit 0
+> - **默认字号下与已提交的截图逐像素比对 `DIFFERENT 0 of 1094400`**——这证明
+>   本次改动在任何正常使用下**完全守恒**，是零风险改动。
+> - 12 个场景 × 根字号 32px：`textUnreachableAt200: false`（全部）
+> - 变异 `.tmp-run/mutate-font-scale.mjs`：**8/8 命中**、`restoredExactly: true`
+>   （`text-tokens-back-to-px`、`wrong-rem-denominator`、`header-back-to-height`、
+>   `copy-back-to-height`、`icon-floor-in-px`、`copy-floor-in-px`、
+>   `send-box-back-to-px`、`send-glyph-fixed-in-px`）
+>
+> ### 新测试（`packages/dsh-browser-bridge/test/panel-geometry.test.js`）
+>
+> `the reader’s own font size reaches the text, and the boxes grow with it`：钉住
+> ① 三个 token 必须是 `rem` 且换算回默认根字号后**必须等于原本的 px 值**
+> （分母写错会静默改变每一屏）；② 四个元素不许有固定 `height`、必须有 rem 地板；
+> ③ 字形尺寸必须是 `rem`。
+>
+> **token 用 `css.match(/--text-xs\s*:\s*([^;]+);/)` 直接读，不走 `ruleBody(':root')`**
+> ——文件里有**两个** `:root` 块（L38 尺寸、L139 颜色），`ruleBody` 只返回它找到的
+> 第一个匹配，今天是尺寸块、重排后就可能是颜色块。第一次写测试就是这么失败的
+> （`--text-xs must be declared`）。
+>
+> ### 未做（已查清，方向作废）
+>
+> **跨会话全文搜索**看起来是缺口（156 个会话，面板只能搜当前会话或按标题筛），
+> 但**在这个部署里不可用**：`sessionController.search()` 的实现第一件事就是
+> `this.ctx.get('sessionQuery')`，取不到直接抛
+> `"session search is unavailable: this deployment does not mount @deepseek-ai/dsh-session-query"`
+> （`dsh-api-session-controller/lib/index.js`），而 `cordis.patch.yml` 的插件表里
+> 没有它，磁盘上也没有那个 SQLite 派生索引。**别再往这个方向挖。**
 
 > ## ⚠️ 两条并行版本线（2026-09-23 处理，后续轮次务必先读这段）
 >

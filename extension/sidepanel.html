@@ -39,9 +39,18 @@
         color-scheme: light dark;
 
         --spacing: 4px;
-        --text-xs: 12px;
-        --text-sm: 13px;
-        --text-base: 14px;
+        /* The three text steps, in `rem` rather than `px`, so the reader's own
+           font-size setting reaches them. Written in `px` they were immune to it:
+           measured, a root font of 16px and of 32px both painted 14px body text,
+           which makes Chrome's font-size preference a control that does nothing
+           in this panel. `rem` resolves against the root, so the same numbers are
+           identical at the default 16px root and follow the reader upward from
+           there — and the layout is verified at 200% (WCAG 1.4.4) rather than
+           assumed, because text that grows inside boxes that do not is text that
+           collides. */
+        --text-xs: 0.75rem;
+        --text-sm: 0.8125rem;
+        --text-base: 0.875rem;
 
         --radius-sm: 6px;
         --radius-md: 8px;
@@ -220,8 +229,13 @@
            lands on y=8 are pixel-for-pixel equally sharp — 53 distinct greys and
            130 midtones either way, in a 56x62 crop of the icons. Changing it
            would have re-rendered every screenshot in the repository to buy
-           nothing, so the number stays. */
-        height: 44px;
+           nothing, so the number stays as the resting height.
+           It is a `min-height` rather than a `height` because the bar holds text:
+           at 200% the title, its caret and the three icons no longer fit in 44px,
+           and a fixed height would keep the box at 44 while the glyphs grew —
+           measured, the caret then landed on top of the last three characters of
+           the session title. A floor lets the bar grow with what it contains. */
+        min-height: 44px;
         padding: 0 6px 0 8px;
         border-bottom: 1px solid var(--line-soft);
       }
@@ -243,13 +257,17 @@
       #title .caret { flex: none; color: var(--faint); font-size: var(--text-xs); }
       .icon {
         flex: none;
-        width: 28px;
-        height: 28px;
+        /* Square at the resting size, and square when the reader's font size
+           grows: the glyph inside is a `rem`-sized character, so the box has to
+           follow it or the glyph spills out. `min-width`/`min-height` with an
+           `em` floor does both — at the default root this is 28×28, unchanged. */
+        min-width: 1.75rem;
+        min-height: 1.75rem;
         display: grid;
         place-items: center;
         border-radius: var(--radius-md);
         color: var(--muted);
-        font-size: 15px;
+        font-size: 0.9375rem;
         line-height: 1;
       }
       .icon:hover { background: var(--hover); color: CanvasText; }
@@ -583,10 +601,13 @@
       }
       /* WCAG 2.2 AA wants 24x24 CSS px (2.5.8). The pill was 22px tall — close
          enough to look deliberate and small enough to fail, which is the kind
-         of gap only a measurement catches. */
+         of gap only a measurement catches.
+         A floor, not a height: the label inside is a `rem`-sized character, and at
+         200% a fixed 24px box let the word 「复制」 paint outside itself and over the
+         language label beside it. 1.5rem is exactly 24px at the default root. */
       .copy {
         flex: none;
-        height: 24px;
+        min-height: 1.5rem;
         padding: 0 8px;
         border: 0;
         border-radius: 999px;
@@ -605,6 +626,11 @@
       .answer-actions {
         display: flex;
         justify-content: flex-end;
+        /* A flex container stretches its items on the cross axis, so the copy
+           pill grew to the full height of whatever it sat beside — measured at a
+           32px root, a 64×124 button painting over the paragraph above it. The
+           pill is one line tall whatever the row is doing. */
+        align-items: flex-start;
         margin-top: 2px;
         opacity: 0;
         transition: opacity .12s ease;
@@ -1317,20 +1343,23 @@
       #input::placeholder { color: inherit; opacity: .5; }
       #send {
         flex: none;
-        width: 28px;
-        height: 28px;
+        /* The same square-at-rest, square-when-enlarged shape as `.icon`, and for
+           the same reason: the arrow is a character, so the box follows the
+           reader's font size rather than pinning the glyph at 14px. */
+        min-width: 1.75rem;
+        min-height: 1.75rem;
         display: grid;
         place-items: center;
         border-radius: 999px;
         background: var(--accent);
         color: #fff;
-        font-size: 14px;
+        font-size: 0.875rem;
       }
       #send:disabled { background: var(--lift); color: var(--faint); }
       /* A running turn has nothing to send and everything to stop, so the slot
          changes state instead of a second control appearing. Inverted rather
          than accented, so the two states never read as the same button. */
-      #send[data-mode='stop'] { background: CanvasText; color: Canvas; font-size: 10px; }
+      #send[data-mode='stop'] { background: CanvasText; color: Canvas; font-size: 0.625rem; }
       #send[data-mode='stop']:hover { opacity: 0.85; }
       #send[data-mode='stop']:disabled { background: var(--lift); color: var(--faint); }
       /* The picker. Geometry is the original's, measured off its own stylesheet:

@@ -422,7 +422,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 668 条
+npm test                          # 全部 669 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -512,7 +512,7 @@ Chrome for Testing 都装进带版本号的目录，写死路径会在一台机�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 668 条
+npm test                 # 669 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -543,7 +543,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面五层测试，668 条。包括真实 Chrome 驱动的快照、点击、输入、截图，
+**已自动化验证**：上面五层测试，669 条。包括真实 Chrome 驱动的快照、点击、输入、截图，
 以及**载入真实扩展的真实 Chromium** 走完整协议并核对页面真的被点到了。扩展的首次连接也已
 在真实 Chrome 里端到端验证过：清空 storage 后，扩展自己读了 health、取了令牌、带着正确令牌
 发起升级（`.tmp-run/probe-enrol-real-browser.js`）。
@@ -609,6 +609,9 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 | 折叠没有损失可寻性（v90） | 折叠省了滚动，代价是**有些会话不在屏幕上了**，唯一不可接受的代价是「找不回来」。用一个**只存在于尾部**、折叠状态下根本没画出来的标题搜：被折掉 **116 个**，`foundIt: true`、命中真的画了出来、屏幕上的行**全都匹配**。因为查找栏问的是宿主（v30 起），而宿主只认会话 id 与标题，与面板画了几行无关 |
 | ★ 关掉查找栏，列表仍然被筛着（v90） | `setFind(false)` 清掉 `searchQuery` 却**没有清 `sessionFilter`**，而会话列表的筛选读的正是后者。实测 156 个会话下，**关闭按钮 / 切换按钮 / Escape 三种关法全部留下 152 行**（未筛选时是 20 行）——屏幕上没有任何东西说明为什么少了 136 个。**折叠之前这个缺陷是「152 vs 156」，看起来像正常列表；折叠之后变成「152 vs 20」，读者关掉一个框、列表反而长了 7 倍**，这才是它露出来的原因。修法是清状态**并重画**：只改状态不重画，状态与屏幕会一直不一致到下一次别的什么触发重画为止 |
 | 改了共享夹具没把面板放回原处（v90） | 新测试替换 `host.groups` 之后，**面板会「收养」它在新列表里看到的会话**并一直留着；我的夹具只含我编的会话，于是面板切到了 `session-poll-0`，而**40 个测试之后的**草稿测试开始失败（它断言草稿写在 `panelDraft:${SESSION}` 下）。诊断靠两步而非猜：先 `git stash` 测试改动证明责任在自己，再打印 `storage.snapshot()` 的键读到 `panelDraft:session-poll-0`。修法是新增助手 `sessionRow()`，把**当前会话那一行**放进每个自造列表——比在 cleanup 里回滚夹具更稳，因为回滚只把夹具改回去，面板已经换过会话了 |
+| ★ 读者自己的字号设置毫无作用（v91） | Chrome 的「字体大小」设置（以及任何改根字号的手段）对本面板**一像素都不动**：实测根字号 16px → 24px（+50%），正文**仍是 14px**（`rootScalesText: false`、`grewCount: 0`）。三个文字 token 写的是 `px` 绝对值，而 `px` 不随根字号缩放。**这不是审美问题**——WCAG 1.4.4 要求文本能放大到 200%，而读者唯一的放大手段只剩页面缩放。修法三处缺一不可：token 改 `rem`（0.75/0.8125/0.875rem，默认根字号下与 12/13/14px **完全等值**）、固定高度的盒子改**地板**（`height: 44px` → `min-height`，`.icon`/`#send`/`.copy` 同理）、字形尺寸也改 `rem`。**判据本身先被验证过才敢用**：不先量「zoom 真的生效了吗」（同一个 `.answer` 高度 199 → 609），「什么都没变所以没坏」会被读成「缩放没问题」 |
+| ★ 同一件事我错了六版判据（v91） | 为了回答「放大了有没有字被盖住」，六个探针版本逐个漏掉一个「什么都不算」的条件：①遮挡物用 `getBoundingClientRect` → 滚出滚动容器的元素**不被绘制**，布局盒却还在，报出「滚动区里的代码块盖住了 footer 里的 chip」这种不可能的事；②改 `elementFromPoint`（这步对）→ 但对滚出去的字符它返回「恰好画在那个位置的东西」；③加「在滚动容器可见区内」→ 而命中的 `.composer-bar` 根本不是滚动容器，两者不可比；④加 ellipsis 排除（对）；⑤加几何相交验证（`notIntersecting: 0` 证明坐标没偏）；⑥**只看可达性**——字符相对容器内容的偏移是否落在 `[0, scrollHeight]`、横向是否在 `clientWidth` 内。第⑥版还要再排 **`.sr-only`**（`clip-path: inset(50%)` 刻意移出视觉布局，读屏照读——把无障碍设施报成缺陷）与 **`opacity: 0`**（`.answer-actions` 平时透明却照样被 `elementFromPoint` 命中）。**教训**：`elementFromPoint` 只在「这个点画的是什么」上可信；读者真正关心的是**可达性**（能滚到吗），不是**此刻的可见性**——这两者我混了整整五版 |
+| 先量再改，不要先改再量（v91） | `findJumped` 在 200% 下报复制按钮 64×124 盖住正文，我**先入为主**判断是「文字换行了」，加了 `white-space: nowrap` 就准备收工。写完探针一量：`lineBoxes: 1`、`whiteSpace: nowrap`——**根本没换行**，那个修改是多余的，已撤掉。真正原因是 `.answer-actions` 是 flex 容器，`align-items` 默认 `stretch` 把按钮拉到容器满高，改的是 `align-items: flex-start` |
 
 最后一步在探针上报错 `llm-deepseek: no API key for provider route "deepseek-official"`——
 **这是探针进程拿不到凭据，不是插件缺陷**。已核对 `$DSH_HOME/.credentials.yaml`：里面只有一条
@@ -3875,7 +3878,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 668 条，含真实 Chrome 端到端与真扩展 e2e
+└─ test/                  # 669 条，含真实 Chrome 端到端与真扩展 e2e
 
 extension/
 ├─ manifest.json

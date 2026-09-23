@@ -995,3 +995,82 @@ test('long-form text has a reading measure, and it survives a wider panel', () =
     `an ${pixels}px measure leaves less than the 80 columns code is written to (measured floor: 485px)`,
   )
 })
+
+test('the reader’s own font size reaches the text, and the boxes grow with it', () => {
+  // Chrome's font-size setting works by changing the root font size. A step
+  // written in `px` ignores it completely: measured, a root of 16px and a root of
+  // 32px both painted 14px body text, so the setting was a control that did
+  // nothing in this panel — and text that cannot be enlarged is text some readers
+  // cannot read.
+  // Read straight from the declaration rather than through `ruleBody`: the file
+  // has two `:root` blocks (colours in the second, sizes in the first) and the
+  // helper returns only the first rule it finds for a selector, which is the
+  // token block today and would silently become the wrong one if they were
+  // reordered.
+  const sizes = { '--text-xs': 12, '--text-sm': 13, '--text-base': 14 }
+  for (const [name, pixels] of Object.entries(sizes)) {
+    const match = css.match(new RegExp(`${name}\\s*:\\s*([^;]+);`))
+    assert.ok(match !== null, `${name} must be declared`)
+    const value = match[1].trim()
+    assert.ok(
+      /^[\d.]+rem$/.test(value),
+      `${name} is ${value}; it must be a rem value so the reader's font-size setting reaches it`,
+    )
+    // A `rem` written against the wrong denominator silently changes every
+    // screen in the panel. The default root is 16px, so the conversion has to be
+    // exact or the panels that were measured are not the panels that ship.
+    const rem = Number.parseFloat(value)
+    assert.equal(
+      rem * 16,
+      pixels,
+      `${name} is ${value}, which is ${rem * 16}px at the default root rather than ${pixels}px`,
+    )
+  }
+
+  // Enlarged text inside boxes that stay put is text that collides. The two
+  // shapes that did, measured at a 32px root (200%, WCAG 1.4.4): the header's
+  // fixed 44px put the caret on the last three characters of the title, and the
+  // copy button's fixed 24px painted 「复制」 over the language label beside it.
+  // Both are floors now, so they grow with what they contain.
+  const floors = {
+    header: { property: 'min-height', value: '44px' },
+    '.icon': { property: 'min-height', value: '1.75rem' },
+    '.copy': { property: 'min-height', value: '1.5rem' },
+    '#send': { property: 'min-height', value: '1.75rem' },
+  }
+  for (const [selector, { property, value }] of Object.entries(floors)) {
+    const height = declarationOf(selector, 'height')
+    assert.equal(
+      height,
+      null,
+      `${selector} still has a fixed height (${height}); the text inside it grows and the box would not`,
+    )
+    assert.equal(
+      declarationOf(selector, property),
+      value,
+      `${selector} must carry ${property}: ${value}`,
+    )
+  }
+
+  // A floor written in `rem` grows with the reader's setting; one written in `px`
+  // does not, and would reintroduce the collision it was added to fix.
+  for (const selector of ['.icon', '.copy', '#send']) {
+    const value = declarationOf(selector, 'min-height')
+    assert.ok(
+      /rem$/.test(value),
+      `${selector}'s floor is ${value}; it must be a rem value for the same reason the text is`,
+    )
+  }
+
+  // The glyph inside each of these is a character, so it has to be sized in a
+  // unit that follows the reader. A literal px here pins the arrow at 14px while
+  // the circle around it grows, which is the same mismatch one level down.
+  const glyphSizes = { '.icon': '0.9375rem', '#send': '0.875rem' }
+  for (const [selector, expected] of Object.entries(glyphSizes)) {
+    assert.equal(
+      declarationOf(selector, 'font-size'),
+      expected,
+      `${selector}'s glyph must be sized in rem so it grows with its box`,
+    )
+  }
+})
