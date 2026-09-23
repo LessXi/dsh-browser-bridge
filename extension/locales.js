@@ -527,7 +527,7 @@ export function browserTranslator() {
  * A session list is scanned, not read: the exact minute is noise, and the only
  * question a person asks of that column is "is this the thing I was just in".
  *
- * Past a week, though, a count of days stops answering that question. "236 days
+ * Past a week, though, a count of days stops answering that question. "61 days
  * ago" is not a distance anyone computes — it is a date they want, and the
  * arithmetic to get there is work the label should have done. So this hands the
  * calendar the job at that point and prints the day itself.
