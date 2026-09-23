@@ -658,8 +658,18 @@ test('the panel listens for the forwarded deltas and folds them into one live bl
     sidepanelHtml.includes('.live-body::after'),
     'the streaming caret is missing from the panel stylesheet',
   )
-  assert.ok(sidepanelHtml.includes("@media (prefers-reduced-motion: reduce) {\n        .live-body::after"), 
-    'the streaming caret must stop moving under prefers-reduced-motion')
+  // The caret has to stop when the reader asks for less motion. What is asserted
+  // is that outcome, not the way it is spelled: this used to require the literal
+  // text `@media (prefers-reduced-motion: reduce) {\n        .live-body::after`,
+  // which pinned the caret to one rule naming one element — and a rule that
+  // names its elements is exactly how `#model .caret` was missed for so long.
+  // The panel now stops animation across the board, which covers this caret
+  // without naming it, so a test demanding the name would reject the better fix.
+  const reduced = sidepanelHtml.slice(sidepanelHtml.indexOf('prefers-reduced-motion'))
+  assert.ok(
+    /animation:\s*none\s*!important/.test(reduced),
+    'the streaming caret must stop moving under prefers-reduced-motion',
+  )
 })
 
 test('the panel never renders a partial stream as markdown', () => {

@@ -198,12 +198,19 @@ node tools/poster.mjs --check   # 同上，只检查
 `tools/gallery.mjs` 里每张图都写着**为什么它在画廊里**；`tools/poster.mjs` 里每张海报都写着
 它的主张与论据，**数字改动必须改那个文件**，所以在正文里漂移不了。
 
-这些图是**可复现**的：同一份代码连渲两次，12 张界面图与 3 张海报逐字节相同。做到这一点靠的是
+这些图是**可复现**的：同一份代码连渲两次，14 张界面图与 3 张海报逐字节相同。做到这一点靠的是
 渲染时声明 `prefers-reduced-motion: reduce`——面板本来就支持这个设置（它会把「思考中…」的渐变
-换成实色，字照样看得见），所以这仍是产品的真实渲染，不是给截图开的特权。少了这一步，
+换成实色，字照样看得见；模型菜单的箭头直接到位而不是转过去），所以这仍是产品的真实渲染，
+不是给截图开的特权。少了这一步，
 `working` 那一屏每次都是**不同的图**（实测两次相差 43 字节），而一张会自己变的图**显示不了
 回归，因为每次渲染都是一次回归**。要看动效本身就用
 `node tools/preview.mjs working out.png --reduced-motion no-preference`。
+
+面板对「减少动态效果」的响应是**按属性**写的（`*, *::before, *::after`），不是按元素名。
+这一条有实测理由：原来的两个规则各自点名 `.working` 与 `.live-body::after`，于是
+`#model .caret` 的旋转谁都不认识它，读者要求减少动效时那个箭头**照转 180 度、经过 6 个
+中间帧**——与没要求时一模一样。按属性写之后，这个文件里**将来新增的**过渡默认就被覆盖。
+纯淡入淡出被保留：它不是运动，通常是运动的替代品，去掉会让界面闪现而不是安定下来。
 
 `tools/preview.mjs` 可以把任意场景渲染成 PNG，也可以只回答一个问题：
 
@@ -439,7 +446,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 688 条
+npm test                          # 全部 689 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -529,7 +536,7 @@ Chrome for Testing 都装进带版本号的目录，写死路径会在一台机�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 688 条
+npm test                 # 689 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -560,7 +567,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面五层测试，688 条。包括真实 Chrome 驱动的快照、点击、输入、截图，
+**已自动化验证**：上面五层测试，689 条。包括真实 Chrome 驱动的快照、点击、输入、截图，
 以及**载入真实扩展的真实 Chromium** 走完整协议并核对页面真的被点到了。扩展的首次连接也已
 在真实 Chrome 里端到端验证过：清空 storage 后，扩展自己读了 health、取了令牌、带着正确令牌
 发起升级（`.tmp-run/probe-enrol-real-browser.js`）。
@@ -639,6 +646,10 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 | ★★ 输入法守卫要放在处理器顶部，不是某个分支里（v95） | `sidepanel.js` 的 `input` 处理器**早就有**守卫，注释还写着「对中日韩用户不是边缘情况，而是每条消息」——但它守的是 `mention !== null` 分支里的 Enter/Tab，同一个处理器里的**方向键与 Escape 没有**，另外两个文本框处理器（`document`、`findInput`）也完全没有。实测：组合中按 Escape，`document` 处理器收到 `key: 'Escape'` **且** `isComposing: true`，于是读者想取消候选，**查找栏被关掉了**。守在最顶部一次覆盖所有分支 |
 | ★★ 组合期间的 `event.key` 不是 `'Process'`（v95） | 我原本推测 `key` 会是 `'Process'`——那样 `document` 处理器在 `if (event.key !== 'Escape') return` 处早已返回，**根本不是缺陷**，我差点因此不去修。用 CDP 的 `Input.imeSetComposition` 建立**真实**组合后实测推翻了它：`key` 就是 `'Escape'`。**只读 `key` 分不出「读者在选字」与「读者在按 Escape」**，必须读 `isComposing` |
 | ★ 变异脚本自己坏了，会读成「测试没抓到」（v95） | 我把 `if (false) return` **插在**真实守卫**之前**，于是三个「变异」什么都没改，全部报未命中——那是**等价变异**。改成真正删除守卫后 **3/3 命中**。**先证明变异真的改变了行为，再谈命中率** |
+| ★★ 按元素名写的规则，下一个元素必然漏掉（v98） | 面板有两个 `prefers-reduced-motion` 块，一个点名 `.working`、一个点名 `.live-body::after`。`#model .caret` 的 `transition: transform` 谁都不认识它，于是**读者要求减少动效时那个箭头照转 180°**，实测经过 6 个中间帧——与没要求时**一模一样**。改成按属性（`*, *::before, *::after { animation: none; transition-property: opacity }`）之后，新增的过渡默认被覆盖。**点名元素 = 默认漏掉，点名属性 = 默认覆盖** |
+| ★ 断言要问结果，不要问拼写（v98） | `stream.test.js` 那条测试要求字面文本 `"@media (prefers-reduced-motion: reduce) {\n        .live-body::after"`——它把光标**钉在一条点名它自己的规则**上，于是覆盖面更大的正确修法被它判成回归。改成问「`prefers-reduced-motion` 之后有没有 `animation: none !important`」后仍抓得住真坏法 |
+| ★ 把属性名拿去匹配值，断言永远不会失败（v98） | 我写 `/transition-property\s*:\s*none/` 去检查**刚收集到的值**（`"opacity !important"`）——值里从来不含属性名，所以这条断言**不可能红**，变异 `kills-fades-too` 因此漏网。改成只比较值本身后 **4/4**。与 v93「断言单位而不断言值」同类 |
+| ★ 同名 `@media` 块不止一个，「按条件取第一个」会取错（v98） | 助手 `mediaBlock('prefers-reduced-motion: reduce')` 返回了扫光那个块，新测试于是读到「块里没有 `transition-property`」并报了一个**不存在的缺陷**。**condition 不是位置**，必须返回全部匹配块 |
 | ★★ 改动既有断言时，用差分证明没改瞎（v95） | 为让新测试不污染后续，我改了两条既有断言，两处都长得像「改松了让它通过」。所以对同一批真实坏法分别跑**基线版本**与**我的版本**，按测试名比较失败集合：`lostByMine: []`、`gainedByMine: ['an IME Escape …']`——没丢掉任何检查，还多抓到一条。**「读起来像放宽了」不能靠读代码判断，要用变异量** |
 | ★ 共享的测试状态会让判据依赖执行顺序（v95） | 那条宣告测试读的是**全文件共享**、从不重置的 `announcerWrites` 数组与 `#announcer` 区域。它一直绿，只是因为它前面那些测试恰好把写入留在了队列里；我的测试多了一次 `settleToIdle()` 就把它们放了出来，于是它报出一句属于**别的测试**的话（`'streaming 29'`）。改成读**启动边界**之前写入的部分，与同文件既有的 `startupToast` / `startupFocus` 同一手法 |
 | ★★ 一个没进变更签名的展开集，是「变化看起来不像变化」的集合（v96） | `drawTranscript` 用一行 JSON 做「有没有变」的签名，里面只列了两个展开集。新加的 `expandedCompactions` 不在其中，于是**点击改了集合、签名却完全一样**，函数在早返回处直接 return——按钮是对的、监听器是对的、集合也变了，屏幕上什么都不发生。凡是「哪一行是展开的」这类状态，都必须进这一行 |
@@ -3916,7 +3927,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 688 条，含真实 Chrome 端到端与真扩展 e2e
+└─ test/                  # 689 条，含真实 Chrome 端到端与真扩展 e2e
 
 extension/
 ├─ manifest.json

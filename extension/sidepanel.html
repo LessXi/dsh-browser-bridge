@@ -1067,6 +1067,30 @@
       @media (prefers-reduced-motion: reduce) {
         .working { animation: none; color: var(--tertiary); background: none; -webkit-background-clip: initial; }
       }
+      /* Stop motion by *property*, not by element.
+         The two rules here used to name their elements — `.working` above,
+         `.live-body::after` below — and that is precisely how a third one was
+         missed: `#model .caret` turns through `transition: transform`, and
+         nothing here touched it. Measured in a real browser, the caret passed
+         through 6 intermediate frames while the reader had asked for reduced
+         motion — the same 6 it passes when they had not, so the setting had no
+         effect on it at all.
+         Naming elements means the next transition added to this file is
+         uncovered by default. Naming properties means it is covered by default,
+         which is the way round that stays true.
+         `transition-property: opacity` rather than `none`: an opacity fade is
+         not motion, it is what a movement is usually replaced with, and
+         stripping it makes surfaces appear in a flash instead of settling —
+         worse for the same reader. The selector still has to win against
+         `#model .caret`'s own declaration, hence `!important`; inside a
+         `prefers-reduced-motion` block that is the intent being expressed
+         rather than a specificity workaround. */
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after {
+          animation: none !important;
+          transition-property: opacity !important;
+        }
+      }
 
       /* ---- what the panel says when it cannot work at all ---- */
       /* The original's status surface is a title, a sentence and a button,
@@ -1152,9 +1176,9 @@
         0%, 50% { opacity: 1; }
         50.01%, 100% { opacity: 0; }
       }
-      @media (prefers-reduced-motion: reduce) {
-        .live-body::after { animation: none; }
-      }
+      /* `.live-body::after` used to be named here to stop this caret blinking.
+         The property-wide block above now stops every animation in the panel, so
+         the blink is covered without this file having to remember it. */
 
       /* ---- the way back down ---- */
       #to-bottom {

@@ -1,7 +1,7 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v97 已交付并入库。** 下一节就是最新的一轮改动；下面标 v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v96 那一段为止即可。
+> **当前状态：v98 已交付并入库。** 下一节就是最新的一轮改动；下面标 v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v98 那一段为止即可。
 >
 > **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（688 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
@@ -16,8 +16,133 @@
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
 >
-> **已入库**：v3→v97 的全部改动已提交并推送到 `origin/main`。工作区干净。
+> **已入库**：v3→v98 的全部改动已提交并推送到 `origin/main`。工作区干净。
 > （v92 是 `e3ad6ba`，v91 是 `3d96bf1`，v90 是 `767e4cd`，v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
+
+> ## v98：读者说了不要动，模型菜单的箭头还是转了 180 度
+
+前两轮（v97）走的是「第二个界面」，本轮换到**动效**这条轴：
+读者在系统里选了「减少动态效果」，面板真的停了吗。
+
+`extension/sidepanel.html` 里有两个 `@media (prefers-reduced-motion: reduce)` 块，
+而它们**都按元素名覆盖**：L1067 覆盖 `.working` 的扫光，L1155 覆盖 `.live-body::after`
+的闪烁光标。全文件只有两条 `transition` 声明，其中
+`#model .caret { transition: transform .12s }`（配 `#model[aria-expanded="true"] .caret
+{ transform: rotate(180deg) }`）**没有任何块碰它**。
+
+**实测（`.tmp-run/probe-caret-motion.js`，真实 Chromium，点击后逐帧读旋转角）**：
+
+| 读数 | `--reduced-motion reduce` | `no-preference`（对照） |
+|---|---|---|
+| `prefersReduce` | **true** | false |
+| `intermediateFrames` | **6** | **6** |
+| `rotates` | **true** | true |
+
+**两档读数完全相同 = 这个设置对 caret 毫无作用。** 读者明确要求减少动效，
+而那个箭头照转 180 度，经过 6 个中间帧。
+
+### 判据：按属性枚举，并且必须在过渡**进行中的那一帧**读
+
+「声明了 `transition`」不等于「读者看得见它动」——CSS 源码读不出这件事。
+判据必须在中间帧上读计算出的 `transform`，看它是否既非起点也非终点
+（`matrix(a,b,c,d,e,f)` 的 `a`、`b` 反解角度）。同时**必须跑两档对照**，
+否则「我在某一档下看到了什么」会被误当成结论。
+
+按属性枚举而不是按元素 id 找（v93 的教训）：`.tmp-run/probe-motion-coverage.js`
+遍历整棵树收集所有动起来的元素，区分三类——无限循环的 `animation`（必须停）、
+**motion 类过渡**（位移/旋转/缩放，必须停）、纯 `opacity` 过渡（保留）。
+
+### 修法：不再点名元素
+
+```css
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition-property: opacity !important;
+  }
+}
+```
+
+原来那条 `.live-body::after { animation: none }` 随之删除（已被覆盖），
+原处留一行注释说明为什么不再需要它。
+
+**两个设计判断**：
+
+1. **按属性而不是按元素。** 点名元素意味着「这个文件里下一个新增的过渡默认没有覆盖」；
+   点名属性意味着「默认被覆盖」。后者才是会一直成立的那一侧——caret 正是因为
+   原来的规则只认识 `.working` 与 `.live-body::after` 才漏掉的。
+2. **`transition-property: opacity` 而不是 `none`。** 淡入淡出**不是运动**，
+   它通常正是运动的替代品；把它也去掉会让界面**闪现**而不是安定下来，
+   对同一位前庭敏感的读者反而更糟。`!important` 是必要的——`#model .caret`
+   自己的声明优先级是 `1,0,1`，通用选择器赢不过它。在 `prefers-reduced-motion`
+   块里写 `!important`，表达的是**意图**而不是优先级绕道。
+
+### 修复后的读数（两档都必须对）
+
+| 读数 | reduce | no-preference |
+|---|---|---|
+| `intermediateFrames` | **0** | **6** |
+| `rotates` | **false**（直接到位） | true |
+| `motionTransitions` | **`[]`** | `["span.caret transform 0.12s"]` |
+| `infiniteAnimations` | **`[]`** | `["div.working sweep 1.2s infinite"]` |
+| 判定 | 全部停止 | 全部保留 |
+
+`animatedCount` 在 `working` 场景由 3 降到 2——扫光完全停了。
+caret 保留了 `opacity` 过渡：它现在**淡入**而不是旋转。
+
+### ★ 一条测试把「手段」钉死了，于是拒绝更好的修法
+
+`packages/dsh-browser-bridge/test/stream.test.js` 里那条测试断言的是**字面文本**
+`"@media (prefers-reduced-motion: reduce) {\n        .live-body::after"`——
+它要求那个光标必须由一条**点名它自己**的规则停住。我的改法覆盖面更大、不再需要点名，
+于是被它判成回归。
+
+**判据要问结果，不要问拼写。** 已改为在 `prefers-reduced-motion` 之后的文本里找
+`animation: none !important`——同一个结局，不限定实现方式。变异验证：删掉那条全局
+停用规则，改写后的断言**仍然变红**（24 passed / 1 failed），还原后恢复 25 passed。
+
+### ★ 我自己的两个错误
+
+1. **测试助手 `mediaBlock()` 只返回第一个同名块。** 这个样式表里有**两个**
+   `prefers-reduced-motion` 块，助手返回了扫光那个，于是新测试读到「块里没有
+   `transition-property`」而报了一个不存在的缺陷。已改为返回**全部**匹配块并拼接，
+   注释写明「condition 不是位置」。
+2. **断言里把属性名拿去匹配值。** 我写 `/transition-property\s*:\s*none/` 去匹配
+   **刚收集到的值**（`"opacity !important"`），而值里从来不含属性名——所以这条断言
+   **不可能失败**，变异 `kills-fades-too` 因此未被抓住。已改为只比较值本身
+   （剥掉 `!important` 后判 `none|initial|inherit`）。补上后变异 **4/4**。
+   这与 v93「断言单位而不断言值」是同一类错误。
+
+### 变异验证（`.tmp-run/mutate-reduced-motion.mjs`）
+
+**真坏法 4/4 命中**、**等价变异 1/1 保持绿**、`restoredExactly: true`：
+`back-to-naming-elements`、`animations-only`、`kills-fades-too`、`block-removed`；
+等价变异 `opacity-listed-twice`（`opacity, opacity` 层叠结果相同，必须不红）。
+
+### 阴性结论：滚动没有可减少的运动（已量，别重复挖）
+
+`.tmp-run/probe-scroll-motion.js`（`findJumped` 场景）：
+`behavior: "auto"`、`settledOnFirstFrame: true`、`intoSettledImmediately: true`、
+`smoothScrollingDetected: false`。面板没有声明 `scroll-behavior`，而
+`sidepanel.js:2326` 的 `scrollIntoView({ block: 'center' })` 不带 `behavior` 参数，
+故遵循计算值 `auto` = **瞬时**。
+
+### 守恒证据
+
+14 张已提交截图重渲后**逐字节完全相同**——改动在默认动效设置下**视觉零影响**，
+只在读者真的要求减少动效时生效。
+
+### 验证读数（已绿，不必重跑）
+
+- `npm test` → **689 passed, 0 failed, 0 skipped**
+- `npm run check:extension` → exit 0
+- 真实浏览器两档：reduce `intermediateFrames: 0` / no-preference `6`
+
+### 新增探针（`.tmp-run/`，被 gitignore）
+
+`probe-motion-coverage.js`（按属性枚举全树动效）、`probe-caret-motion.js`（中间帧判据）、
+`probe-scroll-motion.js`（滚动是否有动画）、`mutate-reduced-motion.mjs`、
+`why-fade-mutation-missed.mjs`（查断言为何抓不住变异）。
 
 > ## v97：设置页不听读者的话
 

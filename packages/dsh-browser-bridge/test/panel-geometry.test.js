@@ -85,6 +85,66 @@ function withoutMediaQueries(source) {
 }
 
 /**
+ * Every `@media` block whose condition text matches, concatenated.
+ *
+ * Plural on purpose. A condition is not a location: this stylesheet has two
+ * `prefers-reduced-motion: reduce` blocks, one stopping the waiting row's sweep
+ * and one stopping motion by property. Returning only the first meant a test
+ * that asked "does reduced motion stop transitions" read the sweep block, found
+ * no `transition-property` in it, and reported a defect that was not there — the
+ * same shape of mistake as a probe reading the wrong element, which this project
+ * has recorded more than once.
+ *
+ * Brace-matched rather than pattern-matched: these blocks hold nested rules, and
+ * a lazy `[\s\S]*?` stops at the first `}` it meets — the same reason
+ * `withoutMediaQueries` counts braces.
+ *
+ * @param {string} condition - Text inside the parentheses, e.g. `prefers-reduced-motion: reduce`.
+ * @returns {string} The contents of every matching block, concatenated; empty when there are none.
+ */
+function mediaBlock(condition) {
+  const needle = `@media (${condition})`
+  let out = ''
+  let index = 0
+  for (;;) {
+    const at = css.indexOf(needle, index)
+    if (at < 0) return out
+    const open = css.indexOf('{', at)
+    if (open < 0) return out
+    let depth = 1
+    let cursor = open + 1
+    while (cursor < css.length && depth > 0) {
+      if (css[cursor] === '{') depth += 1
+      else if (css[cursor] === '}') depth -= 1
+      cursor += 1
+    }
+    out += `${css.slice(open + 1, cursor - 1)}\n`
+    index = cursor
+  }
+}
+
+/**
+ * Every selector in a block that declares a given property, with its value.
+ *
+ * @param {string} block - CSS text of a rule list.
+ * @param {string} property - Property name to look for, e.g. `transition`.
+ * @returns {Array<{selectors: string[], value: string}>} One entry per matching declaration.
+ */
+function declarationsOf(block, property) {
+  const pattern = new RegExp(`(?:^|;)\\s*${property}\\s*:\\s*([^;]+)`, 'i')
+  const found = []
+  for (const match of block.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    const declaration = match[2].match(pattern)
+    if (declaration === null) continue
+    found.push({
+      selectors: match[1].split(',').map((part) => part.trim()),
+      value: declaration[1].trim(),
+    })
+  }
+  return found
+}
+
+/**
  * The declaration block of one rule, by exact selector text.
  *
  * The selector is matched as a whole item in the rule's selector list, not as a
@@ -1276,4 +1336,55 @@ test('the reader’s own font size reaches the text, and the boxes grow with it'
       `${selector} centres with an automatic margin now that it stretches`,
     )
   }
+})
+
+test('reduced motion stops the motion, not the fades, and not by naming elements', (t) => {
+  const block = mediaBlock('prefers-reduced-motion: reduce')
+  assert.ok(
+    block.trim().length > 0,
+    'the stylesheet needs a `@media (prefers-reduced-motion: reduce)` block; a reader who asks their system for less motion has nowhere else to be heard',
+  )
+
+  // The rule has to reach elements the block cannot know about. Naming elements
+  // is what let this rot: `#model .caret` turns through `transition: transform`,
+  // and the two rules that used to live here named `.working` and
+  // `.live-body::after` instead — so the caret kept spinning for a reader who
+  // had asked it not to. Measured in a real browser, it passed through 6
+  // intermediate frames with the preference on, the same 6 as with it off.
+  const universal = declarationsOf(block, 'transition-property')
+    .filter((entry) => entry.selectors.some((selector) => selector.includes('*')))
+  assert.ok(
+    universal.length > 0,
+    'reduced motion must stop transitions by *property* over a universal selector; a rule that names its elements leaves the next transition in this file uncovered, which is how the caret was missed',
+  )
+
+  // `none` would stop the fades too. An opacity fade is what a movement is
+  // usually replaced with — it is not itself motion — and removing it makes
+  // surfaces appear in a flash instead of settling, which is worse for the very
+  // reader who asked for less.
+  //
+  // The value is compared on its own, without the property name in front of it.
+  // The first version of this check ran `/transition-property\s*:\s*none/`
+  // against the *values* it had just collected, which never contain the property
+  // name — so it could not fail, and a mutation that replaced `opacity` with
+  // `none` went undetected while every assertion stayed green.
+  for (const entry of universal) {
+    assert.ok(
+      !/^(?:none|initial|inherit)$/i.test(entry.value.replace(/\s*!important\s*$/i, '')),
+      `reduced motion sets \`transition-property: ${entry.value}\`, which stops the fades as well as the motion`,
+    )
+  }
+
+  // The panes' blink is an `animation`, so it stops like every other one. The
+  // caret that types has to be stopped by the same rule rather than by a rule
+  // that remembers its selector.
+  const animations = declarationsOf(block, 'animation')
+  assert.ok(
+    animations.length > 0,
+    'reduced motion must also stop `animation`, which is what the looping ones are',
+  )
+  assert.ok(
+    animations.some((entry) => entry.selectors.some((selector) => selector.includes('*'))),
+    'the animation stop must be property-wide too, for the same reason as the transition stop',
+  )
 })
