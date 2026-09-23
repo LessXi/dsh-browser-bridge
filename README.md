@@ -422,7 +422,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 656 条
+npm test                          # 全部 657 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -512,7 +512,7 @@ Chrome for Testing 都装进带版本号的目录，写死路径会在一台机�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 656 条
+npm test                 # 657 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -543,7 +543,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面五层测试，656 条。包括真实 Chrome 驱动的快照、点击、输入、截图，
+**已自动化验证**：上面五层测试，657 条。包括真实 Chrome 驱动的快照、点击、输入、截图，
 以及**载入真实扩展的真实 Chromium** 走完整协议并核对页面真的被点到了。扩展的首次连接也已
 在真实 Chrome 里端到端验证过：清空 storage 后，扩展自己读了 health、取了令牌、带着正确令牌
 发起升级（`.tmp-run/probe-enrol-real-browser.js`）。
@@ -600,6 +600,9 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 | 读屏器能在消息之间移动（v81） | 用 CDP `Accessibility.getFullAXTree` 读平台**自己算出来**的无障碍树：`#transcript` 原先暴露 **72 个节点、深度 7，但 `structure=false`、可导航 role 为空**——内容全都在，却没有一处可导航，读屏用户只能从头读到尾。现在 `main` 地标 + `role="list"` + 每行 `listitem`，实测 `structure=true`、`navigable:["list","listitem"]`。两个**只能靠量发现**的坑：显式 role 会**覆盖**元素自己的隐式 role（`role="list"` 写在 `<main>` 上会让 `main` 直接消失，等于用「跳到主内容」换列表结构），而 `role="listitem"` 写在会话按钮上会让它**不再是按钮**（实测从 `button "… 2m ago"` 变成裸 `listitem`）——所以地标上移、item 与控制分成两个元素 |
 | `GET /browser-bridge/image`（v86） | 按 `sessionId` + `attachmentId` 返回一张图的字节，`content-type` 用引用里记的类型。**先确认这张图被该会话引用过**，否则 404 且根本不碰存储——不透明 id 也是通行证，少了这道检查任何 id 都能取到全部图。响应带 `nosniff` 与 `default-src 'none'; sandbox`：存下来的一张 SVG 否则会作为文档在本源**执行脚本**。`cache-control: … immutable`，因为 id 是内容地址、字节不会变。图片**不内联进对话**：本机图片库 231 张、中位数 99 KB、最大 3.6 MB，60 行窗口若内联 base64 达 **84.4 MB**，而面板每 5 秒轮询一次 |
 | 读者发的图片画在对话里（v86） | `user/message` 的 block 类型实测 `text` 之外还有 `image`，而 `textBlocks` 只取 `text`——于是**只有图片、没有文字的消息连一行都不产生**（`if (text.length > 0)`），下面的回答看起来像在回答空气。现在图片引用随行返回，字节按需取。两条**只能靠真实浏览器发现**的布局事实：①`.shots` 是 `align-items: flex-end` 的列向 flex，子项会收缩到内容宽度，所以 `.shot` 上用 `width: 100%` 是**循环依赖**，会塌成图片的原始尺寸（实测 `w:2` 而不是 320）——宽度必须来自镜像自身的 `width`/`height`；②760×1440 的手机截图在 380px 宽的面板里**高 606px**，一张图占掉 84% 的窗口，三张就是三屏滚动，所以缩略图封顶 320px/44vh，点开用浏览器自己的看图器看原图 |
+| 宽度轴：9 场景 × 7 宽度 = **0 处断裂**（v88） | 面板宽度是读者能拖的，而此前所有截图与探针都跑在 380px。扫 200/260/320/380/450/600/900，判据为文档横向滚动、元素越界、**永久**裁切、塌陷——63 个组合全过。这个读数**三次才拿到**，前两次都是判据错：解析器只读了多行 JSON 的第一行（63/63 假报）；`.sr-only` 是屏幕阅读器区域，`width:1px` + `clip-path` 让它**本来就该溢出**；`pre` 是 `overflow-x: auto`，**读者滚得到**，只有 `overflow: hidden` 才算真裁切 |
+| 助手正文的阅读栏上限 `--measure: 500px`（v88） | `.answer` 上**没有 `max-width`**，宽度由内容决定（`#transcript` 是列向 flex，子项收缩到内容宽度），于是**面板有多宽行就有多宽**。用一段确定足够长的文字配对照组（用户气泡，一直有 `min(456px,100%)`）实测：380px 下 332px/23.7 汉字，900px 下 **852px/60.9 汉字**，1400px 下 **1347px/96.2**，1800px 下 **1652px/118**，而气泡恒为 420px/30。按**属性**枚举（直接持有文字、无 `max-width`、行宽超限）抓到第二个实例：`.tool-failure` 在 1400px 下**一行 208 个等宽字符**（380px 下 53）。500px 是推导的：等宽字体实测 6.00px/字符 ⇒ 80 列 = 480px 文本，逐步试出放得下 80 列的**最小 `.answer` 宽度是 485px**；80 列不是借来的惯例，**本仓库 40409 行源码的 p90 就是 81 列**。两处**只能靠量发现**的坑见下 |
+| 一个数给出两个宽度（v88） | token 第一版取 `52ch`，而 **`ch` 在自定义属性里按使用它的元素字体解析**：同一个 `52ch` 在 `.answer`（14px 正文）上是 **427px**，在 `.tool-failure`（12px 等宽）上是 **343px**——窄的那个把报错原文削到比它在常规面板下已有的宽度还窄。已改为绝对长度。改成 427px 后**关于正文的每条断言都通过**，但它仍是回归：代码块被一起限住，一条 **666px 的代码行**在 900px 面板下以前放得下、之后要横向滚 241px。最终 500px，且 `npm test` 有一条断言钉住 `>= 485px` 这个实测下限 |
 
 最后一步在探针上报错 `llm-deepseek: no API key for provider route "deepseek-official"`——
 **这是探针进程拿不到凭据，不是插件缺陷**。已核对 `$DSH_HOME/.credentials.yaml`：里面只有一条
@@ -3866,7 +3869,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 656 条，含真实 Chrome 端到端与真扩展 e2e
+└─ test/                  # 657 条，含真实 Chrome 端到端与真扩展 e2e
 
 extension/
 ├─ manifest.json

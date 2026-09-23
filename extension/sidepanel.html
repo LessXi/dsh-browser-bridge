@@ -58,6 +58,36 @@
         --to-bottom-size: 28px;
         --to-bottom-inset: 12px;
 
+        /* How wide a line of long-form text is allowed to get.
+           In px, not `ch`, because a `ch` inside a custom property resolves
+           against the font of whichever element uses it: one `52ch` token
+           measured 427px on an answer (14px prose) and 343px on a tool's error
+           output (12px monospace) — two widths from one number, and the narrow
+           one cut the error output below the width it already had at the
+           sidebar's usual size.
+           500px is the one width that satisfies both things this column holds,
+           derived rather than chosen twice:
+             · code — the code face measures 6.00px per character, so the
+               universal 80-column convention is 480px of text, and `pre` ends
+               up 2px narrower than this box once its own border is counted, so
+               485px is the measured minimum that still fits 80 columns. That is
+               not an arbitrary standard: across this repository's own 40,409
+               source lines the 90th percentile is 81 columns, so 80 covers nine
+               lines in ten and the rest scroll in the block that already
+               scrolls at 380px. An earlier 427px attempt satisfied every prose
+               measurement and still regressed code — a 666px line that fitted on
+               a wide panel began scrolling instead.
+             · prose — 500px is about 36 Han characters or 72 English characters
+               per line, both inside the comfortable range for their script, and
+               it sits close to the 456px the reader's own bubbles have always
+               used, so the two sides of the conversation share a measure.
+           The two agree to within 15px, and where they disagree code wins: a
+           paragraph one character shorter per line costs nothing, while a code
+           line that scrolls costs a gesture every time it is read.
+           It only binds on a wide panel: at the sidebar's usual 380px the
+           transcript is 360px, already narrower than this, so nothing moves. */
+        --measure: 500px;
+
         /* WCAG 2.2 AA needs 4.5:1 for body text, so every text token here is
            held above that against the surface it is actually painted on —
            including the tinted chips and code cards, which are not the canvas.
@@ -407,7 +437,18 @@
         background: var(--accent-soft);
         overflow-wrap: anywhere;
       }
-      .answer { min-width: 0; overflow-wrap: anywhere; }
+      /* The answer is the only long-form text in the panel, and it had no
+         reading measure at all: its width came from its content, so a wider
+         panel made for longer lines. Measured with a deliberately long
+         paragraph against a control — the reader's own bubble, which has had
+         `min(456px, 100%)` all along — the answer ran to 852px / 61 Han
+         characters at a 900px panel, 1347px / 96 at 1400px and 1652px / 118 at
+         1800px, while the bubble held at 420px throughout. Past roughly 40 Han
+         characters the eye loses the start of the next line, which is the whole
+         reason a reading measure exists.
+         Code blocks keep their own `overflow-x`, so a long line still scrolls
+         rather than being reflowed into something the reader cannot paste. */
+      .answer { min-width: 0; max-width: var(--measure); overflow-wrap: anywhere; }
       /* A message with pictures stacks them under its words, right-aligned with
          the bubble. `.row` is a flex row, so without this the first picture
          would sit *beside* the text instead of under it. */
@@ -689,6 +730,12 @@
         font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
         white-space: pre-wrap;
         overflow-wrap: anywhere;
+        /* Same measure as an answer, and for the same reason: this is quoted
+           output that wraps rather than scrolls, so without a cap the panel's
+           width became the line's width — 208 monospace characters on one line
+           at a 1400px panel, against 53 at the sidebar's usual 380px. It is the
+           second surface to need this number, which is why it is a token. */
+        max-width: var(--measure);
         max-height: 168px;
         overflow-y: auto;
       }

@@ -934,3 +934,64 @@ test('the list item and the control inside it are two elements', () => {
   assert.ok(body !== null, 'the wrapper the list owns needs a box of its own')
   assert.match(body, /display:\s*block/, 'and it must take the width the button used to take')
 })
+
+test('long-form text has a reading measure, and it survives a wider panel', () => {
+  // Measured in a real browser with a deliberately long paragraph, against a
+  // control that has always been capped: the reader's own bubble. At a 1400px
+  // panel the answer ran to 1347px — 96 Han characters on one line — and at
+  // 1800px to 1652px / 118, while the bubble held at 420px throughout. The
+  // answer's width came from its content, so the panel's width *was* the line's
+  // width; past roughly 40 Han characters the eye loses the start of the next
+  // line, which is the entire reason a reading measure exists.
+  //
+  // `--measure` is in px and not `ch`, and this assertion is what keeps it
+  // that way: a `ch` inside a custom property resolves against the font of
+  // whichever element uses it, so one `52ch` token measured 427px on an answer
+  // (14px prose) and 343px on a tool's error output (12px monospace) — two
+  // widths from one number, the narrow one cutting the error output below the
+  // width it already had at the sidebar's usual size.
+  const measure = css.match(/--measure\s*:\s*([^;]+);/)
+  assert.ok(measure !== null, 'the reading measure must exist as a token, or two surfaces drift apart')
+  const value = measure[1].trim()
+  assert.match(
+    value,
+    /^\d+px$/,
+    `it must be an absolute length: a \`ch\` resolves against each user's own font and gives them different widths, found ${JSON.stringify(value)}`,
+  )
+
+  // Both surfaces that hold long-form text, named because each was measured to
+  // overflow: an answer, and a tool's own quoted error output (208 monospace
+  // characters on one line at 1400px).
+  for (const selector of ['.answer', '.tool-failure']) {
+    assert.equal(
+      declarationOf(selector, 'max-width'),
+      'var(--measure)',
+      `${selector} must be capped by the shared measure, not by a number of its own`,
+    )
+  }
+
+  const pixels = Number.parseInt(value, 10)
+
+  // The cap must not bind at the width the panel is actually used at. The
+  // transcript is 360px in a 380px sidebar, so a measure below that would start
+  // reflowing text the reader was already reading comfortably.
+  assert.ok(
+    pixels > 360,
+    `a ${pixels}px measure is narrower than the 360px transcript at the sidebar's usual width, so it would reflow text that was never too wide`,
+  )
+
+  // And it has to stay wide enough for the other thing this column holds, which
+  // is the assertion that matters most here: an earlier 427px attempt satisfied
+  // every prose measurement above and still regressed code. The code face
+  // measures 6.00px per character and `pre` ends up 2px narrower than this box
+  // once its own border is counted, so 80 columns needs 485px — measured in a
+  // real browser by stepping the cap until `pre.clientWidth` reached 480px, not
+  // derived by adding padding, because the border is written somewhere else.
+  //
+  // 80 is not a convention borrowed for the occasion: across this repository's
+  // own 40,409 source lines the 90th percentile is 81 columns.
+  assert.ok(
+    pixels >= 485,
+    `an ${pixels}px measure leaves less than the 80 columns code is written to (measured floor: 485px)`,
+  )
+})
