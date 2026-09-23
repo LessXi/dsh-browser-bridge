@@ -48,6 +48,9 @@ export const zh = Object.freeze({
   'action.drop': '移除',
   'action.copy': '复制',
   'action.copied': '已复制',
+  // The two scrolling regions, which are focusable and therefore need a name.
+  'stage.transcript': '对话内容',
+  'stage.history': '会话列表',
 
   // The history view.
   'history.empty': '还没有会话',
@@ -219,6 +222,8 @@ export const en = Object.freeze({
   'action.drop': 'Remove',
   'action.copy': 'Copy',
   'action.copied': 'Copied',
+  'stage.transcript': 'Conversation',
+  'stage.history': 'Chats',
 
   'history.empty': 'No chats yet',
   'history.ungrouped': 'Ungrouped',

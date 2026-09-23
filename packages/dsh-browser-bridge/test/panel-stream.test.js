@@ -3540,6 +3540,35 @@ function countOf(needle) {
   return new RegExp(`1/${findRows(host.messages, needle).length}`)
 }
 
+/**
+ * Is the find bar open?
+ *
+ * Read from `aria-expanded`, which the panel writes, and not from `hidden` on the
+ * bar. The DOM shim does not carry the markup's `hidden` attribute — it fabricates
+ * an element per id on first use — so `#find.hidden` reads `false` whether the bar
+ * is open or not. A guard written on it skipped the click and then passed, which is
+ * a guard that asks nothing.
+ *
+ * @returns {boolean} True while the bar is showing.
+ */
+function findBarOpen() {
+  return registry.get('find-open').getAttribute('aria-expanded') === 'true'
+}
+
+/**
+ * Close the find bar however the previous test left it.
+ *
+ * `#find-open` is a *toggle*, so clicking it unconditionally does the opposite of
+ * what a caller means whenever the bar was already open. Going through this
+ * helper is what makes "start from a closed bar" idempotent rather than a bet on
+ * the previous test's ending state.
+ *
+ * @returns {void}
+ */
+function closeFindBar() {
+  if (findBarOpen()) registry.get('find-open').emit('click')
+}
+
 /** Put a long transcript on screen and open the find bar, with no query yet. */
 async function openFindBar() {
   // An earlier test can leave a turn running, and while one is the send button is
@@ -3551,22 +3580,15 @@ async function openFindBar() {
   // refreshed by a read, so a test that skipped this would be driving a panel
   // that still believes it holds the previous fixture.
   await settle()
-  // `#find-open` is a *toggle*, so opening it unconditionally closes a bar an
-  // earlier test left open — and then the count on screen is the previous
-  // query's, and the assertions fail for a reason that has nothing to do with
-  // searching. Same mistake the browser probe made.
-  //
-  // The state is read from `aria-expanded`, which the panel writes, and not from
-  // `hidden` on the bar. The DOM shim does not carry the markup's `hidden`
-  // attribute — it fabricates an element per id on first use — so `#find.hidden`
-  // reads `false` whether the bar is open or not. A guard written on it skipped
-  // the click and then passed, which is a guard that asks nothing.
-  const open = () => registry.get('find-open').getAttribute('aria-expanded') === 'true'
-  if (!open()) {
+  // Opened only if it is not already: an unconditional click *closes* a bar an
+  // earlier test left open, and then the count on screen is the previous query's
+  // and the assertions fail for a reason that has nothing to do with searching.
+  // Same mistake the browser probe made.
+  if (!findBarOpen()) {
     registry.get('find-open').emit('click')
     await settleMacrotask()
   }
-  assert.equal(open(), true, 'the find bar must be open for this to mean anything')
+  assert.equal(findBarOpen(), true, 'the find bar must be open for this to mean anything')
   return registry.get('find-input')
 }
 
@@ -3919,6 +3941,92 @@ test('a reply to a query the reader has left is not adopted', async (t) => {
     registry.get('find-count').textContent,
     zh['find.none'],
     'the late answer to `zebra` must not be drawn under the `aardvark` query',
+  )
+})
+
+test('Ctrl+F opens the find bar from the conversation', async () => {
+  // Measured in a real browser with real keystrokes before this existed: the
+  // keystroke did nothing at all. A side panel has no native find for arbitrary
+  // page content, so the reader got no bar, no error, and no way to learn the
+  // panel had a search — the button in the header was the only entry point, and
+  // it is a control they have to already know about.
+  await settleToIdle()
+  host.messages = longTranscript(60)
+  await settle()
+
+  // From a known-closed bar, so "it opened" means the keystroke opened it and not
+  // that an earlier test left it open.
+  closeFindBar()
+  assert.equal(findBarOpen(), false, 'the bar must start closed, or this test proves nothing')
+
+  // Focus on the conversation rather than on a text box: the shortcut is defined
+  // to step aside while the reader is typing, and that is proved separately below.
+  registry.get('transcript').focus()
+  const prevented = []
+  document.emit('keydown', {
+    key: 'f',
+    ctrlKey: true,
+    metaKey: false,
+    altKey: false,
+    shiftKey: false,
+    preventDefault: () => prevented.push('ctrl+f'),
+  })
+  await settleMacrotask()
+
+  assert.equal(findBarOpen(), true, 'Ctrl+F must open the panel’s own find bar')
+  assert.deepEqual(prevented, ['ctrl+f'], 'and it must claim the keystroke it handled')
+})
+
+test('the shortcut steps aside while the reader is typing', async () => {
+  // A shortcut that fires inside a text field is an obstacle, not a feature: the
+  // composer, the find bar's own input, and the options form all take printable
+  // keystrokes, and taking `Ctrl+F` away from a field the reader is in is how a
+  // convenience becomes an interruption.
+  await settleToIdle()
+  host.messages = longTranscript(60)
+  await settle()
+  // Closed from wherever the previous test left it.
+  closeFindBar()
+  assert.equal(findBarOpen(), false, 'the bar must start closed, or this test proves nothing')
+
+  const field = registry.get('input')
+  field.focus()
+  assert.equal(document.activeElement, field, 'focus must be in the composer for this to mean anything')
+
+  const prevented = []
+  document.emit('keydown', {
+    key: 'f',
+    ctrlKey: true,
+    metaKey: false,
+    altKey: false,
+    shiftKey: false,
+    preventDefault: () => prevented.push('ctrl+f'),
+  })
+  await settleMacrotask()
+
+  assert.equal(
+    findBarOpen(),
+    false,
+    'Ctrl+F inside the composer must not steal the keystroke',
+  )
+  assert.deepEqual(prevented, [], 'and it must not claim it either')
+})
+
+test('Escape closes the find bar and hands focus back', async () => {
+  // The bar is the layer a keyboard user is most likely to have opened with
+  // `Ctrl+F` and then want gone. Escape answered the model menu and the history
+  // but not this one, so the only way out was Tab to `#find-close`.
+  await searchForZebra()
+  assert.equal(findBarOpen(), true, 'the bar must be open, or this test proves nothing')
+
+  document.emit('keydown', { key: 'Escape' })
+  await settle()
+
+  assert.equal(findBarOpen(), false, 'Escape must close the find bar')
+  assert.equal(
+    document.activeElement,
+    registry.get('find-open'),
+    'and focus must go back to the control that opened it, not to the body',
   )
 })
 

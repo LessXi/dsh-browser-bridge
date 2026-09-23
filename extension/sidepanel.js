@@ -504,6 +504,11 @@ function paintStaticCopy() {
   toBottom.textContent = '↓'
   toBottom.setAttribute('aria-label', t('action.toBottom'))
   input.placeholder = t('composer.placeholder')
+  // Both scrollers are focusable, and a focusable region with no name is
+  // announced as an unlabelled group — the reader is told they are somewhere
+  // without being told where. Naming them is what turns "group" into "Conversation".
+  transcript.setAttribute('aria-label', t('stage.transcript'))
+  history.setAttribute('aria-label', t('stage.history'))
   drawSend()
   drawNew()
   modelButton.setAttribute('aria-label', t('model.select'))
@@ -3427,8 +3432,45 @@ document.addEventListener('click', () => {
 })
 
 document.addEventListener('keydown', (event) => {
+  // `Ctrl+F`/`Cmd+F` opens this panel's own find bar, which is what a reader
+  // pressing it means while the cursor is anywhere in the conversation.
+  //
+  // Measured before this existed: the keystroke did nothing at all. A browser
+  // side panel has no native find for arbitrary page content, so the reader got
+  // no bar, no error, and no way to learn the panel had a search at all — the
+  // string `zebra` they were looking for stayed wherever it was. The button in
+  // the header was the only entry point, and it is a control they have to
+  // already know exists.
+  //
+  // `preventDefault` on Ctrl+F is deliberate and safe here: this document is the
+  // side panel, not the user's page, so there is no page-level find to suppress.
+  if (event.key === 'f' && (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey) {
+    // Not while the reader is typing into a field: Ctrl+F inside the composer or
+    // the options form is a browser gesture they may have meant for their own
+    // text, and stealing a keystroke from a text box is how a shortcut becomes an
+    // obstacle. The find bar's own input counts too.
+    const active = document.activeElement
+    const typing = active !== null &&
+      (active.tagName === 'TEXTAREA' || active.tagName === 'INPUT' || active.isContentEditable === true)
+    if (!typing) {
+      event.preventDefault()
+      setFind(true)
+      return
+    }
+  }
   if (event.key !== 'Escape') return
   setMenu(false)
+  // The find bar is a layer too, and it is the one a keyboard user is most likely
+  // to have opened with `Ctrl+F` and then want gone. Without this, Escape left the
+  // bar open and the only way out was Tab to `#find-close`.
+  //
+  // Ordered before the history branch because the bar floats over both views: if
+  // it is open, it is the topmost layer, and dismissing the topmost layer is what
+  // one Escape means.
+  if (findOpen) {
+    setFind(false)
+    return
+  }
   // The history is a layer over the conversation, and Escape is how a keyboard
   // user dismisses a layer. Without this the only way out was to find the `‹`
   // button with the mouse or tab to it, while every other overlay in the panel

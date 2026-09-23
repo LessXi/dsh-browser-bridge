@@ -1,9 +1,9 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v79 已交付并入库。** 下一节就是最新的一轮改动；下面标 v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v79 那一段为止即可。
+> **当前状态：v80 已交付并入库。** 下一节就是最新的一轮改动；下面标 v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v80 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（596 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（601 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 > （真浏览器 e2e 那 4 条需要机器上有 Playwright Chromium 或 Chrome for Testing；
@@ -12,8 +12,8 @@
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
 >
-> **已入库**：v3→v79 的全部改动已提交并推送到 `origin/main`。工作区干净。
-> （v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
+> **已入库**：v3→v80 的全部改动已提交并推送到 `origin/main`。工作区干净。
+> （v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
 
 > ## ⚠️ 两条并行版本线（2026-09-23 处理，后续轮次务必先读这段）
 >
@@ -180,7 +180,143 @@
 > - `earlier.png` 与 `hostDown.png` **sha256 相同**：那张图画的是阻塞屏，
 >   「更早的内容」胶囊根本没出现在交付的图里。成因未定位。
 
-> ### v79：搜索能带读者到命中，也能把那个词本身标出来（本轮）
+> ### v80：键盘读者能进到对话里，也能滚动它（本轮）
+>
+> v79 让搜索把读者带到那个词。这一轮问的是另一个基础问题：
+> **一个不用鼠标的人，能不能读到这段对话。**
+>
+> 结论是不能，而且缺陷比"少几个快捷键"严重。
+>
+> #### 一、缺陷 A：滚动区域不在 Tab 顺序里，进入内容时读者被甩回窗口最旧一行
+>
+> 真实浏览器 + **真实按键**实测（`.tmp-run/preview.mjs --keys`，非合成事件）：
+>
+> ```
+> 起点 #input (scrollTop 4521，读者在看最新一条)
+> Tab → #model → body → #title → #find-open → #new → button.copy
+>                                                      ↑ scrollTop 变成 0
+> ```
+>
+> Tab 从输入框出发，要经过 5 个头部控件，然后**落点是「窗口内最旧那一行的复制按钮」**
+> ——而落上去的瞬间 `scrollTop` 从 **4521 变成 0**。读者被从最新一条消息甩到最旧一条，
+> 只为了停在一个他根本没要的按钮上。
+>
+> 更根本的是：**没有任何控件的行根本够不到**。用探针按「浏览器自己的可聚焦定义」枚举
+> （`.tmp-run/probe-keyboard-reach.js`、`probe-tab-order.js`）：
+>
+> | 读数（`normal` 场景，4 行） | 值 |
+> | --- | --- |
+> | `stopCount`（Tab 停靠点） | 8 |
+> | `stopsBeforeContent` | 5 |
+> | `rowCount` / `rowsWithText` | 4 / 4 |
+> | `reachableRowCount` | 2 |
+> | **`unreachableRows`** | **2** |
+>
+> 够不到的正是**用户问题行**与**成功的工具行**——前者是对话本身，后者是过程记录。
+>
+> #### 二、缺陷 B：没有 PageDown，因为没有任何可聚焦的滚动容器
+>
+> 键盘滚动需要焦点落在滚动容器上。实测焦点停在头部按钮时 `PageDown` **什么都不做**
+> （`#title` 上连按三次，`scrollTop` 恒为 4521）。
+>
+> 这正是 Chrome 自己的无障碍审计会报的「Scrollable region must have keyboard access」。
+>
+> #### 三、修法：`tabindex="0"` + 区域命名 + 焦点环
+>
+> `extension/sidepanel.html` 的 `#transcript` 与 `#history` 各加 `tabindex="0"`。
+> 用 `0` 而非 `-1`：目的就是让 Tab 能到；它**不改变文档顺序**，所以视觉与阅读顺序不变。
+>
+> 注入式实验先证明这条路可行（`.tmp-run/probe-tabindex-experiment.js` + `--keys`），
+> 再落到源码：
+>
+> | 读数 | 修复前 | 修复后 |
+> | --- | --- | --- |
+> | Tab 进入内容的落点 | `button.copy`（第 1 行） | **`#transcript`** |
+> | 落上去时 `scrollTop` | **4521 → 0** | **4521 → 4521** |
+> | `#title` 上按 PageDown | 无变化 | 见下 |
+> | `#transcript` 上按 PageDown | —— | **4521 → 4586 → 4590** |
+> | `#transcript` 上按 PageUp | —— | **4590 → 4322** |
+>
+> 焦点环走 `.scroll:focus-visible`：`outline: 2px solid Highlight; outline-offset: -2px`。
+> 两处都不是随手选的：
+> - **`Highlight` 而非 `--accent`**：高对比度会丢弃 `--accent` 并重绘系统色，
+>   于是焦点指示器**恰好在它最要紧的模式里消失**（与 v75 的浮层边界同一课）。
+> - **负偏移而非正偏移**：这个元素的边缘**就是面板的边缘**，正偏移的环画在容器之外、
+>   被裁掉，聚焦与未聚焦看起来完全一样。
+>
+> 命名走 `aria-label`（`stage.transcript` / `stage.history`）：可聚焦但无名的区域，
+> 读屏只播报「group」——读者知道自己在哪里，却不知道那是什么。
+>
+> #### 四、缺陷 C：Ctrl+F 什么都不做——上一轮做的搜索没有键盘入口
+>
+> 实测（`--keys "ctrl+f"`）：**面板毫无反应**。浏览器侧栏没有针对任意页面内容的原生查找，
+> 所以读者既没得到查找栏、也没得到报错、也无从知道面板有搜索能力——
+> 上一轮那个功能唯一的入口是头部一个他必须先知道存在的按钮。
+>
+> 修法：`document` 级 keydown 处理 `Ctrl+F`/`Cmd+F` → `setFind(true)`。
+> - `preventDefault()` 在这里是安全的：本文档就是侧栏本身，没有页面级查找会被压掉。
+> - **正在输入时不抢**（`TEXTAREA`/`INPUT`/`contentEditable`）：输入框里的 Ctrl+F
+>   是读者自己的手势，抢走它是把便利变成障碍。
+> - 同一个处理函数里补上 **Escape 关闭查找栏**（此前 Escape 管模型菜单与历史视图，
+>   唯独不管这个用 Ctrl+F 打开的层），并交回焦点给 `#find-open`。
+>
+> 实测：焦点在 `#model` 时按 `ctrl+f` → **`#find-input` 获得焦点、`findOpen: "true"`**。
+>
+> #### 五、测试基建的真实缺口：shim 把所有元素都造成 `div`
+>
+> `test/dom-shim.js` 的 `byId` 对任何 id 都 `new Element('div')`。于是
+> `active.tagName === 'TEXTAREA'` **在套件里永远为假**——「正在输入时不抢按键」这条
+> 分支根本走不到，测试红了却是**shim 的错，不是面板的错**。
+>
+> 修法是给少数几个**回答就是标签名**的 id 配真实标签（`TAGS` 表：`input`→`TEXTAREA`、
+> `find-input`→`INPUT`）。只列测试真的会问的那几个：浏览器从标记里学到这件事，
+> 而这个 shim 有意不解析标记——在这里发明一个 HTML 解析器，等于要维护第二份实现。
+>
+> 这条缺口是**防呆断言抓出来的**：我先写了「栏必须是关的」这条守卫，它立刻变红，
+> 才暴露出我的开关逻辑用了两次无条件 click（`#find-open` 是**切换**，连点两次等于没点）。
+> 顺手把它收进两个幂等助手 `findBarOpen()` / `closeFindBar()`，测试不再赌上一个测试的收尾状态。
+>
+> #### 六、新增仪器：`--keys`（真实按键）
+>
+> `preview.mjs` 新增 `--keys "Tab,Tab,PageDown"`，经 CDP `Input.dispatchKeyEvent` 发送
+> **可信**按键。这件事**必须**在页面外做：`dispatchEvent` 造的是不可信事件，
+> 浏览器自己的默认动作（Tab 移动焦点、PageDown 滚动）**不会执行**，用探针去量它
+> 就是在量自己造的事件。顺序是「主截图 → `--probe` → `--keys` → `--after-probe`」，
+> 所以截图能拍到按键的结果。
+>
+> **仪器自检**（防止"什么都没发生"被读成"缺陷不存在"）：Tab 在 `#input` 上能移动到
+> `#model`，合成事件做不到这一点——这是"按键确实可信"的证据。
+>
+> #### 七、验证读数（已绿，不必重跑）
+>
+> - `npm test` → **601 passed, 0 failed, 0 skipped**（596 → 601，新增 5 条）。
+> - `npm run check:extension` → exit 0。
+> - 变异 `.tmp-run/mutate-keyboard-reach.mjs`：**8/8 命中**、`restoredExactly: true`。
+>   每条变异都写明跑**哪个套件**（CSS/标记类事实 → `panel-geometry`，运行时行为 → `panel-stream`）：
+>   `transcript-not-focusable`、`history-not-focusable`、`ring-in-accent`、
+>   `ring-outside-the-box`、`region-unnamed`、`no-ctrl-f`、`ctrl-f-fires-while-typing`、
+>   `escape-ignores-find-bar`。
+> - 视觉：`.tmp-run/r18-fixed-after.png`（焦点环画在容器内侧、内容已滚动）、
+>   `r18-fc-after.png`（高对比度下环可见，系统青色）。
+> - 回归：Escape 关历史并交回 `#title` 未变。
+>
+> #### 八、本轮新增探针（`.tmp-run/`，被 gitignore）
+>
+> `probe-keyboard-reach.js`（按浏览器自己的可聚焦定义枚举，报 `unreachableRows`）、
+> `probe-tab-order.js`（把 Tab 顺序与够不到的行逐条打出来）、
+> `probe-tabindex-experiment.js`（注入式实验：先证明路可走再改源码）、
+> `mutate-keyboard-reach.mjs`。
+>
+> #### 九、对话列表同样修了（同一缺陷的第二个实例）
+>
+> `historyOpen` 场景实测 Tab 顺序里出现 **`section#history.scroll "Chats"`** ——
+> 会话列表也进了 Tab 顺序、也有名字。它此前与 `#transcript` 是同一份 `.scroll` 类、
+> 同一个缺陷，这正是"按类修而不是按 id 修"的价值。
+>
+> 该场景的会话只有 3 条、列表不溢出，所以"键盘滚动历史列表"在**这个夹具里驱动不出来**
+> ——记在这里，免得后人把它当成漏测。
+
+## v79：搜索能带读者到命中，也能把那个词本身标出来
 >
 > v78 交付了「在整个会话里搜索」。这一轮修的是它**兑现承诺的最后一步**：
 > 读者敲了关键词之后，**他真的看到那个词了吗**。

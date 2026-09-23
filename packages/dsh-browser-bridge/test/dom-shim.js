@@ -527,6 +527,26 @@ function camel(name) {
 }
 
 /**
+ * The tag each id really has, for the ids whose tag something asks about.
+ *
+ * `byId` mints every element as a `div`, which is right for identity — the panel
+ * fetches its nodes once and only their identity matters — but wrong for the
+ * handful of questions whose answer *is* the tag. `active.tagName === 'TEXTAREA'`
+ * is how a shortcut tells "the reader is typing" from "the reader is reading",
+ * and a shim that calls a textarea a `div` makes that branch unreachable: the
+ * guard reads false, the shortcut fires inside the composer, and the test fails
+ * for a reason that is the shim's rather than the panel's.
+ *
+ * Only the ids a test asks about are listed. A browser learns this from the
+ * markup, which this shim deliberately does not parse; inventing a parser here
+ * would be a second implementation of HTML to keep correct.
+ */
+const TAGS = new Map([
+  ['input', 'TEXTAREA'],
+  ['find-input', 'INPUT'],
+])
+
+/**
  * Build a document whose `getElementById` mints one stable stub per id.
  *
  * The panel fetches its nodes once, at module load, so identity is all that
@@ -539,7 +559,7 @@ function makeDocument() {
   const registry = new Map()
   const byId = (id) => {
     if (!registry.has(id)) {
-      const element = new Element('div')
+      const element = new Element(TAGS.get(id) ?? 'div')
       element.id = id
       // These elements are roots — nothing is their parent — but in a browser
       // they would be in the document, so they have to say which document they

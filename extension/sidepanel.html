@@ -120,6 +120,15 @@
         outline: 2px solid var(--accent);
         outline-offset: 1px;
       }
+      /* A focused scroller draws its ring inside itself, on top of the content it
+         scrolls — an outline would sit outside a box whose whole purpose is that
+         its edges are the panel's edges. `Highlight` is the system colour for
+         "this is where you are", and it survives High Contrast, which repaints it
+         and discards `--accent`. */
+      .scroll:focus-visible {
+        outline: 2px solid Highlight;
+        outline-offset: -2px;
+      }
       /* The editor is the one box in the panel with no radius of its own — a
          bare text box inside a 16px rounded card — so a ring drawn on it is a
          square accent rectangle inside a round one. Measured, `#input` was the
@@ -1225,8 +1234,29 @@
     </div>
 
     <div id="stage">
-      <main id="transcript" class="scroll"></main>
-      <section id="history" class="scroll" hidden></section>
+      <!--
+        `tabindex="0"` on the conversation and on the session list, which is what
+        makes the panel usable without a mouse at all.
+
+        Before this, the scrolling region was not in the tab order, so the only
+        way into the content was through the controls the rows happen to contain:
+        tabbing from the composer went `#model` → `body` → `#title` → `#find-open`
+        → `#new` → the *copy button of the oldest row in the window*. Measured,
+        that took `scrollTop` from 4521 to 0 — the reader was thrown from the
+        newest message to the oldest one to land on a button they did not ask for,
+        and the rows holding no control at all (a question, a context chip, a tool
+        line that succeeded) could not be reached or read.
+
+        Keyboard scrolling is the other half: PageDown did nothing while focus sat
+        on a header button, and works once focus is on the scroller itself. A
+        scrollable region that cannot be focused is a region a keyboard cannot
+        scroll, which is what Chrome's own accessibility audit reports.
+
+        `tabindex="0"` rather than `-1`: the point is to be reachable by Tab. It
+        does not reorder anything — the element keeps its place in the document.
+      -->
+      <main id="transcript" class="scroll" tabindex="0"></main>
+      <section id="history" class="scroll" tabindex="0" hidden></section>
       <button id="earlier" type="button" hidden></button>
       <button id="to-bottom" type="button" hidden></button>
       <!--

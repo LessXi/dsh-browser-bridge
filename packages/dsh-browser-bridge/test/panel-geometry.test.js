@@ -794,3 +794,56 @@ test('a trigger that promises a menu opens something that is one', () => {
     'and a menu must be named, by the button that opens it',
   )
 })
+
+test('both scrolling regions can be reached and scrolled from the keyboard', () => {
+  // Measured in a real browser before this, with real keystrokes rather than
+  // synthetic events: tabbing out of the composer went `#model` → `body` →
+  // `#title` → `#find-open` → `#new` → the *copy button of the oldest row in the
+  // window*, and that last step took `scrollTop` from 4521 to 0. The reader was
+  // thrown from the newest message to the oldest one to land on a button they had
+  // not asked for, and rows holding no control at all could not be reached.
+  //
+  // `PageDown` with focus on a header button scrolled nothing, which is the other
+  // half of the same defect: a scrollable region a keyboard cannot focus is a
+  // region a keyboard cannot scroll.
+  //
+  // `tabindex="0"` and not `-1`: the point is to be reachable by Tab. It does not
+  // reorder anything, because the element keeps its place in the document.
+  for (const id of ['transcript', 'history']) {
+    assert.equal(
+      attributeOf(id, 'tabindex'),
+      '0',
+      `#${id} scrolls, so a keyboard has to be able to reach and scroll it`,
+    )
+  }
+
+  // A focusable region with no name is announced as an unlabelled group: the
+  // reader is told they are somewhere without being told where. The names are
+  // applied with the rest of the panel's copy, so they are checked where they live.
+  const renderer = readExtensionFile('sidepanel.js')
+  assert.match(
+    renderer,
+    /transcript\.setAttribute\('aria-label',\s*t\('stage\.transcript'\)\)/,
+    'the conversation must say what it is when focus lands on it',
+  )
+  assert.match(
+    renderer,
+    /history\.setAttribute\('aria-label',\s*t\('stage\.history'\)\)/,
+    'and so must the session list',
+  )
+})
+
+test('a focused scroller draws its ring in the one colour High Contrast keeps', () => {
+  // The ring is drawn inside the box rather than outside it: this element's edges
+  // *are* the panel's edges, so an outline with a positive offset would be clipped
+  // and a focused scroller would look exactly like an unfocused one.
+  //
+  // `Highlight` and not `--accent`, for the reason the overlays already learned:
+  // High Contrast discards `--accent` and repaints system colours, so a ring
+  // declared in the accent disappears in precisely the mode where a visible focus
+  // indicator matters most.
+  const body = ruleBody('.scroll:focus-visible')
+  assert.ok(body !== null, 'a focusable scroller needs a focus indicator')
+  assert.match(body, /outline:\s*2px solid Highlight/, 'and it must survive High Contrast')
+  assert.match(body, /outline-offset:\s*-2px/, 'and be drawn inside the box it rings')
+})
