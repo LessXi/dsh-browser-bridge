@@ -918,6 +918,11 @@
         font-size: var(--text-xs);
         color: var(--faint);
       }
+      /* The list item is a wrapper around the button rather than the button
+         itself: a role overrides the element's own, so `role="listitem"` on the
+         button cost it the `button` role. The wrapper takes the width and the
+         button fills it, which is what the button did on its own before. */
+      .session-item { display: block; }
       .session {
         display: flex;
         align-items: center;
@@ -1233,7 +1238,16 @@
       <button id="find-close" class="icon" type="button"></button>
     </div>
 
-    <div id="stage">
+    <!--
+      The main landmark is declared here rather than left implicit on
+      `#transcript`. An explicit `role` on an element *overrides* its implicit
+      one, so putting the list role below on `<main>` would have traded the
+      "skip to content" landmark for the list structure — measured, `main`
+      disappeared from the computed roles the moment `role="list"` was set on it.
+      `#stage` is the content area of both views, which is what the landmark is
+      for, so the landmark moves up and the list takes the element underneath.
+    -->
+    <div id="stage" role="main">
       <!--
         `tabindex="0"` on the conversation and on the session list, which is what
         makes the panel usable without a mouse at all.
@@ -1255,7 +1269,14 @@
         `tabindex="0"` rather than `-1`: the point is to be reachable by Tab. It
         does not reorder anything — the element keeps its place in the document.
       -->
-      <main id="transcript" class="scroll" tabindex="0"></main>
+      <main id="transcript" class="scroll" tabindex="0" role="list"></main>
+      <!--
+        Not a list itself: a `list` may own nothing but `listitem`s, and this
+        element also holds the workspace headings and the settings footer. It is
+        a `<section>` with a name, so the platform already gives it a `region`
+        role — the landmark a reader can jump to — and each group of sessions
+        below is its own list under its own heading.
+      -->
       <section id="history" class="scroll" tabindex="0" hidden></section>
       <button id="earlier" type="button" hidden></button>
       <button id="to-bottom" type="button" hidden></button>

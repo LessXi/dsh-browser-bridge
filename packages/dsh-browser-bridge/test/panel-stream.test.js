@@ -3771,6 +3771,109 @@ test('the needle itself is marked, not the whole row', async (t) => {
   assert.equal(ranges[0].toString(), 'zebra', 'the marked text must be the needle')
 })
 
+test('every row of the conversation is one item of one list', async () => {
+  // Measured in a real browser before this test existed: `#transcript` exposed 72
+  // nodes at depth 7 with no list, no listitem and no heading — one flat run of
+  // `StaticText`. Everything was *present* and nothing was *navigable*: a screen
+  // reader user could read the conversation from the top and had no way to move
+  // between messages, which is the difference between a document and a pile.
+  //
+  // The assertion walks the row kinds rather than naming one, because the defect
+  // this guards against is a kind being forgotten. A reasoning row's element is
+  // `.reasoning` and not `.row` — that is how it escaped the search outline a
+  // round earlier — and the transient rows are direct children of the list too.
+  //
+  // The container's own `role="list"` is not asserted here: it is written in the
+  // markup, and this file drives the module against a shim that does not parse
+  // markup. `panel-geometry.test.js` reads the source and checks that half.
+  await show([
+    { kind: 'user', text: '第一个问题' },
+    { kind: 'reasoning', text: '想一想' },
+    { kind: 'tool', callId: 'c1', name: 'read_file', summary: 'a.md', status: 'ok' },
+    { kind: 'assistant', text: '第一个回答' },
+    { kind: 'failed', code: 'MISSING_CREDENTIAL', text: 'no key' },
+    { kind: 'context', text: 'workspace' },
+  ])
+
+  const children = transcript.children
+  assert.ok(children.length >= 6, `the fixture did not draw six rows, got ${children.length}`)
+  const untagged = children
+    .filter((child) => child.getAttribute('role') !== 'listitem')
+    .map((child) => child.className)
+  assert.deepEqual(
+    untagged,
+    [],
+    'a direct child of the list with no item role is a list that only claims to be one',
+  )
+  // The reasoning row is named explicitly, because a walk that filters on `.row`
+  // silently omits it and would report a clean result for an incomplete check.
+  assert.equal(
+    transcript.querySelector('.reasoning').getAttribute('role'),
+    'listitem',
+    'the reasoning row is a `.reasoning`, not a `.row`, and must not be skipped',
+  )
+})
+
+test('the waiting and streaming rows are items of the same list', async () => {
+  // They are drawn by renderers of their own and appended behind the rows, which
+  // is exactly why a rule written inside `reconcileRows` would miss them. The
+  // static fixtures never show these states, so the gap would only ever appear
+  // for someone watching a turn run.
+  await idle()
+  host.running = true
+  startAttempt()
+
+  const working = transcript.querySelector('.working')
+  assert.notEqual(working, null, 'the waiting row was not drawn, so this proves nothing')
+  assert.equal(working.getAttribute('role'), 'listitem', 'the waiting row is part of the conversation')
+
+  // The streaming preview is the other transient child, and it is drawn by a
+  // third renderer — the two would go out of step if either were left out.
+  deliver({ sessionId: SESSION, kind: 'text', text: 'streaming now' })
+  await settle()
+  const live = transcript.querySelector('.live')
+  assert.notEqual(live, null, 'the streaming row was not drawn, so this proves nothing')
+  assert.equal(live.getAttribute('role'), 'listitem', 'the streaming row is part of the conversation')
+
+  host.running = false
+})
+
+test('a session is an item that still announces itself as a button', async (t) => {
+  // The trap this test exists for: a role *overrides* the element's own. Writing
+  // `role="listitem"` straight onto the session button was measured in a real
+  // browser and dropped `button` from the computed roles — the row kept its place
+  // in the list and stopped being announced as something that can be activated.
+  // The item and the control therefore have to be two elements.
+  await clockOf('groups')
+  if (currentViewInPanel() === 'chat') {
+    registry.get('title').click()
+    await settle()
+  }
+
+  const items = registry.get('history').querySelectorAll('.session-item')
+  assert.ok(items.length >= 1, `expected a session list, got ${items.length} items`)
+  for (const item of items) {
+    assert.equal(item.getAttribute('role'), 'listitem', 'the wrapper is the item the list owns')
+  }
+  const buttons = registry.get('history').querySelectorAll('.session')
+  assert.equal(buttons.length, items.length, 'every item must still hold its session control')
+  for (const button of buttons) {
+    assert.equal(button.tagName, 'BUTTON', 'the control inside the item must still be a button')
+    assert.equal(
+      button.getAttribute('role'),
+      null,
+      'and it must not carry the item role, which would replace its own button role',
+    )
+  }
+
+  // Back to the conversation, where every other test expects to be. Leaving the
+  // panel on the session list hid the way back to the newest rows and failed a
+  // test three hundred lines further down — a leak that looks like someone else's
+  // defect.
+  registry.get('title').click()
+  await settle()
+})
+
 test('a closed row that hides the match is opened, and its failure shown', async (t) => {
   // The same shape as the reasoning row, on the other kind that hides text: a
   // tool row draws its name and arguments and keeps the failure behind a click.

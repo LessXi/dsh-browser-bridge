@@ -847,3 +847,39 @@ test('a focused scroller draws its ring in the one colour High Contrast keeps', 
   assert.match(body, /outline:\s*2px solid Highlight/, 'and it must survive High Contrast')
   assert.match(body, /outline-offset:\s*-2px/, 'and be drawn inside the box it rings')
 })
+
+test('the conversation is a list and the landmark is not spent to make it one', () => {
+  // Roles are read from the markup because that is where the pair is decided, and
+  // the pair is the whole point: an explicit `role` overrides an element's
+  // implicit one, so `role="list"` on `<main id="transcript">` was measured to
+  // remove `main` from the computed roles. A reader would have gained somewhere to
+  // move between messages and lost "skip to the content", which is not a trade.
+  assert.equal(
+    attributeOf('transcript', 'role'),
+    'list',
+    'the conversation must expose itself as a list, or it stays one flat run of text',
+  )
+  assert.equal(
+    attributeOf('stage', 'role'),
+    'main',
+    'the landmark has to be declared explicitly once the list role is in play',
+  )
+  // `#history` deliberately is NOT a list: a `list` may own only `listitem`s, and
+  // this view also holds the workspace headings and the settings footer. It is a
+  // named `<section>`, which the platform gives a `region` role on its own.
+  assert.equal(
+    attributeOf('history', 'role'),
+    null,
+    'the session view holds headings and a footer, so it cannot be a list itself',
+  )
+})
+
+test('the list item and the control inside it are two elements', () => {
+  // Measured in a real browser: `role="listitem"` written on the session button
+  // removed `button` from the computed roles — the sessions stopped being
+  // announced as activatable. Every item must therefore be a wrapper, and the
+  // button inside must carry no role of its own.
+  const body = ruleBody('.session-item')
+  assert.ok(body !== null, 'the wrapper the list owns needs a box of its own')
+  assert.match(body, /display:\s*block/, 'and it must take the width the button used to take')
+})

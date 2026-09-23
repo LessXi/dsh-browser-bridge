@@ -1,9 +1,9 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v80 已交付并入库。** 下一节就是最新的一轮改动；下面标 v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v80 那一段为止即可。
+> **当前状态：v81 已交付并入库。** 下一节就是最新的一轮改动；下面标 v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v81 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（601 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（606 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 > （真浏览器 e2e 那 4 条需要机器上有 Playwright Chromium 或 Chrome for Testing；
@@ -12,8 +12,8 @@
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
 >
-> **已入库**：v3→v80 的全部改动已提交并推送到 `origin/main`。工作区干净。
-> （v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
+> **已入库**：v3→v81 的全部改动已提交并推送到 `origin/main`。工作区干净。
+> （v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
 
 > ## ⚠️ 两条并行版本线（2026-09-23 处理，后续轮次务必先读这段）
 >
@@ -180,7 +180,76 @@
 > - `earlier.png` 与 `hostDown.png` **sha256 相同**：那张图画的是阻塞屏，
 >   「更早的内容」胶囊根本没出现在交付的图里。成因未定位。
 
-> ### v80：键盘读者能进到对话里，也能滚动它（本轮）
+> ### v81：对话在无障碍树里有了结构（本轮）
+>
+> v80 让键盘能进到对话里。这一轮问的是**读屏器拿到的到底是什么**。
+>
+> **仪器**：`preview.mjs` 新增 `--ax-tree <selector>`，用
+> `Accessibility.getFullAXTree` 取平台在某个元素下**自己算出来**的子树。
+> 它与既有的 `--ax` 是**两个不同的问题**：`--ax` 从作者写的 ARIA 属性出发，
+> 只能确认或否认作者自己的标注；`--ax-tree` 从**内容**出发，回答「读屏器
+> 被交到手里的是什么」。对话正是需要后者的场景——能不能在消息之间移动，
+> 是由**没人写下来的 role** 决定的。
+>
+> **缺陷（实测）**：`#transcript` 暴露 **72 个节点、深度 7、`structure=false`、
+> 可导航 role 为空**——一整块 `StaticText`。内容**全都在**，却**没有一处可导航**：
+> 读屏用户只能从头读到尾，无法在消息之间移动。这是「文档」与「一堆字」的区别。
+> `#history` 同样是 `structure=false`。
+>
+> **修复**：`#transcript` 为 `role="list"`，每一行是 `listitem`；会话列表每组一个
+> `list`，每个会话是一个 `listitem`。实测 `structure=false → true`、
+> 可导航 role `[] → ["list","listitem"]`、main 地标保留。
+>
+> **★ 两个靠量才发现、靠想会做错的点**：
+>
+> 1. **显式 role 会覆盖元素自己的隐式 role。** 把 `role="list"` 写在
+>    `<main id="transcript">` 上，`main` 从计算 role 里**直接消失**——等于用
+>    「跳到主内容」换「列表结构」。所以地标上移到 `#stage`（它才是主内容区，
+>    任一时刻只显示一个滚动区），列表落在它下面的元素上。
+> 2. **`role="listitem"` 写在会话按钮上，按钮就不再是按钮。** 实测：会话行
+>    从 `button "打造类似codex的dsh网页插件 2m ago"` 变成**裸 `listitem`**
+>    （整棵树里只剩 Settings 一个 button）。**列表结构不能拿控件语义去买**，
+>    所以 item 与控制是两个元素：`listitem` 包着 `button`（A/B 两种形状都量过）。
+>
+> **瞬态行也要带 role**：`.working`（等待行）、`.live`（流式预览）、`.approval`
+> （审批卡）**都是 `#transcript` 的直接子元素**，`list` 只允许 own `listitem`。
+> 它们各由自己的渲染器创建，静态夹具看不到这些状态——**注入了才量得出来**
+> （`working` 场景实测 `listitem` 5 个）。
+>
+> **推理行是 `.reasoning` 而不是 `.row`**：任何按 `.row` 遍历的规则都会漏掉它。
+> v79 的搜索描边正是这么漏的；本轮 role 也差点重演，所以 row 的 role 写在
+> **产出节点的那一处共用位置**，而不是写在 `renderRow` 的五个分支里。
+>
+> **测试缺口（本轮真正的问题）**：加 role 前后都是 **601 passed**——套件对 role
+> **零覆盖**，把整段实现删掉依然全绿。新增 5 条测试后 601 → **606**：
+> `every row of the conversation is one item of one list`（遍历**行种类**，
+> 并单独点名推理行）、`the waiting and streaming rows are items of the same list`、
+> `a session is an item that still announces itself as a button`、
+> 以及 `panel-geometry` 里读标记的两条。
+>
+> **变异**：`.tmp-run/mutate-list-structure.mjs` **7/7 命中**，`restoredExactly: true`。
+> 覆盖：`transcript-not-a-list`、`landmark-left-on-the-list-element`、
+> `rows-not-items`、`waiting-row-not-an-item`、`streaming-row-not-an-item`、
+> **`item-role-on-the-button`**（本轮的核心陷阱）、`no-wrapper-so-the-list-owns-buttons`。
+> 每条变异写明跑哪个套件：标记/CSS 类事实归 `panel-geometry`（读源码），
+> 运行时行为归 `panel-stream`（驱动模块）。**跑错套件会得到「命中」的假读数。**
+>
+> **读数**：`npm test` **606 passed / 0 failed / 0 skipped**、`check:extension` exit 0。
+> 真实浏览器：`structure=true`、`navigable:["list","listitem"]`、`main:1`、
+> 会话仍播报为 `button`；**高对比度下 role 同样被保留**（`list/listitem/main` 齐全）。
+> 视觉：`.tmp-run/r19-hist-light.png`（浅色下会话列表布局未被包裹层破坏）、
+> `r19-fixed-normal.png`、`r19-fixed-hist.png`、`r19-fc.png`。
+>
+> **一次自己造成的测试泄漏**（已修）：新测试把面板留在会话列表视图上，
+> 三百行之后 `the way back to the newest rows stays on screen while parked`
+> 因此变红——**看起来像别人的缺陷**。新测试末尾必须回到对话视图。
+>
+> **另一个假失败**：`the waiting and streaming rows...` 第一版用
+> `host.running = true; await clockOf(...)` 触发等待行，报「等待行没画出来」。
+> 正确驱动是既有的 `await idle()` → `host.running = true` → `startAttempt()`
+> （`deliver` 帧才开始一轮）。**夹具不画不等于实现不画。**
+
+> ### v80：键盘读者能进到对话里，也能滚动它
 >
 > v79 让搜索把读者带到那个词。这一轮问的是另一个基础问题：
 > **一个不用鼠标的人，能不能读到这段对话。**

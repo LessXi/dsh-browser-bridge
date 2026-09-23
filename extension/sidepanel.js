@@ -1741,7 +1741,14 @@ function reconcileRows(next) {
     if (match.open !== entry.open) applyRowOpen(entry.node, entry.row, entry.open)
   }
   for (const entry of drawnRows) {
-    if (entry.node === undefined) entry.node = renderRow(entry.row)
+    if (entry.node !== undefined) continue
+    entry.node = renderRow(entry.row)
+    // Every row is one item of the transcript list. Set here, at the single seam
+    // that mints row nodes, rather than inside each of `renderRow`'s five
+    // branches: a reasoning row's element is `.reasoning` and not `.row`, so a
+    // rule that enumerates kinds is a rule that keeps missing one — which is
+    // exactly how the reasoning row escaped the search outline.
+    entry.node.setAttribute('role', 'listitem')
   }
 
   // Whatever the new window no longer holds goes, and it goes before anything is
@@ -2158,6 +2165,10 @@ function renderWorking() {
   } else if (existing === null) {
     const line = document.createElement('div')
     line.className = 'working'
+    // A direct child of the transcript, so it is one item of that list. The
+    // waiting line and the streaming preview belong to the conversation rather
+    // than beside it: the answer really is arriving there.
+    line.setAttribute('role', 'listitem')
     line.textContent = t('row.working')
     transcript.append(line)
     if (stickToBottom && !sending) transcript.scrollTop = transcript.scrollHeight
@@ -2199,6 +2210,10 @@ function renderApproval() {
 
   const card = document.createElement('div')
   card.className = 'approval'
+  // The question is the last item of the conversation it interrupts, and it is
+  // drawn as the list's child, so it has to say so. A `list` whose own children
+  // include an item with no role is the structure only claiming to be one.
+  card.setAttribute('role', 'listitem')
   card.dataset.approvalId = pendingApproval.id
 
   const head = document.createElement('div')
@@ -2357,6 +2372,7 @@ function renderLive() {
   if (node === null) {
     node = document.createElement('div')
     node.className = 'live'
+    node.setAttribute('role', 'listitem')
     const think = document.createElement('div')
     think.className = 'live-think'
     // The label is what says the model is working once the preview is on
@@ -2589,7 +2605,26 @@ function drawHistory() {
       fragment.append(label)
     }
 
+    // One list per group rather than one list around the whole view. A `list`
+    // may own nothing but `listitem`s, and this view also holds the workspace
+    // headings and the settings footer — wrapping everything would put three
+    // kinds of thing inside a list that can only hold one. It also makes the
+    // count each list announces the number of sessions in *that* workspace,
+    // which is the number a reader moving between groups is asking about.
+    const list = document.createElement('div')
+    list.setAttribute('role', 'list')
+    fragment.append(list)
+
     for (const session of visible) {
+      // The item and the control are two elements, not one, because a role
+      // *overrides* the element's own. Measured: `role="listitem"` written
+      // straight onto the session button dropped `button` from the computed
+      // roles entirely — the session stopped being announced as something that
+      // can be activated, so the list structure was bought with the control
+      // semantics. Wrapping keeps both, and the wrapper is what the list owns.
+      const item = document.createElement('div')
+      item.setAttribute('role', 'listitem')
+      item.className = 'session-item'
       const button = document.createElement('button')
       button.type = 'button'
       button.className = 'session'
@@ -2636,7 +2671,8 @@ function drawHistory() {
         event.preventDefault()
         next.focus()
       })
-      fragment.append(button)
+      list.append(item)
+      item.append(button)
     }
   }
 

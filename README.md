@@ -258,7 +258,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 601 条
+npm test                          # 全部 606 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -348,7 +348,7 @@ Chrome for Testing 都装进带版本号的目录，写死路径会在一台机�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 601 条
+npm test                 # 606 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -433,6 +433,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 | `POST {action:'messages', end}`（v78） | `end` 是**绝对行索引**（窗口终点），返回值带 `total`。从末尾数的 count 不是「还在被写入的对话」里的位置——搜索、跳到命中、模型再追加回复，读者就会向前滑走恰好新到的行数。实测任意 60 行窗口渲染 **2.4ms**，而「把窗口从 60 放大到 6869 行」要 **294.1ms / 43,043 DOM 节点**，所以跳转只换窗口、不放大窗口 |
 | 跳到命中就**看得见那个词**（v79） | 描边只回答「哪一行」。命中落在折叠的推理行或失败的工具行里时，读者被告知「2/3」而屏幕上只有一行「思考中 ⌄」——实测**三处命中里有两处是这样**（`blindCount: 2/3`）。现在会把藏着命中的那一行展开（词已可见的行一律不动），并把**匹配的字符本身**用 CSS Custom Highlight API 标出来（`::highlight(dsh-needle)`，不改 DOM）。`findHitKey` 原先拿**未钳制**的 `anchorEnd` 做减法，而宿主会把 `end` 钳到会话长度，于是命中在末尾几行时下标为负、**那一处永远找不到**；短会话整个就是「末尾几行」 |
 | 键盘能进到对话里并滚动它（v80） | 用**真实按键**（CDP `Input.dispatchKeyEvent`，不是合成事件）实测：Tab 从输入框出发经 5 个头部控件后，落点是「窗口内最旧那一行的复制按钮」，且落上去瞬间 `scrollTop` 从 **4521 变成 0**——读者被从最新一条甩到最旧一条。没有任何控件的行（用户提问、成功的工具行）**根本够不到**（`unreachableRows: 2/4`）。现在 `#transcript` 与 `#history` 都是 `tabindex="0"`：Tab 直接落在滚动容器上、`scrollTop` 守恒，PageDown/PageUp 真正滚动（4521→4586→4590→4322），并有 `aria-label` 与 `outline: 2px solid Highlight` 的焦点环（`Highlight` 而非 `--accent`，因为高对比度只保留前者）。另补 `Ctrl+F` 打开查找栏（此前**什么都不做**）、`Escape` 关闭它 |
+| 读屏器能在消息之间移动（v81） | 用 CDP `Accessibility.getFullAXTree` 读平台**自己算出来**的无障碍树：`#transcript` 原先暴露 **72 个节点、深度 7，但 `structure=false`、可导航 role 为空**——内容全都在，却没有一处可导航，读屏用户只能从头读到尾。现在 `main` 地标 + `role="list"` + 每行 `listitem`，实测 `structure=true`、`navigable:["list","listitem"]`。两个**只能靠量发现**的坑：显式 role 会**覆盖**元素自己的隐式 role（`role="list"` 写在 `<main>` 上会让 `main` 直接消失，等于用「跳到主内容」换列表结构），而 `role="listitem"` 写在会话按钮上会让它**不再是按钮**（实测从 `button "… 2m ago"` 变成裸 `listitem`）——所以地标上移、item 与控制分成两个元素 |
 
 最后一步在探针上报错 `llm-deepseek: no API key for provider route "deepseek-official"`——
 **这是探针进程拿不到凭据，不是插件缺陷**。已核对 `$DSH_HOME/.credentials.yaml`：里面只有一条
