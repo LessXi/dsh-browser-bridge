@@ -347,6 +347,20 @@ class Element {
   click() {
     this.emit('click', {})
   }
+  /**
+   * Whether this node is in a document, which a browser answers natively.
+   *
+   * The panel asks it to tell "the row I clicked is still on screen" from "it was
+   * rebuilt underneath me", and a shim that left it `undefined` made that
+   * question unanswerable — every read came back falsy, so a test asserting the
+   * node survived would fail on a correct implementation rather than on the
+   * behaviour it was written for.
+   *
+   * @returns {boolean} True when the node has a document.
+   */
+  get isConnected() {
+    return this.ownerDocument !== undefined
+  }
   scrollIntoView() {}
   getBoundingClientRect() {
     return { top: 0, left: 0, width: 320, height: this.offsetHeight, bottom: this.offsetHeight, right: 320 }

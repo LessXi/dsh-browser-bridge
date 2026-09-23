@@ -455,9 +455,9 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 现在它是 `role="status" aria-live="polite"` 且**永不 `hidden`**，占位由
 `:not(:empty)` 的 padding 控制，空时高度自然为 0。
 
-**transcript 不能做 live region。** 它每次轮询 `replaceChildren` 重建整棵子树，
-而流式回答更是每帧重写整段文本——设成 live region 会在每次重建时重播整段对话、
-每个 token 重播整个回答。所以新增一个视觉隐藏的 `#announcer`，只播报三件事：
+**transcript 不能做 live region。** 它随每次数据变化重绘，而流式回答更是每帧重写
+整段文本——设成 live region 会在每次重绘时重播整段对话、每个 token 重播整个回答。
+所以新增一个视觉隐藏的 `#announcer`，只播报三件事：
 阻塞性的审批提问、宿主不可达/无会话、以及回答结束（唯一文本已定稿的时刻）。
 
 **修的时候我自己造出了第三个缺陷。** 加上播报后，一个**健康启动**也会报「还没有会话」。

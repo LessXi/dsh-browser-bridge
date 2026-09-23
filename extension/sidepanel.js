@@ -200,6 +200,18 @@ const expandedReasoning = new Set()
 const expandedFailures = new Set()
 /** The last drawn transcript, for the "did anything change" comparison. */
 let drawnSignature = ''
+/**
+ * The row nodes currently on screen, in draw order.
+ *
+ * Kept so a redraw can reuse the node a row already has instead of building a
+ * new one. Rebuilding is what `replaceChildren` did, and it threw away more than
+ * the node: the element holding keyboard focus was destroyed, so the browser
+ * moved focus to `<body>` — from a row thirty tab stops down, the reader had to
+ * walk the whole transcript again — and any text they had selected was gone.
+ * Both happen on the two most ordinary interactions there are: clicking a row
+ * open, and a poll landing while they read.
+ */
+let drawnRows = []
 /** True while the view is pinned to the newest row. */
 let stickToBottom = true
 /** The deployment's model catalog, or null until it has been read. */
@@ -1352,10 +1364,7 @@ function drawTranscript(next) {
   // a now-taller list, which scrolls the text they were reading off the bottom of
   // the screen — the same jump the poll used to cause, arriving by a new route.
   const before = transcript.scrollHeight
-  const fragment = document.createDocumentFragment()
-  next.forEach((row) => fragment.append(renderRow(row)))
-
-  transcript.replaceChildren(fragment)
+  reconcileRows(next)
   renderWorking()
   renderLive()
   // After `renderWorking`, because both append to the transcript and the
@@ -1368,6 +1377,194 @@ function drawTranscript(next) {
   grewEarlier = false
   stickToBottom = atBottom()
   updateToBottom()
+}
+
+/**
+ * Whether a row draws itself open, which is a fact about the open sets rather
+ * than about the row.
+ *
+ * The row's own fields do not carry it: clicking a reasoning row open changes
+ * nothing about the row, only about the set that says it is open.
+ *
+ * @param {object} row - A row from the host's `messages` action.
+ * @param {string} key - The row's name, from `rowKey`.
+ * @returns {boolean} True when the row should draw its detail.
+ */
+function rowIsOpen(row, key) {
+  // Mirrors the two `open` computations in `renderRow`: a reasoning row opens on
+  // its name alone, and a tool row only when there is a reason to reveal.
+  if (row.kind === 'reasoning') return expandedReasoning.has(key)
+  if (row.kind === 'tool') {
+    return (
+      typeof row.failure === 'string' && row.failure !== '' && expandedFailures.has(key)
+    )
+  }
+  return false
+}
+
+/**
+ * Show or hide a row's detail on the node already on screen.
+ *
+ * Opening a row is a click on a control inside that row, so the node holding
+ * focus is the node this has to keep. Rebuilding the row instead moved focus off
+ * it: measured in a real browser, clicking a reasoning row put focus on `<body>`,
+ * and getting back to that button meant walking past every focusable thing above
+ * it — thirty-three tab stops on a 470-row transcript.
+ *
+ * @param {object} node - The row's node, from `renderRow`.
+ * @param {object} row - The row it was drawn from.
+ * @param {boolean} open - Whether the detail belongs on screen.
+ * @returns {void}
+ */
+function applyRowOpen(node, row, open) {
+  if (row.kind === 'reasoning') {
+    const toggle = node.querySelector('.reasoning-toggle')
+    if (toggle === null) return
+    toggle.textContent = `${t('row.reasoning')} ${open ? '⌃' : '⌄'}`
+    toggle.setAttribute('aria-expanded', String(open))
+    const body = node.querySelector('.reasoning-body')
+    if (open && body === null) {
+      const detail = document.createElement('div')
+      detail.className = 'reasoning-body'
+      detail.textContent = row.text
+      node.append(detail)
+    } else if (!open) {
+      body?.remove()
+    }
+    return
+  }
+  if (row.kind === 'tool') {
+    const line = node.querySelector('.tool')
+    if (line === null) return
+    // A row with no reason never had a control, so there is nothing to update.
+    if (typeof row.failure !== 'string' || row.failure === '') return
+    line.setAttribute('aria-expanded', String(open))
+    const detail = node.querySelector('.tool-failure')
+    if (open && detail === null) {
+      const reason = document.createElement('div')
+      reason.className = 'tool-failure'
+      reason.textContent = row.failure
+      node.append(reason)
+    } else if (!open) {
+      detail?.remove()
+    }
+  }
+}
+
+/**
+ * Whether `node` sits inside `outer`, walking up rather than down.
+ *
+ * `Node.contains` exists in a browser but not in the test document, and the walk
+ * is three lines, so the walk is what both get.
+ *
+ * @param {object} outer - The presumed ancestor.
+ * @param {object} node - The node to look for.
+ * @returns {boolean} True when `node` is `outer` or below it.
+ */
+function containsNode(outer, node) {
+  let walk = node
+  while (walk !== null && walk !== undefined) {
+    if (walk === outer) return true
+    walk = walk.parentNode
+  }
+  return false
+}
+
+/**
+ * Bring the transcript's row nodes in line with `next`, reusing the ones already
+ * on screen.
+ *
+ * This replaced a `replaceChildren` of every row. Rebuilding was not merely
+ * expensive — 18ms against a 16.7ms frame on a 470-row transcript, almost all of
+ * it layout — it destroyed the reader's place in the page. Both of the most
+ * ordinary interactions rebuild: clicking a row open changes what that row
+ * draws, and a poll that returns different rows redraws the lot. Measured in a
+ * real browser, opening a reasoning row put focus on `<body>`, thirty-three tab
+ * stops above the button that had just been pressed, and a redraw with text
+ * selected left the selection empty. Neither shows up in a screenshot; both are
+ * the panel discarding what the person was doing.
+ *
+ * A row keeps its node while its name and its data are unchanged, and an open
+ * set that changed only patches that node — so the control the reader just
+ * pressed is still the control holding focus afterwards. A row whose text is
+ * still arriving builds a new node, because it has to.
+ *
+ * @param {object[]} next - The rows to draw, oldest first.
+ * @returns {void}
+ */
+function reconcileRows(next) {
+  // Focus is about to be at the mercy of node replacement. Where it was is
+  // recorded by row and by control, because the node holding it may not survive;
+  // a row that keeps its node needs none of this.
+  const active = document.activeElement
+  let carried = null
+  if (active !== null && active !== undefined && containsNode(transcript, active)) {
+    const owner = drawnRows.find((entry) => containsNode(entry.node, active))
+    const control = String(active.className ?? '')
+      .split(' ')
+      .filter(Boolean)[0]
+    if (owner !== undefined && control !== undefined) carried = { key: owner.key, control }
+  }
+
+  const previous = drawnRows
+  drawnRows = next.map((row) => {
+    const key = rowKey(row)
+    return { row, key, data: JSON.stringify(row), open: rowIsOpen(row, key) }
+  })
+
+  // Claim a node per row, in order. A name can repeat — two rows the reader
+  // cannot tell apart — so matches are handed out one at a time rather than
+  // through a one-to-one map that would drop the second.
+  const spare = new Map()
+  for (const entry of previous) {
+    if (!spare.has(entry.key)) spare.set(entry.key, [])
+    spare.get(entry.key).push(entry)
+  }
+  const kept = new Set()
+  for (const entry of drawnRows) {
+    const candidates = spare.get(entry.key)
+    const match = candidates?.find((candidate) => candidate.data === entry.data)
+    if (match === undefined) continue
+    candidates.splice(candidates.indexOf(match), 1)
+    entry.node = match.node
+    kept.add(entry.node)
+    // Only the open sets moved, so only the open sets are redrawn. This is the
+    // path a click takes, and it is why the control that was pressed is still the
+    // control that holds focus afterwards.
+    if (match.open !== entry.open) applyRowOpen(entry.node, entry.row, entry.open)
+  }
+  for (const entry of drawnRows) {
+    if (entry.node === undefined) entry.node = renderRow(entry.row)
+  }
+
+  // Whatever the new window no longer holds goes, and it goes before anything is
+  // placed: the rows that stay keep their relative order, so taking the discarded
+  // ones out first leaves the placement below with nothing to move except the
+  // rows that are genuinely new. Only nodes this function owns are touched — the
+  // transient rows belong to their own renderers, which run next.
+  for (const entry of previous) {
+    if (!kept.has(entry.node)) entry.node.remove()
+  }
+
+  // Row nodes are always a prefix of the transcript's children, because
+  // `.working`, `.live` and `.approval` append behind them, so walking the two in
+  // step puts each row where it belongs and never moves a transient node.
+  let at = 0
+  for (const entry of drawnRows) {
+    const children = transcript.children
+    if (children[at] !== entry.node) transcript.insertBefore(entry.node, children[at] ?? null)
+    at += 1
+  }
+
+  // The row that held focus was rebuilt rather than patched, so focus is on
+  // `<body>` now. Put it back on the control the reader was actually on, found by
+  // the name it goes by rather than by identity, since identity is what was lost.
+  if (carried !== null && !containsNode(transcript, active)) {
+    drawnRows
+      .find((entry) => entry.key === carried.key)
+      ?.node.querySelector(`.${carried.control}`)
+      ?.focus()
+  }
 }
 
 /**
@@ -1767,6 +1964,7 @@ async function refreshTranscript() {
   if (currentSessionId.length === 0) {
     drawnSignature = ''
     rows = []
+    drawnRows = []
     hasEarlier = false
     transcript.replaceChildren()
     renderEarlier()
@@ -2150,6 +2348,7 @@ function selectSession(sessionId) {
     expandedFailures.clear()
     drawnSignature = ''
     transcript.replaceChildren()
+    drawnRows = []
     stickToBottom = true
     // Everything below belongs to the session being left, and none of it is
     // reachable through `applyDelta`'s session check, because a switch does not
@@ -2440,6 +2639,7 @@ async function createSession() {
   drawnSignature = ''
   rows = []
   transcript.replaceChildren()
+  drawnRows = []
   stickToBottom = true
   currentSessionBlank = true
   currentSessionRunning = false

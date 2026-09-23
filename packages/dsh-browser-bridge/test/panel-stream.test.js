@@ -1491,6 +1491,157 @@ test('a reasoning row and an answer with the same words are still two rows', asy
   )
 })
 
+test('a row keeps its node when a redraw does not change it', async () => {
+  // The transcript used to be rebuilt with `replaceChildren` on every change, so
+  // every row was a new node every time — which is invisible in a screenshot and
+  // expensive in a real browser (18ms of layout on 470 rows, past a frame). The
+  // node is now the thing that is allowed to persist, so it is the thing asserted.
+  await show([
+    { kind: 'user', text: '第一个问题' },
+    { kind: 'assistant', text: '第一个回答' },
+    { kind: 'user', text: '第二个问题' },
+  ])
+
+  const before = [...transcript.children]
+  assert.equal(before.length, 3, 'the three rows were not all drawn')
+
+  // A poll that returns the same rows is the common case: the interval fires
+  // every eight seconds whether or not anything was said.
+  await clockOf('transcript')
+
+  const after = [...transcript.children]
+  assert.equal(after.length, 3, 'a repaint changed how many rows are on screen')
+  for (let index = 0; index < before.length; index += 1) {
+    assert.equal(
+      after[index],
+      before[index],
+      `row ${index} was replaced by a new node even though nothing about it changed`,
+    )
+  }
+})
+
+test('opening a row leaves the focus on the control that was pressed', async () => {
+  // The click that opens a row happens *inside* that row, so rebuilding the row
+  // destroys the element holding focus: the browser moves it to `<body>`, and a
+  // keyboard reader has to walk the transcript again to get back. In a real
+  // browser, on a 470-row transcript, that was thirty-three tab stops.
+  await show([
+    { kind: 'reasoning', text: '第一条推理' },
+    { kind: 'user', text: '继续' },
+    { kind: 'reasoning', text: '第二条推理' },
+  ])
+
+  const toggle = transcript.querySelectorAll('.reasoning-toggle')[1]
+  toggle.focus()
+  assert.equal(document.activeElement, toggle, 'the toggle could not take focus, so the test proves nothing')
+
+  toggle.emit('click', {})
+  await settle()
+
+  assert.equal(
+    transcript.querySelectorAll('.reasoning-body').length,
+    1,
+    'the click did not open the row, so there is no rebuild to survive',
+  )
+  assert.equal(
+    document.activeElement,
+    toggle,
+    'opening a row moved the focus off the control the reader had just pressed',
+  )
+  assert.equal(toggle.isConnected, true, 'the node that was clicked is no longer in the document')
+})
+
+test('only the rows that changed are rebuilt', async () => {
+  // The point of the reconciliation is that a change to one row costs one row.
+  // Asserted through node identity because that is the mechanism: a rebuild of
+  // the lot is exactly "every node is new", which is what this rules out.
+  await show([
+    { kind: 'user', text: '第一个问题' },
+    { kind: 'assistant', text: '第一个回答' },
+    { kind: 'reasoning', text: '推理' },
+  ])
+
+  const stable = transcript.children[0]
+  transcript.querySelectorAll('.reasoning-toggle')[0].emit('click', {})
+  await settle()
+
+  assert.equal(
+    transcript.children[0],
+    stable,
+    'opening a row three rows further down rebuilt an unrelated row',
+  )
+  assert.equal(
+    transcript.children[2],
+    transcript.querySelector('.reasoning'),
+    'the row that was opened is not where it was, so the transcript was reordered',
+  )
+})
+
+test('a row that changes under the same name is redrawn, not left stale', async () => {
+  // The other half of the rule: reuse is keyed on the row's data, not only on its
+  // name. A tool row keeps its name for its whole life — the host's `callId` — and
+  // it is named that way precisely because the call is one thing from `pending`
+  // through to `ok`. Name alone would leave the row showing the mark it arrived
+  // with, so a call that succeeded would still read as pending forever.
+  const call = (status) => ({
+    kind: 'tool',
+    callId: 'call-1',
+    name: 'browser_click',
+    summary: '#save',
+    status,
+  })
+  await show([call('pending')])
+
+  assert.equal(
+    transcript.querySelector('.tool').dataset.status,
+    'pending',
+    'the row did not start out pending, so the change below is not the one being tested',
+  )
+
+  host.messages = [call('ok')]
+  await clockOf('transcript')
+
+  assert.equal(
+    transcript.querySelector('.tool').dataset.status,
+    'ok',
+    'the row still shows the state it had when it first arrived',
+  )
+  assert.equal(transcript.querySelectorAll('.tool').length, 1, 'the row was duplicated instead of redrawn')
+})
+
+test('a row rebuilt while it held focus hands the focus back to the same control', async () => {
+  // Reuse cannot cover a row whose data changed — the node is new by necessity.
+  // When that row was the one holding focus, the focus has to come back to the
+  // control the reader was on, or the redraw costs them their place for a change
+  // they did not make. This is the streaming case: rows change while they are
+  // being read.
+  const call = (status) => ({
+    kind: 'tool',
+    callId: 'call-2',
+    name: 'browser_click',
+    summary: '#submit',
+    status,
+    failure: 'no element matched #submit',
+  })
+  await show([call('error')])
+
+  const line = transcript.querySelector('.tool')
+  line.focus()
+  assert.equal(document.activeElement, line, 'the row could not take focus, so the test proves nothing')
+
+  // The same call, its status now settled: same name, different data.
+  host.messages = [call('ok')]
+  await clockOf('transcript')
+
+  const after = transcript.querySelector('.tool')
+  assert.notEqual(after, line, 'the row kept its node, so nothing was rebuilt and this test proves nothing')
+  assert.equal(
+    document.activeElement,
+    after,
+    'the row was rebuilt under the reader and the focus was not handed back to it',
+  )
+})
+
 test('a failed turn is still visible after the panel is reloaded', async () => {
   // The live toast is gone the moment the panel is rebuilt. The host puts the
   // failure in the transcript so a reload, a cold replay, or a second window
