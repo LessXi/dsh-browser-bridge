@@ -635,6 +635,58 @@ test('a reasoning row can be highlighted at all', (t) => {
   )
 })
 
+test('the needle is painted on the accent, in white, in both schemes', (t) => {
+  // The search marks the matched characters, not only the row that holds them.
+  // The rows are drawn from `drawNeedle` registering ranges, and the colour comes
+  // from this rule; a missing rule means the ranges paint nothing, which no DOM
+  // assertion in the stream suite can see.
+  const body = ruleBody('::highlight(dsh-needle)')
+  assert.notEqual(body, null, 'the needle has to have a rule to paint it')
+  assert.match(
+    body,
+    /background-color:\s*var\(--accent\)/,
+    'the fill is the accent, which is what the search marks a match with',
+  )
+
+  // White on the accent is 4.96:1 — measured — and passes the 4.5:1 body text
+  // needs. `Canvas` reads like the more careful choice because it follows the
+  // scheme, and it is the wrong one: the fill is the accent in *both* schemes, so
+  // the colour sitting on it is a fact about the accent, and as `Canvas` on the
+  // accent the pair is 2.74:1 in the dark scheme. Asserted as the literal rather
+  // than as "not Canvas" so that picking a different near-white still has to say
+  // which one, and cannot drift silently.
+  assert.match(body, /color:\s*#ffffff/, 'white is the colour the accent was calibrated for')
+
+  // And no High Contrast branch is needed, which is worth stating because the
+  // obvious fix for "the system took my colours away" is to add one: the mode
+  // repaints `::highlight()` itself and ignores these declarations — measured,
+  // changing them left the forced-colors screenshot byte-identical.
+  //
+  // The block's body is read by brace matching rather than by slicing to the end
+  // of the file: the first version of this assertion did the latter, and the
+  // `::highlight` rule that lives *after* the block made it fail. A slice to EOF
+  // is not a block.
+  const forcedStart = css.indexOf('@media (forced-colors: active)')
+  assert.notEqual(forcedStart, -1, 'the High Contrast block has to exist')
+  const forcedOpen = css.indexOf('{', forcedStart)
+  let depth = 0
+  let forcedEnd = forcedOpen
+  for (let index = forcedOpen; index < css.length; index += 1) {
+    if (css[index] === '{') depth += 1
+    else if (css[index] === '}') {
+      depth -= 1
+      if (depth === 0) {
+        forcedEnd = index
+        break
+      }
+    }
+  }
+  assert.ok(
+    !/::highlight/.test(css.slice(forcedStart, forcedEnd)),
+    'High Contrast paints the highlight itself, so a branch here would be dead code that looks live',
+  )
+})
+
 test('every surface that floats over the page keeps an edge in High Contrast', (t) => {
   // The mode's own block, brace-matched rather than pattern-matched: it holds
   // nested rules, and a lazy `[\s\S]*?` stops at the first `}` it meets.

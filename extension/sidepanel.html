@@ -275,6 +275,31 @@
         border-radius: var(--radius-sm);
       }
 
+      /* The searched-for characters, inside the row the outline marks.
+         The outline says *which row*; on an answer taller than the screen that is
+         not an answer to "where", and the reader hunts through a box they have
+         already been told is the right box.
+
+         Painted through `::highlight()` rather than with `<mark>` elements: the
+         ranges are registered by `drawNeedle` and the DOM is never touched, so
+         nothing here can disturb the markdown the row was rendered from, and a
+         repaint replaces the ranges instead of having to unwrap them first.
+
+         The glyph colour is the literal white `--accent` is calibrated against,
+         not `Canvas`. `Canvas` looks like the more careful choice — it follows the
+         scheme — and it is wrong here: measured, the pair is 4.96:1 as white on
+         the accent and 2.74:1 as `Canvas` on it in the dark scheme, below the
+         4.5:1 body text needs. The fill is the accent in both schemes, so the
+         colour that sits on it is a fact about the accent, not about the scheme.
+
+         High Contrast needs no branch: it repaints `::highlight()` itself and
+         ignores these two declarations — measured, changing them made the
+         screenshot byte-identical. */
+      ::highlight(dsh-needle) {
+        background-color: var(--accent);
+        color: #ffffff;
+      }
+
       /* ---- the stage: one scroller visible at a time ---- */
       #stage { flex: 1; min-height: 0; position: relative; display: flex; }
       .scroll {

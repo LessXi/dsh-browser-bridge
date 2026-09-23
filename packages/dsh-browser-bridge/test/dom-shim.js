@@ -21,6 +21,16 @@
 class Element {
   constructor(tagName) {
     this.tagName = String(tagName).toUpperCase()
+    /**
+     * The DOM's element node type.
+     *
+     * Read by anything that walks a subtree looking for text: a range can only
+     * address a text node, so "which children are text" is a question the search
+     * marking has to ask. `TextNode` overrides it with 3.
+     *
+     * @type {number}
+     */
+    this.nodeType = 1
     this.className = ''
     this.id = ''
     this.dataset = {}
@@ -51,11 +61,12 @@ class Element {
   #value
 
   get children() {
-    return this.#children
+    // Elements only, as in a browser. `childNodes` is the one that includes text.
+    return this.#children.filter((child) => child.nodeType === 1)
   }
 
   get firstElementChild() {
-    return this.#children[0] ?? null
+    return this.#children.find((child) => child.nodeType === 1) ?? null
   }
 
   get textContent() {
@@ -64,8 +75,17 @@ class Element {
   }
 
   set textContent(value) {
+    for (const child of this.#children) child.parentNode = null
     this.#children = []
-    this.#text = String(value ?? '')
+    this.#text = value === null || value === undefined ? '' : String(value)
+    // A browser replaces the children with a single text node, and it does so for
+    // an empty string too. Code that walks the tree looking for text depends on
+    // that: the search marks the matched characters by addressing a text node, so
+    // with text kept in a field instead, the marking was unreachable from the
+    // suite and every test of it asserted nothing. `TextNode` overrides this
+    // setter, which is what stops the node from nesting inside itself.
+    this.#children.push(new TextNode(this.#text))
+    this.#children[0].parentNode = this
   }
 
   get classList() {
@@ -388,7 +408,10 @@ class Element {
 
   #adopt(node) {
     if (node instanceof Fragment) {
-      for (const child of [...node.children]) this.#adopt(child)
+      // `childNodes`, not `children`: a fragment is where the markdown renderer
+      // puts its output, and that output is mostly text nodes. Splicing by
+      // `children` silently dropped every piece of text in it.
+      for (const child of [...node.childNodes]) this.#adopt(child)
       return
     }
     const adopted = typeof node === 'string' || typeof node === 'number' ? new TextNode(node) : node
@@ -421,8 +444,28 @@ class Fragment extends Element {
 class TextNode extends Element {
   constructor(data) {
     super('#text')
+    this.nodeType = 3
     this.textContent = String(data)
   }
+
+  /**
+   * A text node holds its text, it does not contain it.
+   *
+   * `Element`'s setter replaces the children with a text node, which is right for
+   * an element and would nest a node inside itself here.
+   *
+   * @param {unknown} value - The text.
+   * @returns {void}
+   */
+  set textContent(value) {
+    this.#own = value === null || value === undefined ? '' : String(value)
+  }
+
+  get textContent() {
+    return this.#own
+  }
+
+  #own = ''
 }
 
 /**
@@ -567,6 +610,41 @@ function makeDocument() {
      */
     emit(type, event = {}) {
       for (const listener of [...(document.listeners.get(type) ?? [])]) listener(event)
+    },
+    /**
+     * A range over two offsets, as much of one as the panel uses.
+     *
+     * The search marks the matched characters with the CSS Custom Highlight API,
+     * which addresses a text node by offset — so `createRange` is the only way to
+     * name what to paint, and without it the marking is untestable and the tests
+     * that claim to cover it assert nothing.
+     *
+     * `toString` reconstructs the text from the endpoints rather than storing it,
+     * so a range cannot disagree with the node it points at.
+     *
+     * @returns {object} A range with `setStart`, `setEnd`, `toString`.
+     */
+    createRange: () => {
+      const range = {
+        startContainer: null,
+        startOffset: 0,
+        endContainer: null,
+        endOffset: 0,
+        setStart(node, offset) {
+          range.startContainer = node
+          range.startOffset = offset
+        },
+        setEnd(node, offset) {
+          range.endContainer = node
+          range.endOffset = offset
+        },
+        toString() {
+          if (range.startContainer === null || range.startContainer !== range.endContainer) return ''
+          const value = String(range.startContainer.textContent ?? '')
+          return value.slice(range.startOffset, range.endOffset)
+        },
+      }
+      return range
     },
   }
   // Marks this object as the root `focus()` walks up to. A flag rather than a

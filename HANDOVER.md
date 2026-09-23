@@ -1,9 +1,9 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v78 已交付并入库。** 下一节就是最新的一轮改动；下面标 v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v78 那一段为止即可。
+> **当前状态：v79 已交付并入库。** 下一节就是最新的一轮改动；下面标 v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v79 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（589 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（596 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 > （真浏览器 e2e 那 4 条需要机器上有 Playwright Chromium 或 Chrome for Testing；
@@ -12,8 +12,8 @@
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
 >
-> **已入库**：v3→v78 的全部改动已提交并推送到 `origin/main`。工作区干净。
-> （v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`，v73 是 `dae44ed`。）
+> **已入库**：v3→v79 的全部改动已提交并推送到 `origin/main`。工作区干净。
+> （v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
 
 > ## ⚠️ 两条并行版本线（2026-09-23 处理，后续轮次务必先读这段）
 >
@@ -180,6 +180,121 @@
 > - `earlier.png` 与 `hostDown.png` **sha256 相同**：那张图画的是阻塞屏，
 >   「更早的内容」胶囊根本没出现在交付的图里。成因未定位。
 
+> ### v79：搜索能带读者到命中，也能把那个词本身标出来（本轮）
+>
+> v78 交付了「在整个会话里搜索」。这一轮修的是它**兑现承诺的最后一步**：
+> 读者敲了关键词之后，**他真的看到那个词了吗**。
+>
+> #### 一、缺陷 A：跳到了命中所在的行，却没让读者看到命中
+>
+> 推理行折叠时只画一行「思考中 ⌄」，词在折叠体里；失败的工具行同理，
+> 它的 `failure` 藏在点击之后。而 `goToMatch` 只做了两件事——移动窗口、
+> 给那一行加描边。于是**读者被告知「2/3」，屏幕上却一个字都不是他要找的**。
+>
+> 真实浏览器实测（`.tmp-run/probe-needle-visible-after-jump.js`）：
+>
+> | 位置 | 修复前 | 修复后 |
+> | --- | --- | --- |
+> | 1/3 | `needleVisible: false` | `true`（`carriedBy: bubble`） |
+> | 2/3 | `needleVisible: false`，`hitRowText: "Thinking ⌄"` | `true`（`carriedBy: reasoning-body`，`Thinking ⌃`） |
+> | 3/3 | `true` | `true` |
+> | **`blindCount`** | **2 / 3** | **0 / 3** |
+>
+> **修法**：新增 `hiddenRowText(row)` 与 `revealMatch(index)`（`extension/sidepanel.js`）。
+> 命中的词在**折叠的那一部分里**时，把该行加进对应的展开集并重绘；
+> 词已经在屏幕上时**不动那一行**——读者没要求看的行不该自己打开。
+>
+> **判据**：`hiddenRowText` 只报「折叠行藏起来的那一个字段」——推理行是 `text`，
+> 工具行是 `failure`。这两行各自的可见部分（推理行的开关文字、工具行的 `name`/`summary`）
+> 都不在其中，所以「词在隐藏文本里吗」这个问题有确定答案。
+>
+> #### 二、缺陷 B：敲了关键词，面板只改了计数，没有移动
+>
+> `runSearch` 拿到 `searchHits` 后只调 `renderFind()`。计数变成 `1/3`，
+> 而窗口停在原处——通常命中就在屏幕外，因为**面板持的是最新那几十行，
+> 而搜索正是读者够到其余部分的办法**。实测第一处命中「在屏幕上哪里都没有」。
+>
+> **修法**：`runSearch` 在拿到非空结果后 `await goToMatch(0)`。打字就是「带我去」。
+>
+> #### 三、缺陷 C（本轮新发现，v78 就有）：命中在会话末尾时，算术越界
+>
+> `findHitKey` 用 `anchorEnd` 反推命中在窗口里的下标。宿主**会把请求的 `end`
+> 钳到会话长度**（`chat.js`：`stop = Math.min(end, size)`），而面板拿着**未钳制的请求值**
+> 做减法：命中在 `size-1` 时 `anchorEnd = size+12`，`offset` 变负数，
+> `rows[offset]` 是 `undefined`，于是**那一处命中永远找不到**——
+> 不描边、不滚动、也不展开。短会话**整个就是「末尾几行」**，所以这是常态而非边缘情形。
+>
+> **修法**：新增 `rowAt(index)`，取 `end = Math.min(anchorEnd, windowTotal)`，
+> 并让 `findHitKey` 与 `revealMatch` **共用它**。两者原本各写一份同样的减法，
+> 正是这份重复让它们一起错。
+>
+> #### 四、新能力：把**那个词本身**标出来（不只是它所在的行）
+>
+> 描边回答的是「哪一行」。在一屏放不下的长回答或代码块里，它不回答「在行内哪里」，
+> 读者仍在已经是正确的那一行里逐个字找。Chrome 自带的查找会把匹配的字符标出来。
+>
+> **用 CSS Custom Highlight API，不改 DOM。** 行的内容是 markdown 渲染出来的，
+> 用 `<mark>` 包裹文字要拆开解析器产出的嵌套结构，且每次重绘都得先拆掉上一次的。
+> `CSS.highlights` 不动 DOM，由 `::highlight()` 画。**动手之前先验证过它在本机可用**：
+> 注册成功、确实绘制、且注册不改变布局（`.tmp-run/r18-hl.png` 逐像素确认）。
+>
+> 新增 `const NEEDLE_HIGHLIGHT = 'dsh-needle'`、`drawNeedle(node)`、`needleText()`、
+> `needleRanges(node, needle)`、`textNodesIn(node)`（自己递归而不用 `TreeWalker`——
+> 测试 shim 不实现它，而 range 只能寻址文本节点）。命中行由新增的 `focusIndex` 记住，
+> **重绘后恢复**，否则轮询一到标记就没了。
+>
+> #### 五、★ 两次差点写反的结论（仪器错的两个方向）
+>
+> 1. **「API 不绘制」是错的。** 我用自己算出来的坐标去查像素，而那个矩形比实际画出
+>    高亮的字**高了约 19 CSS 像素**；同时对照用的青色方框也读到 0。
+>    真因是 `.tmp-run/png-diff-lib.mjs` 的 `decodePng` 返回**按颜色类型 3 或 4 个通道**，
+>    而本项目的截图是 **3 通道（colorType 2）**：两个工具写死了 `* 4` 步长，
+>    在 3 通道图上越界读取——`find-colors.mjs` 把**每个越界像素都算成命中**，
+>    `check-pixel-box.mjs` 把**每个越界像素都算成无差异**。
+>    修法是步长取 `image.channels`。修好后同一张图：品红 1508px，盒恰好落在蓝框内部。
+>    最终靠**直接看图**得到确定结论。
+> 2. **「高对比度下高亮是白底白字」是错的。** 我据此把字色从 `#ffffff` 改成 `Canvas`，
+>    然后发现 forced-colors 的两张截图 **sha256 完全相同**——那个模式**自己重绘
+>    `::highlight()` 的颜色**，这两条声明在那里根本不起作用。而我的「修法」在**正常模式**
+>    里是有害的：实测白字在强调色上是 **4.96:1**（过 AA），改成 `Canvas` 后
+>    在深色方案里是 **2.74:1**（不过）。已改回 `#ffffff`，并把两条读数写进注释。
+>    **教训：一个看起来更讲究的取值不等于更好的取值，量一下。**
+>
+> #### 六、测试基建的两个真实缺口（不修就写不出上面的测试）
+>
+> 1. **`dom-shim.js` 的 `textContent` setter 不建文本节点**，而是把字符串存进一个私有字段
+>    （浏览器会建一个文本节点）。于是 `needleRanges` 找不到任何文本节点，
+>    **标记功能在套件里完全够不到，所有声称覆盖它的测试都在断言空气**。
+>    同时 `children` 改回只含元素（浏览器的语义），`childNodes` 才含文本——
+>    这一改动暴露出 `#adopt` 用 `node.children` 展开 `Fragment`，
+>    而 markdown 渲染器的输出**大多是文本节点**，于是它一直在悄悄丢掉这些文字
+>    （症状：复制按钮拿到 `'boldcode'` 而不是 `'Use bold and code here.'`）。改用 `childNodes`。
+> 2. **测试里没有 `CSS.highlights`**，`drawNeedle` 会早返回。加了 `Map` 形状的最小替身
+>    （与真实平台同为 Map）与 `document.createRange`、`Element.nodeType`。
+>
+> #### 七、验证读数（已绿，不必重跑）
+>
+> - `npm test` → **596 passed, 0 failed, 0 skipped**（589 → 596）
+> - `npm run check:extension` → exit 0
+> - 真实浏览器：`blindCount` 2 → **0**；`rangeCount: 1`、`allTextIsNeedle: true`、
+>   `allHaveArea: true`；dark 与 light **两种方案都是 rangeCount 1**
+> - 变异一 `.tmp-run/mutate-reveal.mjs`：**8/8**（含一个如实标注的**等价变异**，见下）
+> - 变异二 `.tmp-run/mutate-needle-css.mjs`：**4/4**，`restoredExactly: true`
+> - 视觉：`.tmp-run/r18-hl.png`（dark，词被强调色填充、白字）、`r18-reasoning.png`
+>   （2/3 处、`Thinking ⌃` 已展开、词在推理体里）、`r18-fc2.png`（forced-colors）、
+>   `r18-light.png`（浅色）
+>
+> #### 八、★ 一个等价变异，记下来免得下次再查
+>
+> 变异 `reveal-ignores-open-state`（去掉 `revealMatch` 里的 `rowIsOpen` 检查）
+> **没有任何测试能抓到，而它不是测试缺口**：要让该检查起作用，需要一个
+> 「隐藏文本含 needle **且已展开**」的行，而那种情况下 `Set.add` 幂等、
+> `drawTranscript` 的签名比对早返回，观察不到差别。它改变的是 `revealMatch` 的
+> **返回值**——在当前实现下不影响结果，但那个返回值是「我展开了什么」的声明，
+> 说 `true` 而其实没展开是错的，所以这一项保留。
+> `.tmp-run/mutate-reveal.mjs` 把它的判据反过来写（**必须不红**），
+> 哪天它红了就说明实现变了。
+>
 > ### v78：会话搜索（本轮新增能力）+ 命中高亮的两个缺陷
 >
 > #### 一、新能力：在整个会话里搜索，而不是在屏幕上那 60 行里搜

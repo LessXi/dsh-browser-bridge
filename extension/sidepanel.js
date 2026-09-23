@@ -80,6 +80,14 @@ const PAGE_ROWS = 60
  */
 const MATCH_CONTEXT_ROWS = 12
 
+/**
+ * The name the needle's ranges are registered under.
+ *
+ * One name for the whole panel: `::highlight()` is styled per name, and a name
+ * per row would need a rule per row.
+ */
+const NEEDLE_HIGHLIGHT = 'dsh-needle'
+
 const backButton = document.getElementById('back')
 const titleButton = document.getElementById('title')
 const titleText = document.getElementById('title-text')
@@ -188,6 +196,16 @@ let searching = false
 let findOpen = false
 /** Which match the reader is on, as an index into `searchHits`. */
 let searchPosition = 0
+/**
+ * The absolute row index the reader is being shown, or null when no search has
+ * taken them anywhere.
+ *
+ * Held separately from `searchPosition` because the row is what survives a
+ * repaint and what the outline and the needle are drawn on: a repaint must be
+ * able to put the reader's marks back without knowing which match they came
+ * from, and a match they have stepped away from must not pull them back.
+ */
+let focusIndex = null
 /** Whether the shown selection should travel with the next send. */
 let selectionAttached = false
 /** Port of the running harness, mirrored from the options page. */
@@ -1545,6 +1563,10 @@ function drawTranscript(next) {
   // the screen — the same jump the poll used to cause, arriving by a new route.
   const before = transcript.scrollHeight
   reconcileRows(next)
+  // After `reconcileRows`, because a repaint can replace the node the outline and
+  // the needle were drawn on. Restoring them here is what keeps a poll — one every
+  // few seconds — from silently dropping the marks the reader is working from.
+  restoreHitFocus()
   renderWorking()
   renderLive()
   // After `renderWorking`, because both append to the transcript and the
@@ -1793,6 +1815,11 @@ async function runSearch() {
     searchHits = Array.isArray(payload?.matches) ? payload.matches : []
     searchTotal = typeof payload?.total === 'number' ? payload.total : 0
     searchTruncated = payload?.truncated === true
+    // Typing a query is a request to be taken to it. The count alone said "1/3"
+    // while the match stayed wherever it was — usually off screen, since the panel
+    // holds the newest rows and a search is how the reader reaches the rest.
+    // Measured: the first of three matches was on screen nowhere after typing.
+    if (searchHits.length > 0) await goToMatch(0)
   } finally {
     searching = false
     renderFind()
@@ -1824,7 +1851,77 @@ async function goToMatch(position) {
   stickToBottom = false
   grewEarlier = false
   await refreshTranscript()
+  // After the window has moved, because the row to open is the row on screen:
+  // `revealMatch` names it the same way `drawFindFocus` does, so it cannot open a
+  // row the reader is not being shown.
+  if (revealMatch(index)) drawTranscript(rows)
   drawFindFocus(index)
+}
+
+/**
+ * The text of a row that a closed row does not draw.
+ *
+ * A reasoning row draws as its toggle and a failed tool row as its name and
+ * arguments; what each is hiding is a single field. Naming those fields is what
+ * lets a search tell "the reader will see this" from "the reader will not".
+ *
+ * @param {object} row - A row from the host's `messages` action.
+ * @returns {string} The hidden text, or `''` for a row that hides none.
+ */
+function hiddenRowText(row) {
+  if (row.kind === 'reasoning') return typeof row.text === 'string' ? row.text : ''
+  if (row.kind === 'tool') return typeof row.failure === 'string' ? row.failure : ''
+  return ''
+}
+
+/**
+ * Open the matched row when the match is inside the part it does not draw.
+ *
+ * Jumping to a match used to put the reader in front of a row and call it done.
+ * A reasoning row draws as 「思考中 ⌄」, so a search that landed in one outlined a
+ * row whose entire visible text was that toggle — measured: the whole hit row
+ * read `Thinking ⌄`, with the searched word inside the closed body. The reader is
+ * told "2/3" and shown nothing, which is worse than not offering the feature.
+ *
+ * Only rows whose match is hidden are opened. A tool row matched on the arguments
+ * it already draws is left alone, because opening it would look like the panel
+ * did something the reader did not ask for.
+ *
+ * @param {number} index - The matched row's absolute index.
+ * @returns {boolean} True when a row was opened, so the caller has to redraw.
+ */
+function revealMatch(index) {
+  const key = findHitKey(index)
+  if (key === null) return false
+  const row = rowAt(index)
+  if (row === undefined) return false
+  const hidden = hiddenRowText(row)
+  // Not the row's own fields: a reasoning row is open on its name alone, which is
+  // exactly the state that hides the match.
+  if (hidden.length === 0 || rowIsOpen(row, key)) return false
+  const needle = searchQuery.trim().toLowerCase()
+  if (needle.length === 0 || !hidden.toLowerCase().includes(needle)) return false
+  if (row.kind === 'reasoning') expandedReasoning.add(key)
+  else if (row.kind === 'tool') expandedFailures.add(key)
+  else return false
+  return true
+}
+
+/**
+ * The drawn row at an absolute index, or `undefined` when it is off screen.
+ *
+ * The one place the window's arithmetic lives. `findHitKey` and `revealMatch` both
+ * need it, and when they each had their own copy the pair drifted: the host clamps
+ * a requested end to the session's size, so a match in the last rows of a short
+ * conversation produced a negative offset and was silently never found.
+ *
+ * @param {number} index - The absolute row index.
+ * @returns {object | undefined} The row, or undefined.
+ */
+function rowAt(index) {
+  const size = windowTotal > 0 ? windowTotal : rows.length
+  const end = anchorEnd === null ? size : Math.min(anchorEnd, size)
+  return rows[index - (end - rows.length)]
 }
 
 /**
@@ -1837,15 +1934,131 @@ async function goToMatch(position) {
  * @returns {void}
  */
 function drawFindFocus(index) {
-  for (const entry of drawnRows) entry.node.classList.remove('hit')
-  // The rows on screen are a window ending at `anchorEnd`, so the match is
-  // found by the name the window itself is built from rather than by counting.
-  const key = findHitKey(index)
-  if (key === null) return
-  const entry = drawnRows.find((candidate) => candidate.key === key)
-  if (entry === undefined) return
-  entry.node.classList.add('hit')
+  focusIndex = index
+  if (!restoreHitFocus()) return
+  const entry = drawnRows.find((candidate) => candidate.key === findHitKey(index))
   entry.node.scrollIntoView({ block: 'center' })
+}
+
+/**
+ * Mark the outline and the needle on whichever node now holds the focused row.
+ *
+ * Both are re-applied rather than set once, because a repaint can replace the
+ * node underneath them: the outline would vanish with no way back except
+ * stepping through every match again, and the highlight's ranges would point at
+ * text nodes that are no longer in the document. Scrolling is deliberately not
+ * part of this — a poll must not pull the reader back to a match they have since
+ * scrolled away from.
+ *
+ * @returns {boolean} True when the focused row is on screen and was marked.
+ */
+function restoreHitFocus() {
+  for (const entry of drawnRows) entry.node.classList.remove('hit')
+  drawNeedle(null)
+  if (focusIndex === null) return false
+  const key = findHitKey(focusIndex)
+  if (key === null) return false
+  const entry = drawnRows.find((candidate) => candidate.key === key)
+  if (entry === undefined) return false
+  entry.node.classList.add('hit')
+  drawNeedle(entry.node)
+  return true
+}
+
+/**
+ * Mark the searched-for characters themselves, not just the row that holds them.
+ *
+ * The outline answers "which row"; on a long answer or a code block it does not
+ * answer "where in it", and the reader is still hunting a word inside a box that
+ * can be taller than the screen. Chrome's own find marks the characters, and so
+ * does this.
+ *
+ * The ranges are registered with the CSS Custom Highlight API rather than by
+ * wrapping the text in `<mark>`. The row's content is rendered markdown, so
+ * splitting its text nodes to insert elements would run through whatever nesting
+ * the parser produced, and every repaint would have to undo it before the next
+ * one. `CSS.highlights` leaves the DOM untouched; `::highlight()` paints it.
+ * Verified on this machine's Chromium before it was used: the ranges register,
+ * they paint, and registering them does not disturb layout.
+ *
+ * @param {object | null} node - The focused row's node, or null to clear.
+ * @returns {void}
+ */
+function drawNeedle(node) {
+  // Absent in the DOM shim, and absent in a browser older than Chrome 105. The
+  // outline and the reveal are the parts a reader cannot do without; this is the
+  // part that is merely better, so a missing registry is not an error.
+  const registry = globalThis.CSS?.highlights
+  if (registry === undefined) return
+  if (node === null || needleText().length === 0) {
+    registry.delete(NEEDLE_HIGHLIGHT)
+    return
+  }
+  const ranges = needleRanges(node, needleText())
+  if (ranges.length === 0) {
+    registry.delete(NEEDLE_HIGHLIGHT)
+    return
+  }
+  registry.set(NEEDLE_HIGHLIGHT, new Highlight(...ranges))
+}
+
+/**
+ * The needle as it should be matched: lowercased, and trimmed the way the host
+ * trims it, so the panel marks the same characters the host counted.
+ *
+ * @returns {string} The needle, or `''`.
+ */
+function needleText() {
+  return searchQuery.trim().toLowerCase()
+}
+
+/**
+ * Every run of the needle inside a subtree, as ranges.
+ *
+ * Matched per text node rather than across the whole subtree. A needle that
+ * straddles a markdown boundary — half of it bold, say — is therefore marked in
+ * pieces instead of as one run. That is a smaller lie than not marking it at
+ * all, and finding the boundary would mean reassembling the parser's output.
+ *
+ * @param {object} node - The subtree to search.
+ * @param {string} needle - The lowercased needle.
+ * @returns {object[]} Ranges, in document order.
+ */
+function needleRanges(node, needle) {
+  const ranges = []
+  for (const entry of textNodesIn(node)) {
+    const value = typeof entry.textContent === 'string' ? entry.textContent : ''
+    if (value.length === 0) continue
+    const haystack = value.toLowerCase()
+    let from = haystack.indexOf(needle)
+    while (from !== -1) {
+      const range = document.createRange()
+      range.setStart(entry, from)
+      range.setEnd(entry, from + needle.length)
+      ranges.push(range)
+      from = haystack.indexOf(needle, from + needle.length)
+    }
+  }
+  return ranges
+}
+
+/**
+ * Every text node under a subtree, in document order.
+ *
+ * Walks the tree directly instead of using `TreeWalker`, which the DOM shim does
+ * not implement — and a range can only address a text node, so these are the only
+ * nodes the needle can be marked on.
+ *
+ * @param {object} node - The subtree's root.
+ * @returns {object[]} Text nodes.
+ */
+function textNodesIn(node) {
+  const found = []
+  for (const child of node.childNodes ?? []) {
+    if (child.nodeType === 3) found.push(child)
+    else found.push(...textNodesIn(child))
+  }
+  return found
 }
 
 /**
@@ -1855,11 +2068,10 @@ function drawFindFocus(index) {
  * @returns {string | null} The key, or null.
  */
 function findHitKey(index) {
-  // `rows` is the drawn window and `anchorEnd` is where it ends, so the offset
-  // into the window is arithmetic on the two — no second index to keep in sync.
-  const end = anchorEnd ?? rows.length
-  const offset = index - (end - rows.length)
-  const row = rows[offset]
+  // The window is rows `[end - rows.length, end)` of the session, so the offset is
+  // arithmetic on the two — no second index to keep in sync. It lives in `rowAt`
+  // because two callers need the identical answer.
+  const row = rowAt(index)
   if (row === undefined) return null
   return rowKey(row)
 }
@@ -2709,6 +2921,10 @@ function selectSession(sessionId) {
     searchTotal = 0
     searchTruncated = false
     searchPosition = 0
+    // And with the matches, the row they were pointing at: the same index names a
+    // different row here, so a kept one would outline whatever happens to sit
+    // there in the conversation the reader just opened.
+    focusIndex = null
     restoreDraft()
   }
   const session = currentSession()
@@ -3103,6 +3319,11 @@ function setFind(next) {
     searchTruncated = false
     searchPosition = 0
     findInput.value = ''
+    // Closing the bar drops the marks with it: the outline and the needle are the
+    // search's own annotation, and leaving them on the transcript would leave a
+    // row looking selected with nothing on screen to say what selected it.
+    focusIndex = null
+    restoreHitFocus()
   }
   renderFind()
   if (next) findInput.focus()

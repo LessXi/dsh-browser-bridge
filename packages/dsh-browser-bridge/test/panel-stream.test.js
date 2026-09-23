@@ -162,6 +162,21 @@ const { document, registry } = makeDocument()
 const inbox = []
 
 globalThis.document = document
+// The CSS Custom Highlight registry, which the search marks the needle with. It
+// is a Map on the real platform too, so recording what the panel registers is the
+// same shape as asking it — and without a registry here, `drawNeedle` returns
+// early and every assertion about the marking would be about nothing.
+globalThis.CSS = { highlights: new Map() }
+/** The ranges the panel most recently registered under a name. */
+const highlightOf = (name) => [...(globalThis.CSS.highlights.get(name) ?? [])]
+globalThis.Highlight = class Highlight {
+  constructor(...ranges) {
+    this.ranges = ranges
+  }
+  [Symbol.iterator]() {
+    return this.ranges[Symbol.iterator]()
+  }
+}
 // `start` registers a focus listener, so a panel run without `window` throws
 // partway through and never arms a single interval. Omitting it did not make
 // these tests stricter — it silently truncated the thing under test.
@@ -3502,12 +3517,31 @@ function longTranscript(turns) {
     rows.push({ kind: 'user', text: `question ${index}` })
     rows.push({ kind: 'assistant', text: `answer ${index}` })
     if (index === 4) rows.push({ kind: 'assistant', text: 'the zebra conclusion' })
+    // A row whose match is *hidden* until it is opened, and the only one here.
+    // Without it this fixture held nothing but user and assistant rows, whose
+    // text is on screen the moment the window moves — so "the reader was taken to
+    // a row that shows none of their word" could not be driven from these tests
+    // at all. A reasoning row draws as 「思考中 ⌄」 and keeps its text behind the
+    // toggle, which is the shape the defect needs.
+    if (index === 40) rows.push({ kind: 'reasoning', text: 'a zebra in the reasoning' })
   }
   return rows
 }
 
-/** Put a long transcript on screen and hand the reader a search for `zebra`. */
-async function searchForZebra() {
+/**
+ * How many matches the fixture holds, as a `1/N` pattern for the count on screen.
+ *
+ * Asked of the host's own matcher rather than written as a literal. The count is
+ * a fact about the fixture, and a literal here is a second copy of it: adding one
+ * reasoning row to `longTranscript` broke three tests that had hardcoded `1/1`,
+ * for a reason none of them was about.
+ */
+function countOf(needle) {
+  return new RegExp(`1/${findRows(host.messages, needle).length}`)
+}
+
+/** Put a long transcript on screen and open the find bar, with no query yet. */
+async function openFindBar() {
   // An earlier test can leave a turn running, and while one is the send button is
   // a *stop* button — disabled, so the send assertions below would be driving a
   // control that cannot act. This helper is the file's own way of clearing that.
@@ -3533,7 +3567,17 @@ async function searchForZebra() {
     await settleMacrotask()
   }
   assert.equal(open(), true, 'the find bar must be open for this to mean anything')
-  const field = registry.get('find-input')
+  return registry.get('find-input')
+}
+
+/**
+ * Open the bar and search for `zebra`.
+ *
+ * Typing a query is also a request to be taken to the first match, so this
+ * settles a window read as well as the search itself.
+ */
+async function searchForZebra() {
+  const field = await openFindBar()
   field.value = 'zebra'
   field.emit('input')
   await settle()
@@ -3541,22 +3585,28 @@ async function searchForZebra() {
 }
 
 test('a search reaches rows the panel has never held', async (t) => {
-  await searchForZebra()
+  const field = await openFindBar()
 
   // The premise, asserted rather than assumed: `PAGE_ROWS` rows of 600 do not
   // contain the needle, so a search answered from the window would find nothing.
+  // Checked before the query is typed, because typing one is itself a request to
+  // go to the match — after it, the needle is on screen by design and this
+  // premise would read as a failure of the feature it is here to protect.
   assert.equal(host.reads.at(-1).limit, 60, 'the panel opens on one page')
   assert.ok(
     !registry.get('transcript').textContent.includes('zebra'),
     'the needle must start off screen, or this test proves nothing',
   )
 
+  field.value = 'zebra'
+  field.emit('input')
+  await settle()
+
   assert.equal(host.searches.length, 1, 'the panel must ask the host, which holds every row')
   assert.equal(host.searches[0].query, 'zebra')
-  assert.match(registry.get('find-count').textContent, /1\/1/)
-
-  registry.get('find-next').emit('click')
-  await settle()
+  // The count is asked of the real matcher rather than written here, so adding a
+  // row to the fixture moves this test and the panel together.
+  assert.match(registry.get('find-count').textContent, countOf('zebra'))
 
   // The window moved, named by an absolute row rather than a count from the end,
   // because a count from the end is not a position in a conversation that is
@@ -3565,6 +3615,167 @@ test('a search reaches rows the panel has never held', async (t) => {
   assert.ok(Number.isInteger(jumped.end), `the jump must name an absolute row, got ${JSON.stringify(jumped)}`)
   assert.ok(jumped.end < host.messages.length, 'and it must not be the end of the session')
   assert.ok(registry.get('transcript').textContent.includes('zebra'), 'the match is on screen')
+})
+
+test('typing a query goes to the match, not just counts it', async (t) => {
+  const field = await openFindBar()
+  const before = host.reads.at(-1)
+
+  field.value = 'zebra'
+  field.emit('input')
+  await settle()
+
+  // Measured in a real browser: the count read `1/3` and the first match was on
+  // screen nowhere — the panel had answered the question but not moved, so the
+  // reader's next act was to guess which arrow to press. Typing a query is a
+  // request to be taken to it.
+  assert.notEqual(host.reads.at(-1), before, 'the window must have moved')
+  assert.ok(Number.isInteger(host.reads.at(-1).end), 'and it must move by absolute row')
+  assert.ok(
+    registry.get('transcript').textContent.includes('zebra'),
+    'the match the count names must be the match on screen',
+  )
+})
+
+test('a match inside a closed row is opened, so the reader sees their word', async (t) => {
+  // The fixture's reasoning row carries the needle and draws as 「思考中 ⌄」, so
+  // this is the shape the reader complained about: taken to a row whose entire
+  // visible text is that toggle.
+  await openFindBar()
+  const field = registry.get('find-input')
+  field.value = 'zebra'
+  field.emit('input')
+  await settle()
+
+  const body = registry.get('transcript').querySelector('.reasoning-body')
+  assert.notEqual(body, null, 'the row hiding the match must be opened')
+  assert.ok(
+    body.textContent.includes('zebra'),
+    `and it must be the row that holds the match, got ${JSON.stringify(body.textContent)}`,
+  )
+  assert.equal(
+    registry.get('transcript').querySelector('.reasoning-toggle').getAttribute('aria-expanded'),
+    'true',
+    'the control must say it is open, not only look it',
+  )
+})
+
+test('a row matched on what it already draws is not opened', async (t) => {
+  const field = await openFindBar()
+  // The needle is in the name and in the arguments — both of which a closed tool
+  // row draws — while the failure behind the click has none of it. So there is
+  // nothing to reveal, and the row must be left exactly as the reader had it.
+  host.messages = [
+    { kind: 'user', text: 'go' },
+    { kind: 'tool', callId: 'c1', name: 'read_zebra', summary: 'zebra.txt', status: 'error', failure: 'permission denied' },
+  ]
+  await clockOf('transcript')
+
+  field.value = 'zebra'
+  field.emit('input')
+  await settle()
+
+  assert.ok(
+    registry.get('transcript').textContent.includes('zebra'),
+    'the match is on screen without any help',
+  )
+  // Not "was something opened" but "was this row left alone": the check that
+  // decides it is whether the needle is in the part the row hides, and a version
+  // that opened every row it landed on would satisfy the reveal test above.
+  assert.equal(
+    registry.get('transcript').querySelector('.tool-failure'),
+    null,
+    'a row whose match is already visible must not be opened',
+  )
+  assert.equal(
+    registry.get('transcript').querySelector('.tool').getAttribute('aria-expanded'),
+    'false',
+    'and its control must still say it is closed',
+  )
+})
+
+test('a repaint leaves the match marked', async (t) => {
+  const field = await openFindBar()
+  // A row that is still changing, which is what makes a repaint rebuild it:
+  // `reconcileRows` keeps the node of a row whose data is unchanged, so a poll
+  // over an idle transcript replaces nothing and this test would pass against a
+  // panel that never restored anything. A tool call completing under the reader's
+  // eye is the ordinary case that does replace a node.
+  host.messages = [
+    { kind: 'user', text: 'go' },
+    { kind: 'tool', callId: 'c1', name: 'read_file', summary: 'zebra.txt', status: 'pending' },
+  ]
+  await clockOf('transcript')
+
+  field.value = 'zebra'
+  field.emit('input')
+  await settle()
+  assert.equal(registry.get('transcript').querySelectorAll('.hit').length, 1, 'the search marks its match')
+  assert.equal(highlightOf('dsh-needle').length, 1, 'and paints the needle')
+
+  // The call finishes. The row's text is the same but its status is not, so the
+  // node is rebuilt — and the outline and the ranges were on the node that went.
+  host.messages = [
+    { kind: 'user', text: 'go' },
+    { kind: 'tool', callId: 'c1', name: 'read_file', summary: 'zebra.txt', status: 'ok' },
+  ]
+  await clockOf('transcript')
+
+  assert.equal(
+    registry.get('transcript').querySelectorAll('.hit').length,
+    1,
+    'the row the reader was sent to must still be marked after it was rebuilt',
+  )
+  // The ranges address text nodes, so a rebuilt row leaves them pointing at nodes
+  // that are no longer in the document — the paint would simply stop.
+  assert.equal(highlightOf('dsh-needle').length, 1, 'and the needle must be painted again')
+})
+
+test('the needle itself is marked, not the whole row', async (t) => {
+  await openFindBar()
+  const field = registry.get('find-input')
+  field.value = 'zebra'
+  field.emit('input')
+  await settle()
+
+  // The outline says which row; on an answer taller than the screen it does not
+  // say where in it, and the reader hunts inside a box they were already told is
+  // the right one. Chrome's own find marks the characters.
+  const ranges = highlightOf('dsh-needle')
+  assert.equal(ranges.length, 1, `exactly the match must be marked, got ${ranges.length}`)
+  // The text of the range, not the fact that a range exists: a range spanning the
+  // whole row would satisfy "something was marked" while painting the entire
+  // answer and making the needle harder to find than before.
+  assert.equal(ranges[0].toString(), 'zebra', 'the marked text must be the needle')
+})
+
+test('a closed row that hides the match is opened, and its failure shown', async (t) => {
+  // The same shape as the reasoning row, on the other kind that hides text: a
+  // tool row draws its name and arguments and keeps the failure behind a click.
+  const field = await openFindBar()
+  // Set after the bar is open, because `openFindBar` loads its own fixture — and
+  // the poll is what makes the panel hold these rows rather than the old ones.
+  host.messages = [
+    { kind: 'user', text: 'go' },
+    { kind: 'tool', callId: 'c1', name: 'read_file', summary: 'a.txt', status: 'error', failure: 'no such file: zebra.txt' },
+  ]
+  await clockOf('transcript')
+
+  field.value = 'zebra'
+  field.emit('input')
+  await settle()
+
+  const failure = registry.get('transcript').querySelector('.tool-failure')
+  assert.notEqual(failure, null, 'the row hiding the match must be opened')
+  assert.ok(
+    failure.textContent.includes('zebra'),
+    `and it must hold the match, got ${JSON.stringify(failure.textContent)}`,
+  )
+  assert.equal(
+    registry.get('transcript').querySelector('.tool').getAttribute('aria-expanded'),
+    'true',
+    'the control must say it is open',
+  )
 })
 
 test('jump to latest leaves the window a search parked it in', async (t) => {
@@ -3629,6 +3840,8 @@ test('sending leaves the window a search parked it in', async (t) => {
 
 test('closing the find bar clears the query and hands focus back', async (t) => {
   const field = await searchForZebra()
+  assert.equal(registry.get('transcript').querySelectorAll('.hit').length, 1, 'a match is marked')
+  assert.equal(highlightOf('dsh-needle').length, 1, 'and the needle is painted')
   registry.get('find-close').emit('click')
   await settleMacrotask()
 
@@ -3637,6 +3850,11 @@ test('closing the find bar clears the query and hands focus back', async (t) => 
   // not carry the markup's `hidden` attribute, so that property reads `true`
   // here whether the bar was closed or never opened at all.
   assert.equal(registry.get('find-open').getAttribute('aria-expanded'), 'false')
+  // The marks are the search's own annotation, and they go with it. Left behind,
+  // a row stays looking selected with nothing on screen to say what selected it —
+  // and the needle keeps a word painted that no query any more explains.
+  assert.equal(registry.get('transcript').querySelectorAll('.hit').length, 0, 'the outline must go')
+  assert.equal(highlightOf('dsh-needle').length, 0, 'and the needle with it')
   // The same contract the model picker keeps: closing returns focus to the
   // control that opened it, so the next Tab does not start from the top.
   assert.equal(document.activeElement?.id, 'find-open')
@@ -3658,13 +3876,13 @@ test('the find count never leaks a placeholder', async (t) => {
   // which has no braces in it and sailed through a braces-only check.
   assert.equal(
     registry.get('find-count').textContent,
-    zh['find.count'].replace('{position}', '1').replace('{count}', '1').replace('{more}', ''),
+    zh['find.count'].replace('{position}', '1').replace('{count}', String(findRows(host.messages, 'zebra').length)).replace('{more}', ''),
   )
 })
 
 test('a query with no matches does not keep the previous count', async (t) => {
   const field = await searchForZebra()
-  assert.match(registry.get('find-count').textContent, /1\/1/)
+  assert.match(registry.get('find-count').textContent, countOf('zebra'))
 
   field.value = 'aardvark'
   field.emit('input')
