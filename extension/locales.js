@@ -66,6 +66,10 @@ export const zh = Object.freeze({
   'session.untitled': '未命名会话',
   'session.new': '新会话',
   'session.running': '正在运行',
+  // A workspace with a hundred sessions is a workspace nobody scrolls to the
+  // end of. Both sentences are the harness's own, from its session list.
+  'sessions.expand': '展开其余 {count} 个会话',
+  'sessions.collapse': '收起',
 
   // The composer and its attachments.
   'composer.placeholder': '问点什么…',
@@ -254,6 +258,8 @@ export const en = Object.freeze({
   'session.untitled': 'Untitled chat',
   'session.new': 'New chat',
   'session.running': 'Working',
+  'sessions.expand': 'Show {count} more sessions',
+  'sessions.collapse': 'Show less',
 
   'composer.placeholder': 'Ask anything…',
   'transcript.earlier': 'Earlier messages',

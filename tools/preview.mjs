@@ -430,7 +430,15 @@ const FULL_GROUPS = (() => {
         : age * 500 * day
       return {
         id: `session-${groupIndex + 1}-${index}`,
-        title: titles[(index + groupIndex * 3) % titles.length],
+        // The first rows reuse the shared titles above, because that is what
+        // makes scanning hard: they are what a reader sees and has to tell
+        // apart. Everything past them gets a title of its own, which is also
+        // what a real list looks like — 156 sessions do not share ten names. A
+        // list where every title recurs cannot show what folding the tail away
+        // costs, because then no session is ever only in the tail.
+        title: index < titles.length
+          ? titles[(index + groupIndex * 3) % titles.length]
+          : `${titles[(index + groupIndex * 3) % titles.length]} — part ${Math.floor(index / titles.length) + 1}`,
         updatedAt: Date.now() - ago,
         running: false,
         blank: false,

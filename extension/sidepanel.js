@@ -81,6 +81,19 @@ const PAGE_ROWS = 60
 const MATCH_CONTEXT_ROWS = 12
 
 /**
+ * How many idle sessions of a workspace are drawn before the rest fold away.
+ *
+ * A real list is not four rows: measured on this machine, the busiest workspace
+ * holds 83 sessions and all four together hold 156, which is about ten screens
+ * of scrolling to reach a session from last month. The number and the rule come
+ * from DSH's own session list, which keeps a handful of idle sessions per
+ * workspace and offers the rest behind one button — a session that is running is
+ * never hidden, because it is the one a reader is most likely to be looking for
+ * and it is the one whose position in the list changes by itself.
+ */
+const COLLAPSED_SESSIONS = 5
+
+/**
  * The name the needle's ranges are registered under.
  *
  * One name for the whole panel: `::highlight()` is styled per name, and a name
@@ -207,6 +220,19 @@ let searchPosition = 0
  * for a reason the reader cannot see is worse than one that did not narrow at all.
  */
 let sessionFilter = ''
+
+/**
+ * Workspaces the reader has asked to see in full, by group id.
+ *
+ * Kept as state rather than re-derived on each paint for the same reason the
+ * transcript's open rows are: `renderChrome` runs on every eight-second poll and
+ * redraws this view, so an expansion held anywhere but here folds itself back up
+ * while the reader is looking at it.
+ *
+ * A group id can be `null` — that is the bucket for sessions whose directory is
+ * not a registered workspace — so the key is a string.
+ */
+const expandedGroups = new Set()
 /**
  * The absolute row index the reader is being shown, or null when no search has
  * taken them anywhere.
@@ -2783,6 +2809,30 @@ function drawHistory() {
     if (sessionFilter.length > 0) visible = visible.filter((session) => sessionMatches(session, sessionFilter))
     if (visible.length === 0) continue
 
+    // Fold the tail of a long workspace away. The rule is the harness's: an idle
+    // session counts against a small budget, and a running one is always shown,
+    // so what is hidden is only ever rows that are interchangeable with the ones
+    // still on screen. Filtering is exempt — a reader who typed a query is
+    // looking for one specific row, and hiding the match behind another click
+    // would answer the question with a question.
+    //
+    // The count is taken against the list this would otherwise have drawn, not
+    // against the group: blank rows were already dropped above, and counting
+    // them would offer to reveal sessions that are not there.
+    const groupKey = String(group.id)
+    const reached = visible.length
+    let hiddenCount = 0
+    if (sessionFilter.length === 0 && !expandedGroups.has(groupKey)) {
+      let idle = 0
+      visible = visible.filter((session) => {
+        if (session.blank === true || session.running === true) return true
+        if (idle >= COLLAPSED_SESSIONS) return false
+        idle += 1
+        return true
+      })
+      hiddenCount = reached - visible.length
+    }
+
     if (group.title.length > 0) {
       const label = document.createElement('p')
       label.className = 'group-label'
@@ -2868,6 +2918,43 @@ function drawHistory() {
       })
       list.append(item)
       item.append(button)
+    }
+
+    if (hiddenCount > 0 || expandedGroups.has(groupKey)) {
+      const expanded = expandedGroups.has(groupKey)
+      // Inside the list, as a listitem: it is the last row of that workspace's
+      // list rather than a control floating between workspaces, and a reader
+      // moving down the list with the arrow keys arrives at it in the order it
+      // appears. The button is what carries the label and the state.
+      const item = document.createElement('div')
+      item.setAttribute('role', 'listitem')
+      item.className = 'session-item'
+      const more = document.createElement('button')
+      more.type = 'button'
+      more.className = 'session-more'
+      // Announced as expanded/collapsed, so the button's own label does not have
+      // to carry the state as well as the count.
+      more.setAttribute('aria-expanded', String(expanded))
+      // The group this button belongs to, so focus can find it again after the
+      // repaint. Matching on the label would be a bug waiting for two workspaces
+      // with the same number of hidden sessions.
+      more.dataset.group = groupKey
+      more.textContent = expanded ? t('sessions.collapse') : t('sessions.expand', { count: hiddenCount })
+      more.addEventListener('click', () => {
+        if (expanded) expandedGroups.delete(groupKey)
+        else expandedGroups.add(groupKey)
+        drawHistory()
+        // Focus follows the button the reader just pressed. Collapsing removes
+        // every row below it and can take the button away with it, and the
+        // browser then drops focus to the body — so the next Tab starts from the
+        // top of the panel instead of from the list.
+        const again = [...history.querySelectorAll('.session-more')]
+          .find((candidate) => candidate.dataset.group === groupKey)
+        if (again !== undefined) again.focus()
+        else if (typeof titleButton?.focus === 'function') titleButton.focus()
+      })
+      item.append(more)
+      list.append(item)
     }
   }
 
@@ -3577,6 +3664,18 @@ function setFind(next) {
     searchTruncated = false
     searchPosition = 0
     findInput.value = ''
+    // The session list's own narrowing goes with the bar that asked for it.
+    // `sessionFilter` is a second piece of state behind the same box, and
+    // clearing only the transcript's half left a list that was short for a
+    // reason nothing on screen stated: measured over a 156-session workspace,
+    // closing the bar by any of its three routes left 152 rows where the list
+    // would otherwise have drawn its folded 20, with no visible cause.
+    sessionFilter = ''
+    // And the list has to be repainted for that to be visible. Clearing the
+    // filter without a repaint leaves the old rows on screen, so the state and
+    // the screen disagree until something else happens to redraw — which is the
+    // same "state changed, screen did not" shape this panel keeps finding.
+    if (view === 'history') drawHistory()
     // Closing the bar drops the marks with it: the outline and the needle are the
     // search's own annotation, and leaving them on the transcript would leave a
     // row looking selected with nothing on screen to say what selected it.

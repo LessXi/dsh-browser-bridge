@@ -158,6 +158,22 @@ function respond(payload, status = 200) {
   return { ok: status < 400, status, json: async () => payload }
 }
 
+/**
+ * The session the panel is already on, as a row a test can put in its own list.
+ *
+ * A test that replaces `host.groups` with a list that does not contain the
+ * current session is not just changing what is displayed: the panel adopts a
+ * session it finds and keeps it, so every later test runs against a session it
+ * never chose. Measured the hard way — the draft test forty tests further down
+ * failed because its draft was written under `panelDraft:session-poll-0`.
+ * Including this row keeps the panel where it was.
+ *
+ * @returns {object} A session row with the suite's current session id.
+ */
+function sessionRow() {
+  return { id: SESSION, title: 'A session', updatedAt: 0, running: false, blank: false }
+}
+
 const { document, registry } = makeDocument()
 const inbox = []
 
@@ -4346,8 +4362,200 @@ test('a query typed over a conversation does not filter the session list', async
   assert.equal(field.placeholder, '按标题查找…', 'and so does the box')
 })
 
-test('a picture the reader sent is drawn, and its bytes are fetched by URL', async () => {
+test('a long workspace folds its tail away, and one button brings it back', async (t) => {
   await settleToIdle()
+  // The suite's own fixture is replaced here, which the find test above warns
+  // against — but that warning is about replacing it *casually*. A list of two
+  // sessions cannot fold, so the behaviour is unreachable from the shared
+  // fixture, and restoring it in cleanup is what keeps the difference from
+  // leaking into every test after this one.
+  const many = Array.from({ length: 40 }, (_, index) => ({
+    id: `session-many-${index}`,
+    title: `Session number ${index}`,
+    updatedAt: 0,
+    running: false,
+    blank: false,
+  }))
+  host.groups = [{ id: 'workspace-many', title: 'A workspace', sessions: [{ ...sessionRow() }, ...many] }]
+  t.onCleanup(() => { host.groups = undefined })
+
+  await clockOf('groups')
+  await settle()
+  await openHistory()
+
+  const rows = () => registry.get('history').querySelectorAll('button.session')
+  const more = () => registry.get('history').querySelectorAll('button.session-more')
+  // `sessionRow()` is the 41st. Asserted as "a handful" rather than as five: what
+  // matters is that a workspace this long does not draw all of it, not which
+  // small number the panel settled on.
+  const folded = rows().length
+  assert.ok(folded > 0 && folded < 10, `a long workspace should draw a handful of rows, drew ${folded}`)
+  assert.equal(more().length, 1, 'and offers the rest behind one control')
+  assert.equal(more()[0].textContent, `展开其余 ${41 - folded} 个会话`, 'which says how many it is holding back')
+  assert.equal(more()[0].getAttribute('aria-expanded'), 'false', 'and says which way it is set')
+
+  more()[0].click()
+  await settle()
+  assert.equal(rows().length, 41, 'every session is reachable')
+  assert.equal(more()[0].getAttribute('aria-expanded'), 'true', 'the control reports the list is open')
+  assert.equal(more()[0].textContent, '收起', 'and offers the way back')
+
+  more()[0].click()
+  await settle()
+  assert.equal(rows().length, folded, 'and folding again puts it back')
+})
+
+test('a running session is never folded away, whatever its position', async (t) => {
+  await settleToIdle()
+  // The harness's rule, which this mirrors: running sessions do not count against
+  // the budget. A running session is the one whose row a reader is most likely to
+  // be looking for, and folding it away would hide the session that is visibly
+  // changing — the one thing that cannot be found anywhere else in the list.
+  const many = Array.from({ length: 20 }, (_, index) => ({
+    id: `session-run-${index}`,
+    title: `Session number ${index}`,
+    updatedAt: 0,
+    running: index === 15,
+    blank: false,
+  }))
+  host.groups = [{ id: 'workspace-run', title: 'A workspace', sessions: [{ ...sessionRow() }, ...many] }]
+  t.onCleanup(() => { host.groups = undefined })
+
+  await clockOf('groups')
+  await settle()
+  await openHistory()
+
+  const running = registry.get('history')
+    .querySelectorAll('button.session')
+    .filter((row) => row.querySelectorAll('.session-dot').length > 0)
+  assert.equal(running.length, 1, 'the running session is on screen')
+  assert.ok(
+    running[0].textContent.includes('Session number 15'),
+    'and it is the one that was running, not merely a row that happens to be drawn',
+  )
+})
+
+test('a session folded out of sight can still be found by its title', async (t) => {
+  await settleToIdle()
+  // Folding is only safe while the folded rows remain reachable. If the find bar
+  // searched what is drawn rather than what exists, folding would not shorten a
+  // list — it would lose sessions, and the reader would have no way to tell a
+  // session they cannot find from one that is no longer there.
+  const many = Array.from({ length: 30 }, (_, index) => ({
+    id: `session-fold-${index}`,
+    title: index === 29 ? 'The needle only lives in the tail' : `Session number ${index}`,
+    updatedAt: 0,
+    running: false,
+    blank: false,
+  }))
+  host.groups = [{ id: 'workspace-fold', title: 'A workspace', sessions: [{ ...sessionRow() }, ...many] }]
+  t.onCleanup(() => { host.groups = undefined })
+  t.onCleanup(() => closeFindBar())
+
+  await clockOf('groups')
+  await settle()
+  await openHistory()
+  closeFindBar()
+  await openHistory()
+
+  // The needle is in the row folding removes, so it is not on screen to begin with.
+  const drawn = registry.get('history').querySelectorAll('button.session')
+  assert.ok(
+    !drawn.some((row) => row.textContent.includes('The needle')),
+    'the needle has to start off screen, or this proves nothing',
+  )
+
+  registry.get('find-open').click()
+  await settle()
+  const field = registry.get('find-input')
+  field.value = 'needle'
+  field.emit('input', { target: field })
+  await settle()
+
+  const found = registry.get('history').querySelectorAll('button.session')
+  assert.equal(found.length, 1, 'the folded session is found')
+  assert.ok(found[0].textContent.includes('The needle only lives in the tail'), 'and it is the right one')
+})
+
+test('a folded workspace stays folded through the poll that redraws the view', async (t) => {
+  await settleToIdle()
+  // `renderChrome` runs on every poll and redraws this view. An expansion held
+  // anywhere but in the panel's own state folds itself back up while the reader
+  // is looking at it — measured in this suite's sibling for the transcript's open
+  // rows, and the same shape of bug here.
+  const many = Array.from({ length: 20 }, (_, index) => ({
+    id: `session-poll-${index}`,
+    title: `Session number ${index}`,
+    updatedAt: 0,
+    running: false,
+    blank: false,
+  }))
+  host.groups = [{ id: 'workspace-poll', title: 'A workspace', sessions: [{ ...sessionRow() }, ...many] }]
+  t.onCleanup(() => { host.groups = undefined })
+
+  await clockOf('groups')
+  await settle()
+  await openHistory()
+  registry.get('history').querySelectorAll('button.session-more')[0].click()
+  await settle()
+  assert.equal(registry.get('history').querySelectorAll('button.session').length, 21, 'expanded first')
+
+  await clockOf('groups')
+  await openHistory()
+  assert.equal(
+    registry.get('history').querySelectorAll('button.session').length,
+    21,
+    'the poll repainted the list and it is still expanded',
+  )
+})
+
+test('closing the find bar over the list stops narrowing it', async (t) => {
+  await settleToIdle()
+  // Two pieces of state sit behind one box. `setFind(false)` cleared the
+  // transcript's query and left the list's, so closing the bar left the session
+  // list short for a reason nothing on screen stated — measured, 152 rows where
+  // the folded list would have drawn 20, and no visible cause for the missing
+  // ones. A list that is short for an invisible reason is the failure mode this
+  // panel's own comments call out by name.
+  const many = Array.from({ length: 30 }, (_, index) => ({
+    id: `session-close-${index}`,
+    title: `Session number ${index}`,
+    updatedAt: 0,
+    running: false,
+    blank: false,
+  }))
+  host.groups = [{ id: 'workspace-close', title: 'A workspace', sessions: [{ ...sessionRow() }, ...many] }]
+  t.onCleanup(() => { host.groups = undefined })
+  t.onCleanup(() => closeFindBar())
+
+  await clockOf('groups')
+  await settle()
+  closeFindBar()
+  await openHistory()
+
+  const rows = () => registry.get('history').querySelectorAll('button.session')
+  const unfiltered = rows().length
+
+  registry.get('find-open').click()
+  await settle()
+  assert.equal(findBarOpen(), true, 'the bar must be open, or this proves nothing')
+  const field = registry.get('find-input')
+  field.value = 'number 1'
+  field.emit('input', { target: field })
+  await settle()
+  assert.ok(rows().length !== unfiltered, 'the query has to narrow the list, or this proves nothing')
+
+  registry.get('find-close').click()
+  await settle()
+  assert.equal(findBarOpen(), false, 'the bar is gone')
+  assert.equal(
+    rows().length,
+    unfiltered,
+    'and the list it was narrowing is whole again, rather than short for no visible reason',
+  )
+})
+
+test('a picture the reader sent is drawn, and its bytes are fetched by URL', async () => {  await settleToIdle()
   const id = `sha256:${'c'.repeat(64)}`
   host.messages = [
     {

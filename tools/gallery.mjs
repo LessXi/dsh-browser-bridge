@@ -84,10 +84,14 @@ const SHOTS = [
   },
   {
     file: 'sessions.png',
-    scenario: 'historyOpen',
+    // The real scale rather than the three-row fixture: a workspace holding a
+    // hundred sessions is where folding matters, and it is also what the picture
+    // is for — the small fixture shows a list that never has this problem, which
+    // is not the list a reader has.
+    scenario: 'historyFull',
     scheme: 'dark',
     locale: 'zh-CN',
-    why: 'Sessions grouped by workspace: minutes for the ones just used, a day for the older ones, and a running indicator.',
+    why: 'Sessions grouped by workspace, folded to a handful each with the rest one button away. Minutes for the ones just used, a day for the older ones, and a running indicator that is never folded away.',
   },
   {
     file: 'reasoning.png',

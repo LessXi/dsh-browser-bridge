@@ -1109,6 +1109,24 @@
       .session[aria-current="true"] { background: var(--accent-soft); }
       .session-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .session-time { flex: none; font-size: var(--text-xs); color: var(--faint); }
+      /* The row that stands for the sessions this workspace is not showing. It
+         is deliberately left-aligned and quieter than a session: it is a
+         control about the list, not an item in it, and the eye has to be able
+         to skip it on the way to the rows it is looking for. */
+      .session-more {
+        display: block;
+        width: 100%;
+        padding: 7px 10px;
+        border: 0;
+        border-radius: var(--radius-md);
+        background: none;
+        color: var(--faint);
+        font: inherit;
+        font-size: var(--text-xs);
+        text-align: left;
+        cursor: pointer;
+      }
+      .session-more:hover { background: var(--hover); color: CanvasText; }
       .session-dot { flex: none; width: 6px; height: 6px; border-radius: 999px; background: var(--ok); }
       .session-foot { padding: 6px; margin-top: 6px; border-top: 1px solid var(--line-soft); }
       .section-label {

@@ -1,9 +1,9 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v89 已交付并入库。** 下一节就是最新的一轮改动；下面标 v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v89 那一段为止即可。
+> **当前状态：v90 已交付并入库。** 下一节就是最新的一轮改动；下面标 v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v90 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（661 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（668 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 > （真浏览器 e2e 那 4 条需要机器上有 Playwright Chromium 或 Chrome for Testing；
@@ -16,7 +16,7 @@
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
 >
-> **已入库**：v3→v89 的全部改动已提交并推送到 `origin/main`。工作区干净。
+> **已入库**：v3→v90 的全部改动已提交并推送到 `origin/main`。工作区干净。
 > （v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
 
 > ## ⚠️ 两条并行版本线（2026-09-23 处理，后续轮次务必先读这段）
@@ -184,7 +184,168 @@
 > - `earlier.png` 与 `hostDown.png` **sha256 相同**：那张图画的是阻塞屏，
 >   「更早的内容」胶囊根本没出现在交付的图里。成因未定位。
 
-> ### v89：会话列表说「236 天前」，而没人会去算那是哪天（本轮）
+> ### v90：156 个会话排在 10 屏里，而没人会滚到第 10 屏（本轮）
+>
+> #### 一、缺陷
+>
+> 会话列表**一次画出全部会话**。本机真实规模：4 个工作区、**156 个会话**（83/36/23/14），
+> 按 380×720 的侧栏算是**约 10 屏**滚动。折叠之前的量
+> （`.tmp-run/probe-title-legibility.js`，`historyFull` 场景）：
+>
+> | 读数 | 值 |
+> | --- | --- |
+> | 会话行 | **156** |
+> | 要滚几屏 | **约 10** |
+> | 标题被省略号截断 | 21 |
+> | 缩小范围的入口 | 无（v30 之后有了查找栏） |
+>
+> **参照官方实现**：DSH 自己的会话列表（`dsh-client-ui-workspace/lib/client.js`）
+> 有 `COLLAPSED_SESSION_LIMIT = 5`（L2155）与 `collapsedSessionRows()`（L2157）：
+> 每个工作区只画 5 个**空闲**会话，**正在运行的与空会话永不计入预算**
+> （`if (session.blank || session.running || ...) return true`），其余藏在
+> 一个按钮后面，文案是 `sessions.expand`「展开其余 {n} 个会话」/ `sessions.collapse`
+> 「收起」（L48/L49 中文，L156/L157 英文）。**本仓库的约定是照官方来**，
+> 所以这一轮实现的是同一套规则，不是另发明一个。
+>
+> #### 二、修法（`extension/sidepanel.js`）
+>
+> - 新常量 `COLLAPSED_SESSIONS = 5`（在 `MATCH_CONTEXT_ROWS` 之后），注释写明
+>   数字与规则的出处是官方会话列表。
+> - 新状态 `const expandedGroups = new Set()`（在 `let sessionFilter` 之后），
+>   按 `String(group.id)` 记哪些工作区被展开——**`group.id` 可以是 `null`**
+>   （未注册工作区那一桶），所以键是字符串。
+> - `drawHistory()` 在筛选之后折叠：空闲会话数到 5 为止，`blank`/`running` 一律放行；
+>   **筛选状态下不折叠**（读者输入查询就是在找某一行，把命中藏到再一次点击后面
+>   等于用一个问题回答另一个问题）。
+> - 折叠按钮画在**那个组的 `role="list"` 里面**，作为最后一个 `listitem`：
+>   它是这个工作区列表的末行，不是浮在工作区之间的控件；键盘读者按方向键会
+>   按屏幕顺序走到它。`aria-expanded` 声明开合状态（与 `#title`、`#model`、
+>   `#find-open` 同一套做法），`dataset.group` 记住它属于哪一组。
+> - 文案 `sessions.expand`（`'展开其余 {count} 个会话'`）与 `sessions.collapse`
+>   （`'收起'`）加进 `extension/locales.js` 的 zh/en 两张表，措辞取自官方。
+> - CSS `.session-more`（`extension/sidepanel.html`，紧跟 `.session-time`）：
+>   整宽、左对齐、`--faint`，因为**它是关于列表的控件，不是列表里的一项**，
+>   目光要能跳过它去找真正要找的行。`hover` 时才有底色。
+>
+> **读数（`.tmp-run/probe-collapse.js`，同一夹具）**：折叠后 **20 行**（156→20），
+> 展开后 **98 行**，再折叠回到 **20 行**——`expandAddedRows: 78`、
+> `collapseRestored: true`、按钮文案 `收起`、`expandedButtonText` 正确。
+>
+> #### 三、★ 折叠必须付出的代价，以及它没有付出的那部分
+>
+> 折叠省了滚动，代价是**有些会话不在屏幕上了**。唯一不可接受的代价是
+> 「读者的会话找不回来了」，所以这一条必须证明，而不是假设
+> （`.tmp-run/probe-folded-findable.js`）：挑一个**只存在于尾部**、折叠状态下
+> 根本没画出来的标题，用它的片段搜——
+>
+> | 读数 | 值 |
+> | --- | --- |
+> | 折叠时画出的行 | 20 |
+> | 展开后总数 | 156 |
+> | **被折掉的** | **116** |
+> | 折回原样是否与原来一致 | `restoredMatchesOriginal: true` |
+> | 只见于尾部的那条**搜得到吗** | **`foundIt: true`** |
+> | 命中行是否真的画出来了 | `hitCountOnScreen: 16` |
+> | 屏幕上的行是否全都匹配 | `everyRowMatches: true` |
+>
+> **折叠没有损失可寻性**：查找栏问的是宿主（v30 起），而宿主只认会话 id 与标题，
+> 与面板画了几行无关。
+>
+> #### 四、★★ 折叠暴露出的真实缺陷：关掉查找栏，列表仍然被筛着
+>
+> 这是本轮最重要的发现，**它在折叠之前也存在，只是看不出来**。
+>
+> `setFind(false)` 清掉 `searchQuery`，但**没有清 `sessionFilter`**——而会话列表的
+> 筛选读的正是后者。实测（`.tmp-run/probe-stale-filter.js`，156 个会话）：
+>
+> | 关闭方式 | 关掉之后的屏幕行数 | 未筛选时应为 |
+> | --- | --- | --- |
+> | 关闭按钮 | 152 | 20 |
+> | 再点一次切换按钮 | 152 | 20 |
+> | Escape | 152 | 20 |
+>
+> **三种关法全部留下一个被筛过的列表，而屏幕上没有任何东西说明为什么少了 140 行。**
+> 折叠之前这个缺陷是「152 行 vs 156 行」，看起来像正常的列表；折叠之后它变成
+> 「152 行 vs 20 行」——**读者关掉一个框，列表反而长了 7 倍**，这才是它露出来的原因。
+>
+> 修法（`extension/sidepanel.js` 的 `setFind`）：清 `sessionFilter`，并
+> **在 `view === 'history'` 时 `drawHistory()`**。两件事缺一不可：只改状态不重画，
+> 状态与屏幕会一直不一致到下一次别的什么触发重画为止——这个面板反复出现的
+> 「状态变了、屏幕没变」正是同一形状。
+>
+> 复测：三种关法全部回到 **20 行**，`anyCloseLeftItFiltered: false`。
+>
+> #### 五、★ 我自己造成的回归：改了共享夹具没把面板放回原处
+>
+> 新测试替换 `host.groups` 之后，**面板会「收养」它在新列表里看到的会话**并一直留着。
+> 我的夹具只含我编的会话，于是面板从真实会话切到了 `session-poll-0`，而
+> **40 个测试之后的** `reopening the panel puts the draft back in the composer`
+> 开始失败——它断言草稿写在 `panelDraft:${SESSION}` 下。
+>
+> **诊断过程**：先 `git stash` 我的测试改动 → 该测试通过（证明责任在我的改动）。
+> 再在失败测试里打印 `storage.snapshot()` 的键，读到
+> `["panelSessionId","panelDraft:session-poll-0"]`——**草稿写到了我的会话 id 上**。
+> 这比对着报错猜快得多，也是这个仓库第 v30 轮记过的那条教训的第二次实例：
+> **一个重新配置共享夹具的测试，不是在测这个行为，而是在编辑它之后的每一个测试。**
+>
+> 修法：新增助手 `sessionRow()`，把**当前会话那一行**放进每个自造列表里，
+> 面板就不会离开它。这比在 `onCleanup` 里回滚更稳——回滚只把夹具改回去，
+> 而面板已经换过会话了。
+>
+> #### 六、验收读数（已绿，不必重跑）
+>
+> - `npm test` → **668 passed, 0 failed, 0 skipped**（663 → 668；其中基线 663 是实测，
+>   README 此前写的 661 是 v89 时留下的旧数，本轮一并更正）
+> - `npm run check:extension` → exit 0
+> - 变异 `.tmp-run/mutate-collapse.mjs`：**真坏法 2/2 命中**、等价变异 **1/1 正确不红**、
+>   `restoredExactly: true`。三个变异分别是
+>   `session-filter-not-cleared`（回到旧行为，命中）、
+>   `expansion-not-remembered`（展开态不进模块状态，读者眼前的列表自己折回去，命中）、
+>   `fold-limit-changed`（5→4，**必须不红**——断言的是「一小把」而不是具体的 5，
+>   绑死这个数就会在合理调整时误报）。
+> - 真实浏览器：折叠 20 行、展开 98 行、折回 20 行；关闭查找栏三种方式都回到 20 行。
+> - 新增 5 条测试（`packages/dsh-browser-bridge/test/panel-stream.test.js`）：
+>   `a long workspace folds its tail away, and one button brings it back`、
+>   `a running session is never folded away, whatever its position`、
+>   `a session folded out of sight can still be found by its title`、
+>   `a folded workspace stays folded through the poll that redraws the view`、
+>   `closing the find bar over the list stops narrowing it`。
+>   **第四条守的是 `renderChrome` 每 8 秒重画这个视图**——展开态若存在别处，
+>   读者眼前的列表会自己折回去（与 v72 的 `drawTranscript` 同一形状）。
+>
+> #### 七、★ 判据错了两处（都记下来）
+>
+> 1. **`historyFull` 夹具只有 10 个不同标题循环用**，于是「展开全部」之后
+>    **没有任何标题是只在尾部出现的**，探针报 `error: "nothing was folded away"`。
+>    这不是产品问题，是夹具不真实：**156 个真实会话不会共用 10 个名字**。
+>    已改：前 10 行仍复用那些容易混淆的标题（那正是读者要分辨的东西），
+>    其余各自带后缀。
+> 2. **底部「黑田」看起来被 composer 盖住了**（截图肉眼判断）。逐字符实测
+>    （`.tmp-run/probe-overlap-bottom.js`，判据是 v74 那条教训）：`coveredCount: 0`、
+>    `coveredByComposer: 0`、`historyEndsAboveComposer: true`。滚动容器底边在
+>    603、composer 顶边在 632——那是**视口边缘的正常裁切**，不是遮挡。
+>    **截图上看不见的东西，不一定是被盖住了。**
+>
+> #### 八、被否决的方向
+>
+> - **`justify-content: flex-end` 那一类做法**在这里没有对应物：折叠改的是「画几行」，
+>   不是对齐，所以不涉及。
+> - **`content-visibility: auto` 跳过屏外布局**（v71 量过、收益 10.8×）在本轮不适用：
+>   它对 `scrollHeight` 的失真会破坏滚动锚定，而这里的问题不是渲染慢，是**列表太长**。
+>   折叠直接把行数降到 20，从根上解决。
+>
+> #### 九、本轮新增探针（`.tmp-run/`，被 gitignore）
+>
+> `probe-title-legibility.js`（156 行/10 屏/21 截断/无入口）、
+> `probe-collapse.js`（折叠展开读数 + 轮询存活）、
+> `probe-count-vs-rows.js`（计数与屏幕行数）、
+> `probe-folded-findable.js`（**折叠未损失可寻性**）、
+> `probe-stale-filter.js`（**关掉查找栏仍被筛**，三种关法）、
+> `probe-overlap-bottom.js`（逐字符判据，阴性结论）、
+> `probe-why-no-expand.js`（诊断夹具问题）、
+> `mutate-collapse.mjs`、`normalize-eol.mjs`（行尾归一）。
+
+> ### v89：会话列表说「236 天前」，而没人会去算那是哪天
 >
 > #### 一、缺陷
 >
