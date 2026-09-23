@@ -1,9 +1,9 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v94 已交付并入库。** 下一节就是最新的一轮改动；下面标 v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v94 那一段为止即可。
+> **当前状态：v95 已交付并入库。** 下一节就是最新的一轮改动；下面标 v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v95 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（671 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（673 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 > （真浏览器 e2e 那 4 条需要机器上有 Playwright Chromium 或 Chrome for Testing；
@@ -16,10 +16,82 @@
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
 >
-> **已入库**：v3→v94 的全部改动已提交并推送到 `origin/main`。工作区干净。
+> **已入库**：v3→v95 的全部改动已提交并推送到 `origin/main`。工作区干净。
 > （v92 是 `e3ad6ba`，v91 是 `3d96bf1`，v90 是 `767e4cd`，v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
 
+> ## v95：输入法在拼字，面板却在听命令
+
+本轮换到**输入法（IME）**这条轴。前面几轮量的是字号、尺寸、失败、搜索，而这一条
+属于最日常的输入路径：写中文、日文、韩文时，**每一次输入都要先用输入法拼出候选**。
+面板自己在一个处理器的注释里写着这件事「不是边缘情况，而是每条消息」——但那条
+注释只守住了它自己所在的那一个处理器。
+
+**缺陷**：`extension/sidepanel.js` 有五个 `keydown` 处理器，其中三个跑在文本框里，
+而**只有一个**带输入法守卫（`input` 的 Enter，L3969 附近）。真实 Chromium 实测
+（`.tmp-run/probe-ime-composition.mjs`，用 CDP 的 `Input.imeSetComposition` 建立
+**真实**组合，不是给合成事件贴一个 `isComposing: true`）：
+
+| 场景 | 修复前 | 说明 |
+|---|---|---|
+| 组合中按 Escape（焦点在 composer） | **`escapeLeakedWhileComposing: 1`** | 读者想取消候选，**查找栏/会话列表被关掉** |
+| 组合中按 Enter（焦点在查找框） | **`findSteppedWhileComposing: 1`** | 想选字，**跳转到了下一个命中** |
+| 组合中按 Enter（composer，已有守卫） | `composerSentWhileComposing: 0` | 已正确 |
+| **对照**：非组合按 Enter | `isComposing: false`、`sentCount: 1` | Enter 本身正常 |
+| **对照**：非组合按 Escape | `isComposing: false`、`closedLayer: 'find'` | Escape 本身正常 |
+
+**★ 为什么必须实测才能定案**：我原本推测组合期间的 `event.key` 会是 `'Process'`——
+那样 `document` 处理器在 `if (event.key !== 'Escape') return` 处早已返回，**根本不是
+缺陷**。实测推翻了它：组合期间按 Escape，真实事件带的是 `key: 'Escape'`
+**且** `isComposing: true`。**只读 `key` 的处理器分不出这两者。**
+
+**修法**：新增 `imeOwnsThisKey(event)`（`sidepanel.js`，在 `atBottom()` 之前），
+`event.isComposing === true || event.keyCode === 229`，放在三个文本框处理器的
+**最顶部**——不是在某个分支里。`input` 处理器原有两处内联守卫**已删除**，因为顶部
+那一条严格更宽（原来的写法只守了 `mention !== null` 分支里的 Enter/Tab，同一处理器
+里的方向键与 Escape 没有守）。
+
+**★ 没有改的地方，以及为什么**：`modelMenu`（L3849）与会话行按钮（L2995）也是
+无守卫的 `keydown` 处理器，但它们**不跑在文本框里**，方向键不会被输入法消费。
+**按属性枚举不等于见一个改一个**——把守卫加到那里只会是噪声。
+
+**★ 我自己在验证脚本上犯的错（差点得出相反结论）**：变异脚本第一版把
+`if (false) return` **插在**真实守卫**之前**，于是「变异」什么都没改，3 个坏法
+全部报「未命中」。那是**等价变异**，不是测试抓不到。改成真正删除守卫后
+**3/3 命中**、`restoredExactly: true`。**判据必须先证明变异真的改变了行为。**
+
+**★ 为了让三个新测试不污染后续，我改动了两条既有断言——用差分证明没有改瞎**
+文件里那条宣告测试读的是**全文件共享**的 `announcerWrites` 数组（从不重置）与
+`#announcer` 区域（从不重置），所以它的判据实际上依赖「它前面有多少次 settle」。
+我的测试多了一次 `settleToIdle()`，就把更早测试排队中的写入放了出来，于是它报了
+一句属于**别的测试**的话（`'streaming 29'`）。改动：
+- `startupAnnouncements()` 只取**启动边界**之前写入的句子（新增 `startupWriteCount`）
+- 第二条断言读启动时刻捕获的 `startupAnnouncer`，与同文件既有的 `startupToast` /
+  `startupFocus` 同一手法
+
+这两处都很像「把断言改松了」。所以用 `.tmp-run/diff-assertion-rewrite.mjs` 做**差分**：
+对同一批真实坏法，分别跑基线版本与我的版本，按**测试名**比较失败集合。
+读数 `lostByMine: []`、`gainedByMine: ['an IME Escape …']` ——**没有丢掉任何检查，
+并且多抓到一条基线抓不到的**。
+
+**同一批差分读数里的一条阴性结论**：`drop-loadedOnce` 与 `announce-every-poll`
+两个坏法，基线与我的版本**都是 0 命中**。追下去（`.tmp-run/probe-announce-trace.js`，
+真实浏览器记录播报区变更）：守卫拿掉之后 `normal` 场景**依然全程沉默**
+（`finalText: ''`、`changesDuringWindow: []`），因为该场景下阻塞界面根本不显示。
+**所以那不是「测试漏了」，是两个等价变异。** 记录下来以免下一轮重复挖。
+
+**验证读数（已绿，不必重跑）**
+- `npm test` → **673 passed, 0 failed, 0 skipped**（671 → 673）
+- `npm run check:extension` → exit 0
+- `.tmp-run/mutate-ime-guard.mjs` → **3/3 命中**、`everyMutationRanItsSuite: true`、
+  `restoredExactly: true`
+- `.tmp-run/diff-assertion-rewrite.mjs` → `lostByMine: []`、`restoredExactly: true`
+
+**新增探针**（`.tmp-run/`，被 gitignore）：`probe-ime-composition.mjs`（真实组合
+输入，含两组对照）、`mutate-ime-guard.mjs`、`diff-assertion-rewrite.mjs`、
+`probe-announce-trace.js`、`why-announce-mutation-passes.mjs`。
+
 > ## v94：拖一下侧栏的边，正在读的那一段就被推走了
+
 
 本轮换到**尺寸变化**这条轴。前三轮（v91/v92/v93）都在字号缩放上，而拖侧栏的边
 是同一个「读者能改布局」的族里最常见的一个动作——面板对此**完全没有准备**。

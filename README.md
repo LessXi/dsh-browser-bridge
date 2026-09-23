@@ -422,7 +422,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 671 条
+npm test                          # 全部 673 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -512,7 +512,7 @@ Chrome for Testing 都装进带版本号的目录，写死路径会在一台机�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 671 条
+npm test                 # 673 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -543,7 +543,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面五层测试，671 条。包括真实 Chrome 驱动的快照、点击、输入、截图，
+**已自动化验证**：上面五层测试，673 条。包括真实 Chrome 驱动的快照、点击、输入、截图，
 以及**载入真实扩展的真实 Chromium** 走完整协议并核对页面真的被点到了。扩展的首次连接也已
 在真实 Chrome 里端到端验证过：清空 storage 后，扩展自己读了 health、取了令牌、带着正确令牌
 发起升级（`.tmp-run/probe-enrol-real-browser.js`）。
@@ -619,6 +619,11 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 | ★★ 共享 token 必须用 `rem`，`em` 会让两处漂移（v93） | `--pill-height` 是**同一个数被两处读到**（胶囊高度 + 转写区让位）。用 `em` 的话它在哪读就按哪的字号解析——胶囊 12px、转写区 13px——同一个 token 变成 26px 与 28.2px。**默认字号下这个漂移只有 2px，根本看不出来**，只有放大后才暴露。改 `rem` 后三档的让位余量恒为 6px，证明两处始终相等 |
 | ★ 断言单位而不断言值，等于没断言（v93） | 我按 v92 的教训给三处新地板写了「不是 px」的断言，跑变异发现 **4 条没红**（而 `suiteNeverRan: []` 证明套件真跑了，所以是测试不足）。缺的正是：「错的分母也不是 px」、token 的单位没有任何约束、只覆盖了两个胶囊中的一个。补上具体值与两处覆盖后 **6/6 命中**。**这次是自己抓自己** |
 | ★ 按属性枚举，不要逐个找（v93） | v92 只修好了被点到名的那一个（输入框）。本轮换成按属性枚举——「自己带文字、自己不是滚动容器、祖先里有写死高度」——一次就找出**三处**漏网（重试按钮、两个胶囊）。**逐个找只能找到你正好想到的那个** |
+| ★★ 输入法守卫要放在处理器顶部，不是某个分支里（v95） | `sidepanel.js` 的 `input` 处理器**早就有**守卫，注释还写着「对中日韩用户不是边缘情况，而是每条消息」——但它守的是 `mention !== null` 分支里的 Enter/Tab，同一个处理器里的**方向键与 Escape 没有**，另外两个文本框处理器（`document`、`findInput`）也完全没有。实测：组合中按 Escape，`document` 处理器收到 `key: 'Escape'` **且** `isComposing: true`，于是读者想取消候选，**查找栏被关掉了**。守在最顶部一次覆盖所有分支 |
+| ★★ 组合期间的 `event.key` 不是 `'Process'`（v95） | 我原本推测 `key` 会是 `'Process'`——那样 `document` 处理器在 `if (event.key !== 'Escape') return` 处早已返回，**根本不是缺陷**，我差点因此不去修。用 CDP 的 `Input.imeSetComposition` 建立**真实**组合后实测推翻了它：`key` 就是 `'Escape'`。**只读 `key` 分不出「读者在选字」与「读者在按 Escape」**，必须读 `isComposing` |
+| ★ 变异脚本自己坏了，会读成「测试没抓到」（v95） | 我把 `if (false) return` **插在**真实守卫**之前**，于是三个「变异」什么都没改，全部报未命中——那是**等价变异**。改成真正删除守卫后 **3/3 命中**。**先证明变异真的改变了行为，再谈命中率** |
+| ★★ 改动既有断言时，用差分证明没改瞎（v95） | 为让新测试不污染后续，我改了两条既有断言，两处都长得像「改松了让它通过」。所以对同一批真实坏法分别跑**基线版本**与**我的版本**，按测试名比较失败集合：`lostByMine: []`、`gainedByMine: ['an IME Escape …']`——没丢掉任何检查，还多抓到一条。**「读起来像放宽了」不能靠读代码判断，要用变异量** |
+| ★ 共享的测试状态会让判据依赖执行顺序（v95） | 那条宣告测试读的是**全文件共享**、从不重置的 `announcerWrites` 数组与 `#announcer` 区域。它一直绿，只是因为它前面那些测试恰好把写入留在了队列里；我的测试多了一次 `settleToIdle()` 就把它们放了出来，于是它报出一句属于**别的测试**的话（`'streaming 29'`）。改成读**启动边界**之前写入的部分，与同文件既有的 `startupToast` / `startupFocus` 同一手法 |
 
 最后一步在探针上报错 `llm-deepseek: no API key for provider route "deepseek-official"`——
 **这是探针进程拿不到凭据，不是插件缺陷**。已核对 `$DSH_HOME/.credentials.yaml`：里面只有一条
@@ -3885,7 +3890,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 671 条，含真实 Chrome 端到端与真扩展 e2e
+└─ test/                  # 673 条，含真实 Chrome 端到端与真扩展 e2e
 
 extension/
 ├─ manifest.json

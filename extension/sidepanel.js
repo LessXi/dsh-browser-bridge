@@ -1686,6 +1686,35 @@ function renderRow(row) {
 /** The rows currently on screen. */
 let rows = []
 
+/**
+ * Whether this keystroke belongs to an input method rather than to the panel.
+ *
+ * An IME composes a word before committing it: the reader types `nihao`, the
+ * candidate window opens, and the keys they press to pick and confirm a
+ * candidate — Enter, Escape, arrows — are consumed by the composition. A panel
+ * that acts on them acts on keystrokes the reader aimed at their own input
+ * method. For Chinese, Japanese and Korean text that is not an edge case, it is
+ * how every message is written.
+ *
+ * Two independent signals, because neither is complete. `isComposing` is the
+ * modern one and is the only one that carries a value *during* composition.
+ * `keyCode === 229` is the older marker a browser uses when it has handed the
+ * keystroke to the IME and has no key to report.
+ *
+ * Measured in Chromium with a real composition (`Input.imeSetComposition`, not a
+ * synthetic event with the flag set): while a composition was open, a real
+ * Escape arrived with `key: 'Escape'`, `isComposing: true`, and a real Enter
+ * arrived the same way. So a handler that reads only `key` cannot tell the two
+ * apart, and the guard has to come before the key is examined — a check that
+ * only covers one branch of a handler leaves the other branch exposed.
+ *
+ * @param {KeyboardEvent} event
+ * @returns {boolean}
+ */
+function imeOwnsThisKey(event) {
+  return event.isComposing === true || event.keyCode === 229
+}
+
 /** Whether the transcript is pinned to the newest row right now. */
 function atBottom() {
   return transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight <= NEAR_BOTTOM_PX
@@ -3813,6 +3842,11 @@ findPrev.addEventListener('click', () => {
 })
 
 findInput.addEventListener('keydown', (event) => {
+  // This field is where a reader types their query, so it is a field an IME
+  // composes in: Enter commits a candidate here just as it does in the composer.
+  // Without the guard, choosing the word 「斑马」 jumped the transcript to a
+  // match mid-word.
+  if (imeOwnsThisKey(event)) return
   // Enter is how a reader steps through matches without leaving the field: the
   // caret is where they are typing, and reaching for a button would cost them
   // the position in their query. Shift+Enter goes back.
@@ -3872,6 +3906,12 @@ document.addEventListener('click', () => {
 })
 
 document.addEventListener('keydown', (event) => {
+  // Before anything else: a keystroke an input method is using is not a command
+  // for this panel, whichever field has focus. An IME cancels its candidate
+  // window with Escape, and this handler answers Escape by dismissing a layer —
+  // measurable, the reader pressed Escape to cancel a composition and the
+  // conversation list closed underneath them.
+  if (imeOwnsThisKey(event)) return
   // `Ctrl+F`/`Cmd+F` opens this panel's own find bar, which is what a reader
   // pressing it means while the cursor is anywhere in the conversation.
   //
@@ -3933,6 +3973,14 @@ sendButton.addEventListener('click', () => {
 })
 
 input.addEventListener('keydown', (event) => {
+  // The composer is the field most likely to hold a composition, and while one
+  // is open every key this handler reads belongs to it: the arrows walk the IME's
+  // candidate list, and Escape closes it. Acting on those moved the mention
+  // picker's highlight under the reader and dismissed the picker outright, on
+  // keystrokes aimed at the input method. The guard sits above the picker block
+  // rather than inside one of its branches because every branch below is one the
+  // IME can claim.
+  if (imeOwnsThisKey(event)) return
   // The picker owns the navigation keys while it is open, or the arrow keys
   // would move the caret and Enter would send a message that is half a mention.
   if (mention !== null) {
@@ -3949,7 +3997,6 @@ input.addEventListener('keydown', (event) => {
       return
     }
     if (event.key === 'Enter' || event.key === 'Tab') {
-      if (event.isComposing === true || event.keyCode === 229) return
       event.preventDefault()
       acceptMention(mention.index)
       return
@@ -3961,12 +4008,10 @@ input.addEventListener('keydown', (event) => {
     }
   }
   if (event.key !== 'Enter' || event.shiftKey) return
-  // An IME commits its candidate with Enter. Sending on that keystroke would
-  // turn "type 你好 and accept it" into "type 你好 and send a half-finished
-  // line", which is the normal way to write Chinese, Japanese, or Korean — so
-  // the guard is not an edge case for those users, it is every message.
-  // `keyCode === 229` is the older signal for the same thing.
-  if (event.isComposing === true || event.keyCode === 229) return
+  // An IME commits its candidate with Enter, and the guard at the top of this
+  // handler is what answers that: sending on that keystroke would turn "type
+  // 你好 and accept it" into "type 你好 and send a half-finished line", which is
+  // the normal way to write Chinese, Japanese, or Korean.
   event.preventDefault()
   sendMessage().catch((error) => say(t('error.generic', { reason: error.message })))
 })

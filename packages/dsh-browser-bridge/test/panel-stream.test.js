@@ -720,24 +720,39 @@ globalThis.setInterval = realSetInterval
 const startupToast = registry.get('toast')?.textContent ?? ''
 const startupClocks = clocks.length
 /**
+ * What the announcer region held when the panel finished starting.
+ *
+ * Captured here for the same reason `startupToast` and `startupFocus` are: the
+ * region is one element shared by every test in this file, so its value at the
+ * point the announcements test happens to run says nothing about startup. Read
+ * live, it reported whatever test last wrote there — measured, it read
+ * 「streaming 29」, a sentence a streaming test had queued earlier and that only
+ * landed because the tests in between awaited a macrotask.
+ */
+const startupAnnouncer = registry.get('announcer')?.textContent ?? ''
+/**
  * Everything the announcer said while the panel was starting.
  *
  * Non-empty entries are what a screen reader would have heard, and on a healthy
  * start there must be none: see {@link announcerWrites} for why the writes are
  * intercepted rather than sampled.
- */
-/**
- * Everything the announcer has said since the panel loaded.
  *
- * A function rather than a snapshot: the writes arrive on their own timers, so a
- * filtered copy taken at this point would miss every one that has not landed yet
- * — which is all of them during a startup that is still in flight. Reading it
- * inside the test is what makes the ordering mistake observable.
+ * The boundary is the import plus the wait above, and it has to be a *boundary*
+ * rather than "everything so far": `announcerWrites` is never reset, and
+ * announcements are written on a later task, so a later test that settles the
+ * clock can land a queued write from an earlier one. Reading the whole array made
+ * this test's verdict depend on how much settling happened ahead of it — it
+ * passed only while the tests before it happened to leave their writes pending,
+ * and reported a startup defect as soon as one of them awaited a macrotask the
+ * write needed. Measured: two unrelated tests added ahead of this one made it
+ * fail with a list of sentences those tests had produced.
  *
- * @returns {string[]} The non-empty sentences written so far.
+ * @returns {string[]} The non-empty sentences written before the panel finished
+ * starting.
  */
+const startupWriteCount = announcerWrites.length
 function startupAnnouncements() {
-  return announcerWrites.filter((said) => said !== '')
+  return announcerWrites.slice(0, startupWriteCount).filter((said) => said !== '')
 }
 /**
  * Where focus landed when the panel finished opening.
@@ -2649,6 +2664,109 @@ test('an IME candidate committed with Enter does not send the message', async ()
   })
 })
 
+test('an IME Escape cancels the composition, not the layer behind it', async () => {
+  await settleToIdle()
+  await openFindBar()
+  assert.equal(
+    registry.get('find-open').getAttribute('aria-expanded'),
+    'true',
+    'the find bar is open to begin with',
+  )
+
+  // Escape is how an IME closes its candidate window, and it is also how this
+  // panel dismisses a layer. Measured in Chromium with a real composition, the
+  // keystroke arrives with `key: 'Escape'` *and* `isComposing: true` — so a
+  // handler that reads only `key` cannot tell the two apart, and the reader who
+  // meant "cancel that candidate" watched the find bar vanish instead.
+  document.emit('keydown', { key: 'Escape', isComposing: true, preventDefault() {} })
+  await settle()
+  assert.equal(
+    registry.get('find-open').getAttribute('aria-expanded'),
+    'true',
+    'an IME Escape closed the find bar',
+  )
+
+  // The legacy signal, for IMEs that report no key.
+  document.emit('keydown', { key: 'Escape', keyCode: 229, preventDefault() {} })
+  await settle()
+  assert.equal(
+    registry.get('find-open').getAttribute('aria-expanded'),
+    'true',
+    'keyCode 229 was treated as a dismiss',
+  )
+
+  // And a real Escape still closes it, so the guard is not eating the key.
+  document.emit('keydown', { key: 'Escape', preventDefault() {} })
+  await settle()
+  assert.equal(
+    registry.get('find-open').getAttribute('aria-expanded'),
+    'false',
+    'a plain Escape no longer closes the find bar',
+  )
+})
+
+test('an IME Enter in the find field commits the word instead of jumping', async () => {
+  await searchForZebra()
+  const before = registry.get('find-count').textContent
+
+  // The find field is a field an IME composes in, exactly like the composer:
+  // accepting the candidate 「斑马」 would step to the next match mid-word.
+  registry.get('find-input').emit('keydown', {
+    key: 'Enter',
+    isComposing: true,
+    preventDefault() {},
+  })
+  await settle()
+  assert.equal(
+    registry.get('find-count').textContent,
+    before,
+    'an IME Enter stepped to another match',
+  )
+
+  registry.get('find-input').emit('keydown', {
+    key: 'Enter',
+    keyCode: 229,
+    preventDefault() {},
+  })
+  await settle()
+  assert.equal(
+    registry.get('find-count').textContent,
+    before,
+    'keyCode 229 stepped to another match',
+  )
+
+  // A real Enter still steps, so the guard is not eating the key. Measured
+  // against `longTranscript`, whose zebra rows sit at known positions.
+  registry.get('find-input').emit('keydown', { key: 'Enter', preventDefault() {} })
+  await settle()
+  assert.notEqual(
+    registry.get('find-count').textContent,
+    before,
+    'a plain Enter no longer steps through matches',
+  )
+
+  // Left as the rest of the file expects to find it. A bar still open would
+  // swallow the next test's Escape; a window still parked around a match would
+  // leave the panel drawing a different part of the conversation than the next
+  // test asked for, and would put the needle on screen for the search tests that
+  // assert it starts off screen. Closing the bar clears the query but *not* the
+  // window — `#to-bottom` is what returns the panel to the newest rows.
+  //
+  // Not by sending a message, which is how the file's later cleanup does it:
+  // that produces a reply, and the announcements test below asserts the announcer
+  // has been silent since startup. Sending here would turn this test's leftovers
+  // into a failure reported against that one.
+  //
+  // `host.searches` is reset too, because the search tests that follow count the
+  // requests: this test's own query would make their `length === 1` mean
+  // something other than what they wrote it to mean.
+  closeFindBar()
+  registry.get('to-bottom').emit('click')
+  await settle()
+  await settleToIdle()
+  host.searches.length = 0
+})
+
 test('a second press of new-session cannot orphan a session', async () => {
   // Creating is the one action here that makes something rather than reads it.
   // The host mints a fresh id on every call while the panel can only adopt one,
@@ -3050,7 +3168,13 @@ test('a question and a finished answer are announced, and a healthy start is not
     [],
     `a healthy start must stay silent for its whole startup, but said: ${JSON.stringify(startupSaid)}`,
   )
-  assert.equal(announcer.textContent, '', `a healthy start must say nothing, said: ${announcer.textContent}`)
+  // `startupAnnouncer`, not the live value: this region is shared with every
+  // other test in the file, so what it holds now is whatever ran most recently.
+  assert.equal(
+    startupAnnouncer,
+    '',
+    `a healthy start must say nothing, said: ${startupAnnouncer}`,
+  )
 
   // A question. It blocks the turn until answered, and the visible evidence is a
   // card that appears in a transcript the reader may not be looking at.
