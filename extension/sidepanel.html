@@ -400,6 +400,53 @@
         overflow-wrap: anywhere;
       }
       .answer { min-width: 0; overflow-wrap: anywhere; }
+      /* A message with pictures stacks them under its words, right-aligned with
+         the bubble. `.row` is a flex row, so without this the first picture
+         would sit *beside* the text instead of under it. */
+      .row[data-kind="user"]:has(> .shots) {
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 6px;
+      }
+      .shots { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+      .shot {
+        margin: 0;
+        /* The width comes from the image's own `width`/`height` attributes, not
+           from `width: 100%`. In a column flex box `align-items: flex-end` makes
+           each child shrink to fit, so a percentage width would resolve against
+           a container that is itself sized by its content — circular, and it
+           collapses to the image's natural size.
+           
+           The height cap is what keeps a conversation readable. This panel is
+           380px wide, and a screenshot from a phone is 760x1440: at full width
+           it stands 606px tall, so a single picture fills 84% of the window and
+           three of them are three screens of scrolling with no conversation in
+           between. Capped, the picture is a thumbnail that says what it is, and
+           clicking it opens the full one. */
+        max-width: min(320px, 100%);
+        max-height: min(320px, 44vh);
+        overflow: hidden;
+        border: 1px solid var(--line-soft);
+        border-radius: var(--radius-lg);
+        background: var(--hover);
+      }
+      /* `width`/`height` attributes on the image give the browser an intrinsic
+         ratio, so the box is already the right shape before the bytes arrive and
+         the transcript does not jump when they do. */
+      .shot img { display: block; width: auto; height: auto; max-width: 100%; max-height: min(320px, 44vh); }
+      /* The picture is its own link to the full-size original, because a
+         thumbnail that cannot be enlarged is a picture the reader cannot read. */
+      .shot-open { display: block; cursor: zoom-in; }
+      .shot-failed {
+        display: flex;
+        align-items: center;
+        /* A failed picture keeps a readable height, so the message still reads
+           as "there was an image here" rather than collapsing to nothing. */
+        min-height: 48px;
+        padding: 8px 12px;
+        font-size: var(--text-xs);
+        color: var(--faint);
+      }
       #transcript :is(p, ul, ol, blockquote, pre, h1, h2, h3, h4, h5, h6) { margin: 0; }
       #transcript > * + * { margin-top: 0; }
       .answer > * + * { margin-top: 8px; }

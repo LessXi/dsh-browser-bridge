@@ -55,6 +55,7 @@ import { createServer } from 'node:http'
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, writeSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { deflateSync } from 'node:zlib'
 
 import { findRows } from '../packages/dsh-browser-bridge/lib/chat.js'
 
@@ -229,6 +230,23 @@ function makeHost(scenario, state) {
         })
       }
 
+      if (url.pathname === '/browser-bridge/image') {
+        // Drawn at the dimensions the reference declares, so the fixture cannot
+        // make a sizing defect invisible: an `<img>` is laid out from its
+        // intrinsic size and the declared attributes together.
+        const id = url.searchParams.get('attachmentId') ?? ''
+        const declared = declaredSize(scenario, id)
+        const bytes = mockImage(id, declared)
+        response.writeHead(200, {
+          'content-type': 'image/png',
+          'content-length': String(bytes.length),
+          'cache-control': 'private, max-age=31536000, immutable',
+          'access-control-allow-origin': '*',
+        })
+        response.end(bytes)
+        return
+      }
+
       if (url.pathname === '/browser-bridge/chat') {
         if (request.method === 'GET') {
           // `running: true` on the open session is what makes the panel draw the
@@ -358,6 +376,48 @@ const DEFAULT_CATALOG = {
   ],
   default: { provider: 'deepseek', model: 'deepseek-v4-pro', reasoningEffort: 'high' },
 }
+
+/**
+ * A conversation where the reader sent pictures rather than only text.
+ *
+ * The bare picture is the row that used to vanish: `describeEvents` skipped a
+ * message whose text was empty, so a screenshot with no caption produced no row
+ * at all, and the reply below it read as an answer to nothing.
+ *
+ * The dimensions are real (760x1440 is what this panel's own screenshots are),
+ * so the reserved box is exercised at the aspect ratio a reader actually sends.
+ */
+const PICTURE_MESSAGES = [
+  {
+    kind: 'user',
+    text: '这个按钮点不动，截图给你看',
+    images: [{
+      attachmentId: `sha256:${'a'.repeat(64)}`,
+      mediaType: 'image/png',
+      bytes: 112836,
+      width: 760,
+      height: 1440,
+      name: 'pointless-button.png',
+    }],
+  },
+  {
+    kind: 'assistant',
+    text: '看到了，保存按钮被一个透明的遮罩层压住了。快照里遮罩的 bounds 是 `0,0,1280,800`，而按钮在 `1180,742,96,32`。\n\n用选择器直接命中就能点：\n\n```json\n{ "selector": "#save" }\n```',
+  },
+  {
+    kind: 'user',
+    text: '',
+    images: [{
+      attachmentId: `sha256:${'b'.repeat(64)}`,
+      mediaType: 'image/png',
+      bytes: 98304,
+      width: 1200,
+      height: 630,
+      name: 'after.png',
+    }],
+  },
+  { kind: 'assistant', text: '这次点到了，弹窗已经出来。' },
+]
 
 const DEFAULT_MESSAGES = [
   { kind: 'user', text: '帮我看看这个页面为什么点不动保存按钮' },
@@ -602,12 +662,120 @@ function chromeStub(port, state, scenario) {
 }
 
 /**
+ * Build a PNG standing in for a picture the reader sent.
+ *
+ * Generated at the **declared dimensions** rather than as a small image scaled
+ * up. That is not cosmetic: the browser lays out an `<img>` from its intrinsic
+ * size and the reference's `width`/`height` attributes together, so a 32x60 file
+ * declared as 760x1440 renders differently from a real 760x1440 one — the
+ * thumbnail would look right for the wrong reason, and any sizing defect would
+ * hide behind the fixture.
+ *
+ * A smooth gradient is used because it deflates to ~27 KB at 760x1440: a real
+ * screenshot is ~500 KB, which is far too much to hold in a source file, and
+ * repeating one would trade a sizing lie for a size lie.
+ *
+ * The id picks the hue, so two pictures in one transcript are visibly different
+ * images — otherwise "both drawn" and "one drawn twice" look identical, which is
+ * exactly the confusion the row-key test exists to catch.
+ *
+ * @param {string} attachmentId - The id the panel asked for.
+ * @param {{ width: number, height: number }} size - The dimensions to encode.
+ * @returns {Buffer} PNG bytes.
+ */
+function mockImage(attachmentId, size) {
+  const { width, height } = size
+  const seed = attachmentId.charCodeAt(attachmentId.length - 1) % 3
+
+  // Raw scanlines: one filter byte then RGB triples, which is what zlib gets.
+  const raw = Buffer.alloc(height * (1 + width * 3))
+  for (let y = 0; y < height; y += 1) {
+    const at = y * (1 + width * 3)
+    raw[at] = 0
+    for (let x = 0; x < width; x += 1) {
+      const t = (x / width) * 0.5 + (y / height) * 0.5
+      const shade = Math.round(40 + t * 120)
+      raw[at + 1 + x * 3] = seed === 0 ? shade + 60 : 40
+      raw[at + 2 + x * 3] = seed === 1 ? shade + 60 : 40
+      raw[at + 3 + x * 3] = seed === 2 ? shade + 60 : 90
+    }
+  }
+
+  const crcTable = []
+  for (let n = 0; n < 256; n += 1) {
+    let c = n
+    for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
+    crcTable[n] = c >>> 0
+  }
+  const crc32 = (buffer) => {
+    let c = 0xffffffff
+    for (const byte of buffer) c = crcTable[(c ^ byte) & 0xff] ^ (c >>> 8)
+    return (c ^ 0xffffffff) >>> 0
+  }
+  const chunk = (type, data) => {
+    const length = Buffer.alloc(4)
+    length.writeUInt32BE(data.length)
+    const body = Buffer.concat([Buffer.from(type, 'ascii'), data])
+    const crc = Buffer.alloc(4)
+    crc.writeUInt32BE(crc32(body))
+    return Buffer.concat([length, body, crc])
+  }
+
+  const header = Buffer.alloc(13)
+  header.writeUInt32BE(width, 0)
+  header.writeUInt32BE(height, 4)
+  header[8] = 8
+  header[9] = 2
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', header),
+    chunk('IDAT', deflateSync(raw)),
+    chunk('IEND', Buffer.alloc(0)),
+  ])
+}
+
+/**
+ * The size the fixture's own reference declares for one attachment.
+ *
+ * Read back from the messages the panel was served rather than passed in
+ * separately, so the bytes can never disagree with the `width`/`height` the
+ * panel is sizing its box from. A fixture that got those out of step would make
+ * the panel look wrong when the fixture was wrong.
+ *
+ * @param {object} scenario - The scenario being rendered.
+ * @param {string} attachmentId - The id being requested.
+ * @returns {{ width: number, height: number }} The declared dimensions.
+ */
+function declaredSize(scenario, attachmentId) {
+  const messages = scenario.messages ?? DEFAULT_MESSAGES
+  for (const row of messages) {
+    for (const image of row.images ?? []) {
+      if (image.attachmentId === attachmentId) {
+        return { width: image.width, height: image.height }
+      }
+    }
+  }
+  // A request for an id no message names is not a state the panel can reach;
+  // answering a small square keeps the route total rather than throwing here.
+  return { width: 320, height: 320 }
+}
+
+/**
  * Scenarios. Each names a state, plus anything it needs injected before the
  * panel's module runs.
  */
 const SCENARIOS = {
   /** The ordinary case: connected, one conversation, chips visible. */
   normal: {},
+  /**
+   * A picture the reader sent, with and without a caption.
+   *
+   * Both shapes are here on purpose. The captioned one is the ordinary case; the
+   * bare one is the case that produced **no row at all** before — the transcript
+   * simply skipped a message whose text was empty, so a reader who sent a
+   * screenshot with no words saw a turn that began with no question.
+   */
+  picture: { messages: PICTURE_MESSAGES },
   /** A page with a highlighted passage, so the selection chip is on screen. */
   selection: {
     hasSelection: true,

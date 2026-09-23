@@ -116,6 +116,58 @@ function oneLine(value, maximum) {
 }
 
 /**
+ * Collect the images a message content array carries.
+ *
+ * `textBlocks` deliberately drops everything that is not text, so a picture the
+ * reader sent was dropped with it: the panel showed a conversation the reader
+ * never had, and a message that was only a picture produced no row at all,
+ * because the caller skips an empty text.
+ *
+ * Only the *reference* is collected. The harness stores images
+ * content-addressed on disk — the object store on this machine holds 231 of
+ * them, median 99 KB and up to 3.6 MB — and one 60-row window of pictures would
+ * be ~84 MB of base64, re-sent on every poll. So a row names its images and the
+ * bytes are fetched one at a time, by a route that checks the id against the
+ * session it is being asked about.
+ *
+ * The harness defines an image block as `{ type: 'image', attachment: ref }`,
+ * and the ref is what carries `attachmentId`/`mediaType`/`width`/`height`. A
+ * block whose bytes are inline instead has no `attachment`, so it is skipped
+ * rather than half-read: there is no id to fetch it by later.
+ *
+ * @param {unknown} content - The message's content array.
+ * @returns {object[]} One entry per referenced image, in the order written.
+ */
+export function imageBlocks(content) {
+  if (!Array.isArray(content)) return []
+  const found = []
+  for (const block of content) {
+    if (typeof block !== 'object' || block === null) continue
+    if (block.type !== 'image') continue
+    const attachment = block.attachment
+    if (typeof attachment !== 'object' || attachment === null) continue
+    const attachmentId = asText(attachment.attachmentId)
+    if (attachmentId.length === 0) continue
+    // Dimensions and byte count come from the reference, so the panel can hold
+    // the right space before the bytes arrive. A missing one is left out rather
+    // than defaulted: a made-up aspect ratio would shift the transcript when the
+    // picture loads, which is the jump this is here to avoid.
+    const width = Number.isFinite(attachment.width) ? attachment.width : 0
+    const height = Number.isFinite(attachment.height) ? attachment.height : 0
+    const name = asText(attachment.name)
+    found.push({
+      attachmentId,
+      mediaType: asText(attachment.mediaType) || 'application/octet-stream',
+      bytes: Number.isFinite(attachment.bytes) ? attachment.bytes : 0,
+      width,
+      height,
+      ...(name.length > 0 ? { name } : {}),
+    })
+  }
+  return found
+}
+
+/**
  * Join the `text` blocks of a message content array.
  *
  * Only blocks that are actually text contribute. A block carrying no `text` —
@@ -454,8 +506,13 @@ export function describeEvents(events, api) {
         const source = data?.source
         if (source?.kind === 'user') {
           const text = textBlocks(data?.content)
-          if (text.length > 0) {
-            rows.push({ kind: 'user', text })
+          const images = imageBlocks(data?.content)
+          // A message that is only a picture is still a message. Skipping the
+          // row because its text is empty meant a reader who sent a screenshot
+          // with no caption saw nothing at all — the panel showed a turn that
+          // began with no question.
+          if (text.length > 0 || images.length > 0) {
+            rows.push({ kind: 'user', text, ...(images.length > 0 ? { images } : {}) })
             // The question belongs to the turn it arrived in; see
             // `questionByTurn`. Only a question the reader typed can be handed
             // back, so injected context — goal rounds, compaction notices, the
@@ -463,7 +520,9 @@ export function describeEvents(events, api) {
             // First question wins: it is the one the turn opened with. A second
             // queued message belongs to the same turn but did not start it, and
             // joining the two would fabricate a message nobody wrote.
-            if (openTurn !== null && !questionByTurn.has(openTurn)) questionByTurn.set(openTurn, text)
+            if (text.length > 0 && openTurn !== null && !questionByTurn.has(openTurn)) {
+              questionByTurn.set(openTurn, text)
+            }
           }
           break
         }
@@ -647,6 +706,7 @@ export function findRows(rows, query, maximum = SEARCH_MAX) {
  * @param {object|Function} [ports.sessions] - The session store, used only to ask whether a session is live.
  * @param {object|Function} [ports.commands] - The session command surface (`inspect`, `list`, `create`, `prompt`).
  * @param {object|Function} [ports.workspaces] - The workspace registry, for grouping and archive state.
+ * @param {object|Function} [ports.attachments] - The harness attachment store, for reading images a session refers to.
  * @returns {object} The chat surface.
  */
 export function createChat(ports) {
@@ -661,6 +721,7 @@ export function createChat(ports) {
   const sessionsOf = () => resolvePort(ports.sessions)
   const commandsOf = () => resolvePort(ports.commands)
   const workspacesOf = () => resolvePort(ports.workspaces)
+  const attachmentsOf = () => resolvePort(ports.attachments)
 
   /**
    * An abort signal that never aborts.
@@ -1113,7 +1174,55 @@ export function createChat(ports) {
     }
   }
 
-  return { listSessions, readMessages, searchMessages, createSession, send, cancel, readModels, selectModel, services }
+  /**
+   * Read one image a session's own log refers to.
+   *
+   * The panel needs the bytes one at a time rather than in the transcript: the
+   * object store here holds 231 images, median 99 KB and up to 3.6 MB, so a
+   * 60-row window of pictures would be ~84 MB of base64 — and the panel polls,
+   * so it would be that again every eight seconds.
+   *
+   * The id is checked against *this* session before any bytes are read. An
+   * `attachmentId` is documented as "opaque storage identifier; never a
+   * filesystem path or bearer URL", so the panel never learns a path — but an
+   * opaque id is still a capability, and without this check any id would fetch
+   * any image from the whole store, including ones belonging to conversations
+   * the reader has not opened. The harness's own remote route draws the same
+   * line (`referencedImage(source.events, attachmentId)`, then
+   * `ATTACHMENT_NOT_REFERENCED`).
+   *
+   * `readImage` verifies the stored bytes against the reference — sha256, byte
+   * length, media type, and both dimensions — so a corrupt or substituted
+   * object fails here rather than rendering as a broken picture.
+   *
+   * @param {string} sessionId - The session the image must belong to.
+   * @param {string} attachmentId - The id as it appeared in that session's log.
+   * @returns {Promise<{ data: Uint8Array, mediaType: string }>} The verified bytes.
+   */
+  const readImage = async (sessionId, attachmentId) => {
+    const replay = await readThrough(sessionId)
+    const ref = replay.messages
+      .flatMap((row) => row.images ?? [])
+      .find((image) => image.attachmentId === attachmentId)
+    if (ref === undefined) {
+      throw new Error('that image is not part of this session')
+    }
+    const store = attachmentsOf()
+    if (store === undefined || typeof store.readImage !== 'function') {
+      throw new Error('the harness does not expose an attachment store')
+    }
+    const stored = await store.readImage(ref, never())
+    const data = stored?.data
+    if (!(data instanceof Uint8Array) && !ArrayBuffer.isView(data)) {
+      throw new Error('the attachment store returned no image bytes')
+    }
+    return {
+      data: data instanceof Uint8Array ? data : new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
+      mediaType: asText(ref.mediaType) || 'application/octet-stream',
+    }
+  }
+
+  return { listSessions, readMessages, searchMessages, createSession, send, cancel, readModels, selectModel, readImage, services }
 }
 
 /**

@@ -34,6 +34,20 @@ export const BRIDGE_CONTEXT_PATH = '/browser-bridge/context'
 export const BRIDGE_CHAT_PATH = '/browser-bridge/chat'
 
 /**
+ * Path of the side panel's image route.
+ *
+ * `GET /browser-bridge/image?sessionId=…&attachmentId=…` answers the bytes of
+ * one image that session's own log refers to.
+ *
+ * Separate from the chat route rather than another action on it because the
+ * answer is not JSON: it is the image, with its own content type, so the panel
+ * can hand the URL straight to an `<img>` and let the browser cache, decode, and
+ * scale it. Folding base64 into the transcript instead would put ~84 MB through
+ * one 60-row window on this machine's own attachment store.
+ */
+export const BRIDGE_IMAGE_PATH = '/browser-bridge/image'
+
+/**
  * Default per-call budget for one browser action, in milliseconds. Long enough
  * for a slow page load, short enough that a wedged tab does not stall a turn.
  */

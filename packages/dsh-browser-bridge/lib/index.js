@@ -22,6 +22,7 @@ import {
   BRIDGE_CHAT_PATH,
   BRIDGE_CONTEXT_PATH,
   BRIDGE_HEALTH_PATH,
+  BRIDGE_IMAGE_PATH,
   BRIDGE_WS_PATH,
   policyLayers,
   resolveSettings,
@@ -351,6 +352,11 @@ export async function apply(ctx, _config) {
     // a person could continue.
     sessions: () => ctx.get?.('sessions'),
     workspaces: () => ctx.get?.('workspaceRegistry'),
+    // The same store the screenshot tool writes to, resolved per call for the
+    // same reason: a store captured at activation freezes `undefined` if it
+    // registers later, and then every picture in every transcript is missing
+    // while the store is running the whole time.
+    attachments: () => ctx.get?.('attachments'),
     // `prompt` is the controller's own Remote-exposed method — the same one the
     // web composer reaches — so a panel message travels that exact path, and
     // `create`/`list`/`inspect` are the controller's own readers, so the panel
@@ -654,6 +660,92 @@ export async function apply(ctx, _config) {
         })
       },
     }), 'browser-bridge: chat route')
+
+    /**
+     * Answer one image's bytes.
+     *
+     * The panel puts this URL directly in an `<img src>`, so the browser caches
+     * it, decodes it off the main thread, and scales it — none of which happens
+     * if the bytes travel inside the transcript JSON.
+     *
+     * Loopback-only, like every other route here: the panel is on this machine
+     * by definition, and an image out of the user's own conversations is not
+     * something a wider bind should expose.
+     *
+     * @param {import('node:http').IncomingMessage} req - The request.
+     * @param {import('node:http').ServerResponse} res - The response.
+     * @returns {Promise<void>} Resolves once the response is written.
+     */
+    const serveImageRoute = async (req, res) => {
+      /** @param {number} status @param {string} message */
+      const fail = (status, message) => {
+        res.writeHead(status, { 'content-type': 'text/plain; charset=utf-8' })
+        res.end(`${message}\n`)
+      }
+
+      if (!isLoopbackRequest(req)) {
+        fail(403, 'the bridge image surface is reachable only from this machine')
+        return
+      }
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        res.writeHead(405, { allow: 'GET, HEAD', 'content-type': 'text/plain; charset=utf-8' })
+        res.end('method not allowed\n')
+        return
+      }
+
+      const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+      const sessionId = url.searchParams.get('sessionId') ?? ''
+      const attachmentId = url.searchParams.get('attachmentId') ?? ''
+      if (sessionId.length === 0 || attachmentId.length === 0) {
+        fail(400, 'sessionId and attachmentId are both required')
+        return
+      }
+
+      let image
+      try {
+        image = await chat.readImage(sessionId, attachmentId)
+      } catch (error) {
+        // The id is not part of that session, or the store is unreachable, or
+        // the stored bytes failed verification. All three are "this URL does not
+        // name an image you can have", and none of them is a server fault.
+        fail(404, error.message)
+        return
+      }
+
+      res.writeHead(200, {
+        'content-type': image.mediaType,
+        // The id is a content address, so the bytes behind it cannot change.
+        // `immutable` is what lets the browser keep a decoded copy instead of
+        // re-fetching on every repaint of the transcript.
+        'cache-control': 'private, max-age=31536000, immutable',
+        'content-length': String(image.data.byteLength),
+        // Never let a stored image be treated as a document: an SVG served
+        // inline from the reader's own conversation would otherwise run with
+        // this origin's privileges.
+        'content-security-policy': "default-src 'none'; sandbox",
+        'x-content-type-options': 'nosniff',
+      })
+      if (req.method === 'HEAD') {
+        res.end()
+        return
+      }
+      res.end(Buffer.from(image.data))
+    }
+
+    webCtx.effect(() => webServer.register({
+      kind: 'exact',
+      path: BRIDGE_IMAGE_PATH,
+      handler: (req, res) => {
+        serveImageRoute(req, res).catch((error) => {
+          try {
+            res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' })
+            res.end(`${error.message}\n`)
+          } catch {
+            // The response is already out; nothing further can be reported.
+          }
+        })
+      },
+    }), 'browser-bridge: image route')
 
     webCtx.effect(() => webServer.register({
       kind: 'exact',

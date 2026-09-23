@@ -118,6 +118,13 @@ const SHOTS = [
     why: 'A turn that died offers the reader their question back — the one recourse the host can actually keep, because it cannot re-run a turn.',
   },
   {
+    file: 'picture.png',
+    scenario: 'picture',
+    scheme: 'dark',
+    locale: 'zh-CN',
+    why: 'Pictures the reader sent, drawn in the conversation. The bare one — no caption — used to produce no row at all, so the reply below it read as an answer to nothing.',
+  },
+  {
     file: 'host-down.png',
     scenario: 'hostDown',
     scheme: 'dark',

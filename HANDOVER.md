@@ -1,9 +1,9 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v85 已交付并入库。** 下一节就是最新的一轮改动；下面标 v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v85 那一段为止即可。
+> **当前状态：v86 已交付并入库。** 下一节就是最新的一轮改动；下面标 v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v86 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（619 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（624 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 > （真浏览器 e2e 那 4 条需要机器上有 Playwright Chromium 或 Chrome for Testing；
@@ -184,7 +184,167 @@
 > - `earlier.png` 与 `hostDown.png` **sha256 相同**：那张图画的是阻塞屏，
 >   「更早的内容」胶囊根本没出现在交付的图里。成因未定位。
 
-> ### v85：截图必须只取决于代码，不取决于拍它的时刻（本轮）
+> ### v86：读者发的图片在面板里根本不存在（本轮）
+>
+> #### 一、缺陷：一条只有图片的消息**连一行都不产生**
+>
+> `packages/dsh-browser-bridge/lib/chat.js` 的 `describeEvents` 里，`user/message`
+> 分支是 `const text = textBlocks(data?.content)` 然后 `if (text.length > 0)`。
+> 而 `textBlocks`（同文件 L129）**只取 `block.type === 'text'`**，其余静默跳过。
+>
+> 后果分两档，第二档更糟：
+> - 带说明的图片：气泡照常画，**图片消失**，读者看到一条只有文字的消息；
+> - **只有图片、没有文字**的消息：`text` 为空 → **整个 row 都不 push**，
+>   于是下面的回答看起来像在回答空气，而读者明明发过东西。
+>
+> 面板因此展示了一个**与真实对话不同的对话**。
+>
+> #### 二、形状与规模（先量再定架构，两个数决定方案）
+>
+> `image` block 的真实形状（`user/message` 的 `data.content[]` 直接含它）：
+>
+> ```json
+> {"type":"image","attachment":{"attachmentId":"sha256:bb6f4704…84eba",
+>  "mediaType":"image/png","bytes":112836,"width":760,"height":1440,"name":"v65-approval-zh.png"}}
+> ```
+>
+> **官方 seam**：`@deepseek-ai/dsh-attachment` 的 `AttachmentStore`
+> （`lib/types/index.d.ts:18`），cordis 注入名 `ctx.attachments`。读图正主是
+> `readImage(ref, signal?): Promise<StoredImageAttachment>`（L74-81，文档原文
+> 「Read one image and verify that bytes still match the recorded reference」），
+> 它**自己做 sha256 + 字节数 + mediaType + 宽高四项校验**，所以项目不必自己散列
+> 或解析 PNG 头。`attachmentId` 的文档原文是
+> 「Opaque storage identifier; never a filesystem path or bearer URL」。
+>
+> **★ 本项目早就持有这个 store**，只是**只写不读**：`lib/index.js:293` 的
+> `attachmentStore: () => ctx.get?.('attachments')` 供截图工具写入
+> （`lib/page-tools.js:563` 的 `admitPromptContent`）。读图就在同一个对象上。
+>
+> **规模实测**（`.tmp-run/probe-attachment-sizes.mjs`，扫真实附件库）：231 个对象、
+> min 404 B / p25 49.7 KB / **median 99.2 KB** / p75 146 KB / **p90 1.38 MB** /
+> **max 3.63 MB**，总量 78.9 MB；`over1MB: 25`。
+>
+> **★ 这否定了「把字节内联进行数据」这条最省事的路**：60 行窗口若全是图，
+> base64 膨胀后 **84.4 MB**——而面板**每 5 秒轮询一次**（`refreshGroups`），
+> 也就是每 5 秒 84 MB。所以形态只能是「行里带引用，字节按需单独取」。
+>
+> #### 三、授权：不透明 id 也是一张通行证
+>
+> 新端点 `GET /browser-bridge/image?sessionId=…&attachmentId=…`
+> （`lib/config.js` 的 `BRIDGE_IMAGE_PATH`）。
+>
+> **它先确认这张图确实被该会话引用过**，否则 404 且**根本不碰存储**
+> （`chat.js` 的 `readImage`：在 `readThrough(sessionId)` 的行里找这个 id）。
+> 官方远程通路划的是同一条线（`dsh-api-session-controller/lib/index.js:821`
+> 的 `referencedImage(source.events, attachmentId)`，未命中抛
+> `ATTACHMENT_NOT_REFERENCED`）。少了这道检查，任何 id 都能取到全部 231 张图，
+> 包括读者**没有打开过**的对话里的。
+>
+> **响应头里有两道不能省的防线**（`lib/index.js` 的 `serveImageRoute`）：
+> `x-content-type-options: nosniff` 与
+> `content-security-policy: default-src 'none'; sandbox`。存的可能是一张 SVG，
+> 而它来自读者自己的对话——没有这两条，它就是一个**在本源执行脚本**的内联文档。
+> 另加 `cache-control: private, max-age=31536000, immutable`，因为 id 是内容地址、
+> 字节不可能变，浏览器可以留着解码后的副本。
+>
+> loopback-only，与其余路由一致；`GET`/`HEAD` 之外的 405 带 `allow: GET, HEAD`。
+> 用 `readImage(ref, never())` —— 控制器的读取器会无条件调
+> `signal.throwIfAborted()`，传 `undefined` 会抛。
+>
+> #### 四、面板：两条**只能靠真实浏览器发现**的布局事实
+>
+> 渲染在 `extension/sidepanel.js` 的 `renderImages()`，样式在 `sidepanel.html`。
+>
+> **① `width: 100%` 在 `.shot` 上是循环依赖。** `.shots` 是
+> `align-items: flex-end` 的**列向** flex，子项收缩到内容宽度，所以百分比宽度
+> 相对的是一个**由内容决定大小**的容器——塌成图片的原始尺寸。
+> 实测第一版：`.shot` 的盒子是 **`w:2, h:2`**（图片原始大小），而不是 320。
+> 宽度必须来自镜像自身的 `width`/`height` 属性 + `max-width`。
+>
+> **② 760×1440 的手机截图在 380px 宽的面板里高 606px。** 一张图占掉 720px 窗口的
+> **84%**，三张就是三屏滚动、中间没有一句对话。所以缩略图封顶
+> `min(320px, 44vh)`，实测竖图 **167×317**、横图 **318×167**，都还看得清；
+> 点一下用**浏览器自己的看图器**打开原图（`chrome.tabs.create`）——
+> 它有缩放、平移、保存，自己写一个 lightbox 只是更差的复制品。
+>
+> 空间**在字节到达前**就按引用的 `width`/`height` 预留（`figure.style.aspectRatio`
+> 与 `img.width/height`），否则图片加载时会把对话往下顶。
+>
+> **`.shot` 必须有可见描边**：高对比度会丢弃 `box-shadow`，而缩略图的边界正是
+> 靠它——这也是 v75 那条规则（按**属性**枚举会分界的表面，不按 id）的继续。
+>
+> #### 五、行身份：`rowKey` 必须带上图片 id
+>
+> `rowKey` 原本是 `kind + 可见文本`，而**纯图片消息的文本是空串**——两条这样的
+> 消息会共用一个键。已加入 attachment id。
+>
+> **但这条改动是等价变异，已如实标注**：键只有两个消费者，两者都要求「该行能成为
+> 搜索命中」或「两行的 `data` 不同」——①`reconcileRows` 的节点配发还比较
+> `data`（整行 JSON，两条消息的 id 不同，data 就不同）；②`findHitKey`/
+> `restoreHitFocus` 只对搜索命中调用，而 `searchableText` 只收集
+> `text`/`name`/`summary`/`failure`，纯图片行返回**空串**。
+> 判据实验 `.tmp-run/probe-key-equivalence.mjs` 用**真实 matcher** 求证：
+> `textOfImageOnly: ""`、`hitsOnImageOnly: 0`、`captionRowIsSearchable: 1`。
+> 所以变异 `image-only-rows-share-a-key` **必须不红**；红了说明实现变了、判定要重做。
+>
+> #### 六、验证读数（已绿，不必重跑）
+>
+> - `npm test` → **624 passed, 0 failed, 0 skipped**（620 → 624；新增
+>   `packages/dsh-browser-bridge/test/image.test.js`，23 条）
+> - `npm run check:extension` → exit 0
+> - 变异一 `.tmp-run/mutate-images.mjs`：**真坏法 6/6 命中**，
+>   等价变异 1/1 **正确地不红**，`realMissed: []`、`restoredExactly: true`
+> - 变异二 `.tmp-run/mutate-image-route.mjs`：**8/8 命中**、`restoredExactly: true`
+>   （`no-loopback-check`、`no-required-params`、`errors-become-500`、`no-nosniff`、
+>   `no-csp-sandbox`、`no-immutable-cache`、`head-sends-the-body`、`post-allowed`）
+> - 真实浏览器（`tools/preview.mjs picture` + `.tmp-run/probe-picture-draw.js`）：
+>   `shotCount: 2`、`imgCount: 2`、`anyImageDecoded: true`、
+>   `naturalWidth: 760 / 1200`（**夹具按声明尺寸出图**，否则测出来的尺寸不代表真实
+>   行为）、`shotsWithoutImage: 0`
+> - 视觉：`.tmp-run/r26-picture4.png`（深色）、`r26-light.png`、`r26-fc.png`
+>   （高对比度下缩略图描边仍在）
+> - `entry.test.js` 的路由清单断言**被这次新增抓到**（`/browser-bridge/image`
+>   不在期望里），已更新——这条断言正是为「某条路由停止注册」而写的
+>
+> #### 七、★ 本轮自己犯的三个错（都记下来）
+>
+> 1. **`callRoute` 少了等一个宏任务。** 注册的 handler 是**同步**的，把真正的工作
+>    派发到一个只 `.catch()` 的 promise 上——所以从 handler 返回**不代表响应已经写完**。
+>    第一版每个路由测试都读到 `status: null`，于是**所有否定断言都因为错误的原因
+>    通过**（403/400/404 全都"对"了）。已加 `await new Promise(r => setTimeout(r, 0))`。
+>    **这是本轮最危险的一处**：一批断言全绿而它们什么都没验证。
+> 2. **夹具出了一张 32×60 的图，却声明成 760×1440。** 浏览器按 `<img>` 的
+>    固有尺寸**和**声明的 `width`/`height` 一起布局，所以小图放大与真尺寸图
+>    渲染不同——缩略图会**因为错误的原因**看起来正确，任何尺寸缺陷都藏在夹具后面。
+>    已改为 `declaredSize(scenario, id)` 从夹具自己的引用里读回尺寸再出图，
+>    **字节与声明不可能不一致**。渐变在真实尺寸下 deflate 后只有 27 KB，所以
+>    按真实尺寸生成并不贵（真截图约 500 KB，那才不能进源码）。
+> 3. **`require` 写在 ES module 里。** `.tmp-run/probe-attachment-sizes.mjs` 第一版
+>    用了 `require('node:fs')`，直接 `ReferenceError`。顶层 import。
+>
+> #### 八、留给下一轮（本轮已查清，未做）
+>
+> - **`tool/result` 里的图片**（真实日志里 252 次引用）与 `tool/ptc-dispatch`
+>   （60 次，工具名 `read_image` 58 次）目前**仍不显示**。它们是**工具产出的**图，
+>   不是读者发的，语义不同（`browser_screenshot` 的截图落在这一支），
+>   所以值得单独一轮，而不该顺手塞进 `renderRow` 的 user 分支。
+> - 真实日志里 `user/message` 含 image 的 71 个事件中，**只有 11 个**是
+>   `source.kind === 'user'`（真人发的），另外 60 个是 `source.kind === 'plugin'`。
+>   本轮只处理真人那一支（`chat.js:455` 的门控），与既有语义一致。
+> - `agent/inbox/spliced`（75 次引用）与 `user/message` 是否为同一条消息的投递副本
+>   未查证。
+>
+> #### 九、本轮新增的探针与工具（`.tmp-run/`，被 gitignore）
+>
+> `probe-attachment-sizes.mjs`、`probe-image-blocks.mjs`（**含一个死循环 bug 的
+> 修正**：帧边界必须从 `index + 4` 起搜，否则首帧在 offset 0 时 `indexOf` 又返回 0、
+> 索引不前进）、`probe-key-equivalence.mjs`、`probe-picture-draw.js`、
+> `probe-png-size.mjs`、`why-image-route.mjs`、`mutate-images.mjs`、
+> `mutate-image-route.mjs`。截图 `r26-*.png`。
+>
+> `tools/preview.mjs` 新增 `picture` 场景与 `mockImage()` / `declaredSize()`。
+
+> ### v85：截图必须只取决于代码，不取决于拍它的时刻
 >
 > #### 一、缺陷：同一份代码渲染出**不同的图**
 >

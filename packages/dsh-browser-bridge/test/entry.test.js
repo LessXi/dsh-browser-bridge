@@ -135,14 +135,15 @@ test('the entry point applies, and registers every route and tool', async (t) =>
 
   await plugin.apply(ctx, undefined)
 
-  // The four browser-facing routes plus the token route. Asserted as a set so a
-  // route that stops being registered fails here rather than in production.
+  // The browser-facing routes plus the token route. Asserted as a set so a route
+  // that stops being registered fails here rather than in production.
   assert.deepEqual([...routes.keys()].sort(), [
     '/api/browser-bridge/token',
     '/api/browser-bridge/ws',
     '/browser-bridge/chat',
     '/browser-bridge/context',
     '/browser-bridge/health',
+    '/browser-bridge/image',
   ])
   assert.equal(tools.length, 25, `expected 25 tools, got ${tools.length}`)
   assert.ok(routes.has('/api/browser-bridge/ws'), 'and the upgrade route is one of them')

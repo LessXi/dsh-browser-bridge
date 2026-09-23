@@ -1312,6 +1312,77 @@ function renderContexts() {
 }
 
 /**
+ * Draw the pictures one message carried.
+ *
+ * The bytes come from the host one image at a time rather than inside the
+ * transcript. This machine's own attachment store holds 231 images, median
+ * 99 KB and up to 3.6 MB, so a window of pictures inlined as base64 would be
+ * ~84 MB per poll — and the panel polls. A URL instead lets the browser fetch,
+ * decode and scale each one once, and then keep it: the id is a content
+ * address, so the bytes behind it cannot change.
+ *
+ * Every image gets its own box before the bytes arrive, sized from the width
+ * and height the host read off the reference. Without that the picture loads
+ * into a zero-height space and shoves the transcript down as it arrives, which
+ * is the jump that makes an image-heavy conversation unreadable while it
+ * settles.
+ *
+ * @param {object[]} images - The image references the host sent with the row.
+ * @returns {HTMLElement} The group.
+ */
+function renderImages(images) {
+  const group = document.createElement('div')
+  group.className = 'shots'
+  for (const image of images) {
+    const figure = document.createElement('figure')
+    figure.className = 'shot'
+    const img = document.createElement('img')
+    const url = `http://127.0.0.1:${harnessPort}/browser-bridge/image`
+      + `?sessionId=${encodeURIComponent(currentSessionId)}`
+      + `&attachmentId=${encodeURIComponent(image.attachmentId)}`
+    img.src = url
+    // The reader's own filename is the only alt text that says anything true
+    // here: the panel does not know what the picture shows.
+    img.alt = typeof image.name === 'string' && image.name.length > 0 ? image.name : t('image.alt')
+    img.loading = 'lazy'
+    img.decoding = 'async'
+    // The picture is capped to a thumbnail so one screenshot does not fill the
+    // panel, so there has to be a way to see the whole thing. Opening the URL in
+    // a tab hands that job to the browser's own image viewer, which already has
+    // zoom, pan and save — a lightbox here would be a worse copy of it. The
+    // thumbnail is a link, not a button, because it is exactly that: a URL.
+    img.className = 'shot-open'
+    img.title = t('image.open')
+    img.addEventListener('click', () => {
+      chrome.tabs.create({ url }).catch(() => {})
+    })
+    // The reader's own filename is the only alt text that says anything true
+    // here: the panel does not know what the picture shows.
+    img.alt = typeof image.name === 'string' && image.name.length > 0 ? image.name : t('image.alt')
+    img.loading = 'lazy'
+    img.decoding = 'async'
+    // Reserve the space from the reference's own numbers, and only when both
+    // are known. The ratio is clamped so one very tall screenshot cannot push
+    // the whole conversation off the screen.
+    if (image.width > 0 && image.height > 0) {
+      const ratio = Math.min(4, Math.max(0.25, image.width / image.height))
+      figure.style.aspectRatio = String(ratio)
+      img.width = image.width
+      img.height = image.height
+    }
+    // A picture that will not load must say so where it would have been. An
+    // empty box reads as a message that never had one.
+    img.addEventListener('error', () => {
+      figure.classList.add('shot-failed')
+      figure.replaceChildren(document.createTextNode(t('image.unavailable')))
+    })
+    figure.append(img)
+    group.append(figure)
+  }
+  return group
+}
+
+/**
  * A stable name for one transcript row, for remembering what the reader opened.
  *
  * The open sets used to be keyed by **array position**, and a position is not an
@@ -1344,7 +1415,11 @@ function rowKey(row) {
     if (typeof row.callId === 'string' && row.callId.length > 0) return `tool\u0000${row.callId}`
     return `tool\u0000${row.name ?? ''}\u0000${row.summary ?? ''}`
   }
-  return `${row.kind}\u0000${typeof row.text === 'string' ? row.text : ''}`
+  // A message that is only a picture has no text, so two of them in a row would
+  // otherwise be the same key. The ids are what tell them apart, and a content
+  // address is unique by construction.
+  const images = Array.isArray(row.images) ? row.images.map((image) => image.attachmentId).join('\u0001') : ''
+  return `${row.kind}\u0000${typeof row.text === 'string' ? row.text : ''}\u0000${images}`
 }
 
 /**
@@ -1359,10 +1434,17 @@ function renderRow(row) {
     const wrapper = document.createElement('div')
     wrapper.className = 'row'
     wrapper.dataset.kind = 'user'
-    const bubble = document.createElement('div')
-    bubble.className = 'bubble'
-    bubble.textContent = row.text
-    wrapper.append(bubble)
+    const images = Array.isArray(row.images) ? row.images : []
+    // Only draw the bubble when there is something to put in it. A picture sent
+    // with no caption would otherwise get a filled, empty pill above it — a
+    // message-shaped hole that says nothing.
+    if (typeof row.text === 'string' && row.text.length > 0) {
+      const bubble = document.createElement('div')
+      bubble.className = 'bubble'
+      bubble.textContent = row.text
+      wrapper.append(bubble)
+    }
+    if (images.length > 0) wrapper.append(renderImages(images))
     return wrapper
   }
 

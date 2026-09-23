@@ -382,6 +382,24 @@ async function pollHealth() {
   await settle()
 }
 
+/**
+ * Run the panel's transcript poll once, the way its interval would.
+ *
+ * `settle` only drains microtasks, so a test that sets `host.messages` and calls
+ * `settle` is still looking at the previous fixture: nothing has asked the host
+ * for the new rows. The clocks are armed in `start` in the order groups, health,
+ * tabs, transcript.
+ *
+ * @returns {Promise<void>} Resolves once the re-read has settled.
+ */
+async function readTranscript() {
+  if (typeof clocks[3] !== 'function') {
+    throw new Error(`transcript clock missing: captured ${startupClocks}; start said "${startupToast}"`)
+  }
+  await clocks[3]()
+  await settle()
+}
+
 /** Let the panel's promise chains run to a standstill. */
 async function settle(turns = 40) {
   for (let index = 0; index < turns; index += 1) await Promise.resolve()
@@ -4207,6 +4225,71 @@ test('Escape closes the find bar and hands focus back', async () => {
     registry.get('find-open'),
     'and focus must go back to the control that opened it, not to the body',
   )
+})
+
+test('a picture the reader sent is drawn, and its bytes are fetched by URL', async () => {
+  await settleToIdle()
+  const id = `sha256:${'c'.repeat(64)}`
+  host.messages = [
+    {
+      kind: 'user',
+      text: '看这张图',
+      images: [{ attachmentId: id, mediaType: 'image/png', bytes: 4096, width: 760, height: 1440, name: 'shot.png' }],
+    },
+    { kind: 'assistant', text: '看到了。' },
+  ]
+  await readTranscript()
+
+  const shots = registry.get('transcript').querySelectorAll('.shot')
+  assert.equal(shots.length, 1, 'the picture is on screen')
+  const img = shots[0].querySelectorAll('img')[0]
+  assert.ok(img !== undefined, 'drawn as a real image element')
+  // The bytes travel by URL rather than inside the transcript: this machine's
+  // own store holds images up to 3.6 MB, and the panel polls.
+  assert.match(img.getAttribute('src'), /\/browser-bridge\/image\?/, 'fetched from the image route')
+  assert.match(img.getAttribute('src'), new RegExp(encodeURIComponent(id).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), 'naming this exact attachment')
+  assert.equal(img.getAttribute('alt'), 'shot.png', 'the reader’s own filename is the alt text')
+  // Space is reserved before the bytes arrive, from the reference's own numbers,
+  // or the transcript jumps when the picture loads.
+  assert.equal(shots[0].style.aspectRatio, String(760 / 1440), 'the box is sized from the reference')
+})
+
+test('a message that is only a picture draws no empty bubble', async () => {
+  await settleToIdle()
+  const id = `sha256:${'d'.repeat(64)}`
+  host.messages = [
+    { kind: 'user', text: '', images: [{ attachmentId: id, mediaType: 'image/png', bytes: 10, width: 100, height: 50 }] },
+  ]
+  await readTranscript()
+
+  const transcript = registry.get('transcript')
+  assert.equal(transcript.querySelectorAll('.shot').length, 1, 'the picture is there')
+  assert.equal(
+    transcript.querySelectorAll('.bubble').length,
+    0,
+    'and no message-shaped hole above it: a captionless picture has nothing to put in a bubble',
+  )
+})
+
+test('two picture-only messages do not collide as one row', async () => {
+  // `rowKey` used to be the visible text alone, and a picture-only message has
+  // none — so two of them would share a key, and the open sets (which are keyed
+  // by it) would treat them as the same row.
+  await settleToIdle()
+  const first = `sha256:${'e'.repeat(64)}`
+  const second = `sha256:${'f'.repeat(64)}`
+  host.messages = [
+    { kind: 'user', text: '', images: [{ attachmentId: first, mediaType: 'image/png', bytes: 10, width: 10, height: 10 }] },
+    { kind: 'assistant', text: 'ok' },
+    { kind: 'user', text: '', images: [{ attachmentId: second, mediaType: 'image/png', bytes: 10, width: 10, height: 10 }] },
+  ]
+  await readTranscript()
+
+  const transcript = registry.get('transcript')
+  const shots = transcript.querySelectorAll('.shot')
+  assert.equal(shots.length, 2, 'both messages are on screen')
+  const sources = shots.map((shot) => shot.querySelectorAll('img')[0].getAttribute('src'))
+  assert.notEqual(sources[0], sources[1], 'and they are two different pictures, not one drawn twice')
 })
 
 test('reopening the panel puts the draft back in the composer', async () => {

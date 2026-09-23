@@ -121,6 +121,20 @@
 搜索的字，不是一句要读的话。**右：一轮正在跑。** 等待行 `思考中…`，发送键变成停止方块。
 
 <p align="center">
+  <img src="docs/screenshots/picture.png" width="330" alt="读者发来的图片画在对话里：带说明的和不带说明的都在">
+</p>
+
+**你发的截图就在对话里。** 面板此前把图片整个丢掉了：它只收集文字块，所以一条「只有图片、
+没有文字」的消息**连一行都不产生**——下面的回答看起来像在回答空气。现在图片画在消息下面，
+带不带说明都行，点一下用浏览器自己的看图器打开原图。
+
+图片**不随对话内容一起传输**。宿主把图片按内容寻址存在磁盘上，这台机器上最长的会话里有
+231 张，中位数 99 KB，最大 3.6 MB；面板一次只拿 60 行、每 5 秒轮询一次，把图片内联进
+JSON 意味着**每次轮询约 84 MB**。所以面板拿到的是引用，字节走单独的端点，由浏览器自己
+缓存、解码、缩放。那个端点每次都要先确认**这张图确实被这个会话引用过**——不透明 id 也是
+一张通行证，少了这道检查，任何 id 都能取到全部图片，包括你没打开过的对话里的。
+
+<p align="center">
   <img src="docs/screenshots/failure-recourse.png" width="330" alt="回合失败：一句话说明白，并把问题还给读者">
 </p>
 
@@ -403,7 +417,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 621 条
+npm test                          # 全部 624 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -493,7 +507,7 @@ Chrome for Testing 都装进带版本号的目录，写死路径会在一台机�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 621 条
+npm test                 # 624 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -579,6 +593,8 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 | 跳到命中就**看得见那个词**（v79） | 描边只回答「哪一行」。命中落在折叠的推理行或失败的工具行里时，读者被告知「2/3」而屏幕上只有一行「思考中 ⌄」——实测**三处命中里有两处是这样**（`blindCount: 2/3`）。现在会把藏着命中的那一行展开（词已可见的行一律不动），并把**匹配的字符本身**用 CSS Custom Highlight API 标出来（`::highlight(dsh-needle)`，不改 DOM）。`findHitKey` 原先拿**未钳制**的 `anchorEnd` 做减法，而宿主会把 `end` 钳到会话长度，于是命中在末尾几行时下标为负、**那一处永远找不到**；短会话整个就是「末尾几行」 |
 | 键盘能进到对话里并滚动它（v80） | 用**真实按键**（CDP `Input.dispatchKeyEvent`，不是合成事件）实测：Tab 从输入框出发经 5 个头部控件后，落点是「窗口内最旧那一行的复制按钮」，且落上去瞬间 `scrollTop` 从 **4521 变成 0**——读者被从最新一条甩到最旧一条。没有任何控件的行（用户提问、成功的工具行）**根本够不到**（`unreachableRows: 2/4`）。现在 `#transcript` 与 `#history` 都是 `tabindex="0"`：Tab 直接落在滚动容器上、`scrollTop` 守恒，PageDown/PageUp 真正滚动（4521→4586→4590→4322），并有 `aria-label` 与 `outline: 2px solid Highlight` 的焦点环（`Highlight` 而非 `--accent`，因为高对比度只保留前者）。另补 `Ctrl+F` 打开查找栏（此前**什么都不做**）、`Escape` 关闭它 |
 | 读屏器能在消息之间移动（v81） | 用 CDP `Accessibility.getFullAXTree` 读平台**自己算出来**的无障碍树：`#transcript` 原先暴露 **72 个节点、深度 7，但 `structure=false`、可导航 role 为空**——内容全都在，却没有一处可导航，读屏用户只能从头读到尾。现在 `main` 地标 + `role="list"` + 每行 `listitem`，实测 `structure=true`、`navigable:["list","listitem"]`。两个**只能靠量发现**的坑：显式 role 会**覆盖**元素自己的隐式 role（`role="list"` 写在 `<main>` 上会让 `main` 直接消失，等于用「跳到主内容」换列表结构），而 `role="listitem"` 写在会话按钮上会让它**不再是按钮**（实测从 `button "… 2m ago"` 变成裸 `listitem`）——所以地标上移、item 与控制分成两个元素 |
+| `GET /browser-bridge/image`（v86） | 按 `sessionId` + `attachmentId` 返回一张图的字节，`content-type` 用引用里记的类型。**先确认这张图被该会话引用过**，否则 404 且根本不碰存储——不透明 id 也是通行证，少了这道检查任何 id 都能取到全部图。响应带 `nosniff` 与 `default-src 'none'; sandbox`：存下来的一张 SVG 否则会作为文档在本源**执行脚本**。`cache-control: … immutable`，因为 id 是内容地址、字节不会变。图片**不内联进对话**：本机图片库 231 张、中位数 99 KB、最大 3.6 MB，60 行窗口若内联 base64 达 **84.4 MB**，而面板每 5 秒轮询一次 |
+| 读者发的图片画在对话里（v86） | `user/message` 的 block 类型实测 `text` 之外还有 `image`，而 `textBlocks` 只取 `text`——于是**只有图片、没有文字的消息连一行都不产生**（`if (text.length > 0)`），下面的回答看起来像在回答空气。现在图片引用随行返回，字节按需取。两条**只能靠真实浏览器发现**的布局事实：①`.shots` 是 `align-items: flex-end` 的列向 flex，子项会收缩到内容宽度，所以 `.shot` 上用 `width: 100%` 是**循环依赖**，会塌成图片的原始尺寸（实测 `w:2` 而不是 320）——宽度必须来自镜像自身的 `width`/`height`；②760×1440 的手机截图在 380px 宽的面板里**高 606px**，一张图占掉 84% 的窗口，三张就是三屏滚动，所以缩略图封顶 320px/44vh，点开用浏览器自己的看图器看原图 |
 
 最后一步在探针上报错 `llm-deepseek: no API key for provider route "deepseek-official"`——
 **这是探针进程拿不到凭据，不是插件缺陷**。已核对 `$DSH_HOME/.credentials.yaml`：里面只有一条

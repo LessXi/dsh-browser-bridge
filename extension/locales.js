@@ -127,6 +127,12 @@ export const zh = Object.freeze({
   'row.context': '已附带',
   'row.working': '思考中…',
 
+  // A picture the reader sent. The alt text is used only when the message
+  // carries no filename of its own.
+  'image.alt': '图片',
+  'image.open': '点击查看原图',
+  'image.unavailable': '图片无法显示',
+
   // Relative time, for a session row's trailing label.
   'time.now': '刚刚',
   'time.minutes': '{count} 分钟前',
@@ -270,6 +276,10 @@ export const en = Object.freeze({
   'row.reasoning': 'Thinking',
   'row.context': 'Attached',
   'row.working': 'Thinking…',
+
+  'image.alt': 'Image',
+  'image.open': 'Click to open the original',
+  'image.unavailable': 'Image unavailable',
 
   'time.now': 'just now',
   'time.minutes': '{count}m ago',
