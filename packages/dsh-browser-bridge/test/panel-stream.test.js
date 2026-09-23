@@ -82,6 +82,23 @@ const host = {
   reads: [],
   /** Every `POST {action:'search'}` body, in order. */
   searches: [],
+  /**
+   * How many requests have reached the chat endpoint, counted at the door.
+   *
+   * The polls are the subject of their own tests: whether a tick starts a
+   * second request while the first is unanswered is exactly the question, so it
+   * has to be counted on arrival rather than inferred from what the panel drew.
+   */
+  chatRequests: 0,
+  /**
+   * A promise the next chat request waits on before it answers.
+   *
+   * Same purpose as `holdSearch`, for the polls: it takes the timing of an
+   * answer into the test's hands so "the host is slower than the interval" is a
+   * fact the test controls rather than a race it hopes for. `null` answers
+   * immediately.
+   */
+  holdNextChat: null,
   /** Whether the host says rows exist beyond the window it returned. */
   more: false,
   /**
@@ -298,6 +315,34 @@ globalThis.fetch = async (url, options = {}) => {
   // untestable and the surface written for it had no coverage at all.
   if (host.down === true) throw new TypeError('Failed to fetch')
   if (address.includes('/browser-bridge/chat')) {
+    host.chatRequests += 1
+    // Counted before the answer, and gated before it too: a poll's overlapping
+    // request is the thing under test, so it has to be observed on arrival
+    // rather than after a response the test itself is holding open.
+    if (host.holdNextChat !== null) {
+      const gate = host.holdNextChat
+      host.holdNextChat = null
+      // The gate has to respect the request's signal, the way `fetch` does. A
+      // plain `await gate` models a promise that ignores cancellation, which is
+      // not a state a real request can be in — and the difference is exactly
+      // what a timeout test is asking about: if the stub cannot be aborted, a
+      // working timeout looks like a timeout that never fired.
+      await new Promise((resolve, reject) => {
+        const signal = options.signal
+        if (signal === undefined || signal === null) {
+          gate.then(resolve, reject)
+          return
+        }
+        if (signal.aborted) {
+          reject(new DOMException('The operation was aborted.', 'AbortError'))
+          return
+        }
+        signal.addEventListener('abort', () => {
+          reject(new DOMException('The operation was aborted.', 'AbortError'))
+        })
+        gate.then(resolve, reject)
+      })
+    }
     if ((options.method ?? 'GET') === 'GET') return respond(groupsPayload())
     const body = options.body === undefined ? {} : JSON.parse(options.body)
     if (body.action === 'messages') {
@@ -5079,5 +5124,240 @@ test('an empty picker is not a menu, because it holds no choices', async (t) => 
     'a list with no items must not claim to be a menu',
   )
   assert.match(menu.textContent, /no model service in this profile/, 'and it must still say why')
+})
+
+test('a slow host does not make the polls stack up on each other', async () => {
+  // `setInterval` does not wait for its callback, and every poll awaits a
+  // request. A host slower than the interval therefore used to build a stack
+  // that never came back down: measured against a host answering in 12s, five
+  // requests were in flight at once and all five were still pending when the
+  // window closed.
+  //
+  // This test drives the intervals by hand, which is what makes the overlap
+  // reachable at all — with real timers the assertion would be a race.
+  await settleToIdle()
+  const before = host.chatRequests
+  let resolveHeld
+  const held = new Promise((resolve) => { resolveHeld = resolve })
+  host.holdNextChat = held
+
+  // Three ticks in a row, with the first request deliberately unresolved.
+  const groups = clocks[0]
+  groups()
+  await settle()
+  groups()
+  groups()
+  await settle()
+
+  const started = host.chatRequests - before
+  assert.equal(
+    started,
+    1,
+    'while one poll is unanswered the next tick must not start another, '
+      + `but the panel sent ${started} requests`,
+  )
+
+  // And the guard has to let go once the answer lands, or the poll would be
+  // dead from here on — the failure mode a bare `if (running) return` has.
+  //
+  // Released and drained through a whole macrotask, not just the microtask
+  // queue: the held request has to travel stub → bridge → `refreshGroups` →
+  // `.finally` before the lease is actually clear, and `settle` alone leaves it
+  // still held, which would make the next tick look skipped for the wrong
+  // reason and pass this assertion on a broken guard.
+  resolveHeld()
+  await settleMacrotask()
+  await settle()
+  const afterRelease = host.chatRequests
+  groups()
+  await settle()
+  assert.ok(
+    host.chatRequests > afterRelease,
+    'once the held answer arrives the poll must run again, not stay stopped',
+  )
+  host.holdNextChat = null
+})
+
+test('one request that never comes back does not stop the poll for good', async () => {
+  // The lease in `runOneAtATime` exists for this, and it is not hypothetical:
+  // `bridge()` sets no timeout of its own, so a request against a suspended host
+  // never settles. With a bare flag the first such request owns the slot forever
+  // and that poll stops running — measured over 22 seconds, exactly one request
+  // was sent and no second one ever followed.
+  //
+  // Time is moved rather than waited: the lease is 30s and the request timeout
+  // is 20s, so a real-time test would take a minute to say one thing.
+  await settleToIdle()
+  const before = host.chatRequests
+  host.holdNextChat = new Promise(() => {})
+
+  const groups = clocks[0]
+  groups()
+  await settle()
+  assert.equal(host.chatRequests - before, 1, 'the first tick is held')
+
+  // Another tick inside the lease window is skipped, which is the pile-up guard.
+  groups()
+  await settle()
+  assert.equal(host.chatRequests - before, 1, 'a tick inside the lease is skipped')
+
+  // Past the lease the slot is taken back. `Date.now` is the clock the guard
+  // reads, so it is the one moved here.
+  const realNow = Date.now
+  Date.now = () => realNow() + 31_000
+  try {
+    host.holdNextChat = null
+    groups()
+    await settle()
+  } finally {
+    Date.now = realNow
+  }
+  assert.ok(
+    host.chatRequests - before > 1,
+    'past the lease the poll must be allowed through again, '
+      + 'otherwise a host that never answers silently kills it',
+  )
+})
+
+test('a late answer does not clear a lease that a newer poll now owns', async () => {
+  // `runOneAtATime` clears the slot in `finally`, and `finally` runs whenever
+  // the request settles — including long after a later tick took the lease over.
+  // Clearing unconditionally there deletes the *newer* run's lease, and the tick
+  // after that starts a second request while the newer one is still in flight:
+  // the pile-up this guard exists to prevent, let back in from underneath.
+  //
+  // Two requests are held at once here, which is what makes the two leases
+  // distinguishable at all — with one held request there is only ever one lease
+  // and both implementations behave the same, which is why this went unnoticed.
+  await settleToIdle()
+  const before = host.chatRequests
+  const groups = clocks[0]
+
+  let releaseFirst
+  host.holdNextChat = new Promise((resolve) => { releaseFirst = resolve })
+  groups()
+  await settle()
+  assert.equal(host.chatRequests - before, 1, 'the first tick is held')
+
+  // Move past the first lease so a second run is allowed to start.
+  const realNow = Date.now
+  Date.now = () => realNow() + 31_000
+  let releaseSecond
+  host.holdNextChat = new Promise((resolve) => { releaseSecond = resolve })
+  groups()
+  await settle()
+  const afterSecond = host.chatRequests
+  assert.equal(afterSecond - before, 2, 'past the lease a second tick is let through')
+
+  // Now the first answer arrives, late, while the second is still unanswered.
+  releaseFirst()
+  await settleMacrotask()
+  await settle()
+
+  // A third tick must still be refused: the second request owns the lease now.
+  host.holdNextChat = null
+  groups()
+  await settle()
+  assert.equal(
+    host.chatRequests,
+    afterSecond,
+    'the late answer must not release a lease the newer poll is holding — '
+      + `the panel sent ${host.chatRequests - afterSecond} extra request(s)`,
+  )
+
+  Date.now = realNow
+  releaseSecond()
+  await settleMacrotask()
+  await settle()
+})
+
+test('a request that never lands still ends, so its slot is not held forever', async () => {
+  // Two mechanisms can free the slot and they overlap, which is deliberate but
+  // makes each one individually invisible to a test that only watches the poll
+  // recover: the lease alone would do it at 30s, so "did the request time out?"
+  // cannot be answered by waiting for recovery.
+  //
+  // The window where they differ is between the two thresholds. At 25s the lease
+  // is still held, so recovery there can only have come from the request itself
+  // ending — which is what `REQUEST_TIMEOUT_MS` is for.
+  await settleToIdle()
+  const before = host.chatRequests
+  const groups = clocks[0]
+
+  // Shorten the real timeout rather than changing the panel: `AbortSignal.timeout`
+  // is what the panel calls, and the behaviour under test is what happens when it
+  // fires. Time itself is what is being compressed, not the code path.
+  const realTimeout = AbortSignal.timeout
+  AbortSignal.timeout = (ms) => realTimeout(Math.min(ms, 40))
+  const realNow = Date.now
+  let release
+  host.holdNextChat = new Promise((resolve) => { release = resolve })
+  try {
+    groups()
+    await settle()
+    assert.equal(host.chatRequests - before, 1, 'the first tick is held')
+
+    // Let the request's timeout actually fire. A macrotask alone is not enough:
+    // the abort has to travel through the fetch stub's rejection, `bridge`'s
+    // catch and `runOneAtATime`'s `finally`, so this waits on real time and then
+    // drains what that produced.
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    await settle()
+
+    Date.now = () => realNow() + 25_000
+
+    const afterTimeout = host.chatRequests
+    host.holdNextChat = null
+    groups()
+    await settle()
+    assert.equal(
+      host.chatRequests - afterTimeout,
+      1,
+      'a request that timed out must free its slot before the lease expires, '
+        + 'otherwise a hung host holds it for the full lease on every attempt',
+    )
+    release()
+  } finally {
+    AbortSignal.timeout = realTimeout
+    Date.now = realNow
+    host.holdNextChat = null
+  }
+})
+
+test('a panel nobody is looking at stops asking, and asks again when looked at', async () => {
+  // Four timers at 5s and 8s is roughly 62,640 requests a day, and measured, the
+  // panel sent them at the same rate while hidden as while watched — 40/minute
+  // against 50. A side panel left open in a background window is an ordinary
+  // thing to do, and this is what kept a core awake to redraw something nobody
+  // could see.
+  await settleToIdle()
+  const before = host.chatRequests
+  const groups = clocks[0]
+
+  // Which state the document reports is the whole input to this decision, so the
+  // test drives it directly rather than pretending a window was minimised.
+  document.visibilityState = 'hidden'
+  try {
+    groups()
+    await settle()
+    assert.equal(
+      host.chatRequests - before,
+      0,
+      'a hidden panel must not spend a request on a question nobody is looking at',
+    )
+
+    // And it must not be a one-way door: returning to visibility is when the
+    // stale answers get replaced, so the skip has to lift.
+    document.visibilityState = 'visible'
+    document.emit('visibilitychange', { type: 'visibilitychange' })
+    await settle()
+    assert.ok(
+      host.chatRequests - before > 0,
+      'coming back into view must catch the panel up, not leave it frozen on '
+        + 'whatever was true when the reader looked away',
+    )
+  } finally {
+    document.visibilityState = 'visible'
+  }
 })
 

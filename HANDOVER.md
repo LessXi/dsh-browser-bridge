@@ -1,23 +1,156 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v99 已交付并入库。** 下一节就是最新的一轮改动；下面标 v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v99 那一段为止即可。
+> **当前状态：v100 已交付并入库。** 下一节就是最新的一轮改动；下面标 v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v100 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（691 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（696 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 > （真浏览器 e2e 那 4 条需要机器上有 Playwright Chromium 或 Chrome for Testing；
 > 没有时会**跳过并说明**，不会失败。）
 >
 > **要看界面**：`README.md` 的「界面」一节有 3 张主视觉海报（`docs/posters/`）与
-> 13 张界面状态（`docs/screenshots/`）。`node tools/poster.mjs` 重渲海报，
+> 14 张界面状态（`docs/screenshots/`）。`node tools/poster.mjs` 重渲海报，
 > `node tools/gallery.mjs` 重渲界面状态，`node tools/preview.mjs --list` 列出全部场景。
 >
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
 >
-> **已入库**：v3→v99 的全部改动已提交并推送到 `origin/main`。工作区干净。
-> （v92 是 `e3ad6ba`，v91 是 `3d96bf1`，v90 是 `767e4cd`，v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
+> **已入库**：v3→v100 的全部改动已提交并推送到 `origin/main`。工作区干净。
+> （v99 是 `bff292d`，v92 是 `e3ad6ba`，v91 是 `3d96bf1`，v90 是 `767e4cd`，v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
+
+> ## v100：面板开着一整天会怎样
+
+v91–v99 九轮都在「读者在看的那一刻，界面对不对」这条轴上：字号、宽度、
+动效、输入法、压缩行。本轮换一条完全不同的轴——**没有人在看的时候，它在做什么**。
+这一轴上的缺陷不会在截图里露出来，因为截图拍的正是有人在看的那一刻。
+
+### 三个独立机制，各自都成立
+
+`extension/sidepanel.js` 有四个定时器：三个 5000ms（`refreshGroups` /
+`refreshHealth` / `refreshTabs`）+ 一个 `POLL_MS = 8000`（`refreshTranscript`）。
+一天约 **62,640 次请求**。
+
+**① 宿主变慢时请求无限堆积。** 四个函数都是 `async`，而 `setInterval` 不等待回调
+完成。探针 `.tmp-run/probe-overlap.js` 把宿主延迟到 12 秒、观察 16 秒：
+
+| 读数 | 修复前 | 修复后 |
+|---|---|---|
+| `peakInFlight` | **5** | **3** |
+| `/browser-bridge/chat` 单路峰值 | **3** | 2 |
+| `/browser-bridge/health` 峰值 | 2 | 1 |
+| `stillInFlight`（结束时仍在飞） | **5（永不回落）** | **0** |
+
+修复后剩 3 是**设计上界**：三条不同路径各至多一个。它们彼此可以重叠（回答的是
+不同问题），同一路径不能再叠（第二次问不出比第一次更新的答案）。
+
+**② 而这个修法本身会造出一个更糟的失败模式。** 这一点是**测出来的，不是想出来的**：
+`bridge()` 没有超时、没有 `AbortController`，所以对着一个挂起的宿主，请求
+**永远不会落地**。加一个裸标志位，第一个这样的请求就永久占住槽位，
+那条轮询**从此再也不运行**。实测 22 秒内只发出 1 个请求，再没有第二个。
+**静默失效比堆积更糟**，因为堆积至少还在尝试。
+
+所以槽位是**按时间租的，不是按信任给的**：`POLL_LEASE_MS = 30_000`，到点就收回。
+`.tmp-run/probe-hung-host.js` 的完整时间线：`held` → `held-aborted`（20 秒超时触发）
+→ 之后 **3 次**正常恢复。
+
+**③ 没有人看的时候照发不误。** 全文件搜 `visibilityState`/`visibilitychange`/
+`document.hidden` 只命中两处注释，**没有一处真的判断可见性**。
+覆写该属性并派发真实事件后实测（`.tmp-run/probe-hidden-polling.js`）：
+
+| 读数 | 修复前 | 修复后 |
+|---|---|---|
+| 隐藏期间请求数 | 8（约 **40/分钟**） | **0** |
+| 可见时 | 约 50/分钟 | 约 50/分钟 |
+| 回到可见之后 | 5 | **6（恢复）** |
+
+**修法（`extension/sidepanel.js`）**：
+
+```js
+const POLL_LEASE_MS = 30_000      // 槽位按时间租，到点收回
+const REQUEST_TIMEOUT_MS = 20_000 // 本地回环，正常 2–3ms，这个上限不会误伤
+
+function runOneAtATime(task) {
+  if (document.visibilityState === 'hidden') return
+  const since = inFlightPolls.get(task)
+  const running = typeof since === 'number' && Date.now() - since < POLL_LEASE_MS
+  if (running) return
+  const lease = Date.now()
+  inFlightPolls.set(task, lease)
+  task().catch(() => {}).finally(() => {
+    if (inFlightPolls.get(task) === lease) inFlightPolls.delete(task)
+  })
+}
+```
+
+`signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)` 加在 `bridge()` 的 `fetch` 上。
+超时值不是拍的：正常宿主实测 min 2ms / median 3ms / max 3ms（四条轮询路径全部），
+20 秒是它四个数量级以上，不会对「忙」误判，只拦「永远不会回答」。
+`AbortSignal.timeout` 需要 Chrome 103+，而 `manifest.json` 的
+`minimum_chrome_version` 是 116。
+
+`visibilitychange` 监听器调 `catchUpAfterBeingHidden()`，**四个轮询全跑一遍**——
+它们回答不同的问题，各自都会在切走的这段时间里过期。走 `runOneAtATime` 而不是直接
+调用，是让堆积守卫也挡在这里：回到可见的那一刻不能自己成为两个轮询重叠的时刻。
+
+### ★ 两次判据错误（都在我自己写的探针里）
+
+**一、判据把被测状态造没了。** `probe-hidden-polling.js` 第一版直接观察 12 秒，
+报 `duringHidden: 8`、`pollsWhileHidden: true`——而它同时报出 `reallyHidden: false`，
+因为 headless 里窗口从不隐藏。**「隐藏期间发了 8 个请求」这个读数什么都没说明**，
+两次观察处在同一个状态。修法是覆写 `document.visibilityState` 并派发真实事件，
+并把 `reallyHidden` 作为判据有效性的一部分报出来。
+
+**二、判据不忠实于被替身的东西。** `probe-hung-host.js` 第一版把挂住的请求写成
+`new Promise(() => {})`——一个**忽略 abort signal** 的 promise，于是它报
+「一个不回答的宿主锁死了轮询」，而那是现实中到不了的状态：真实 `fetch` 在 signal
+中止时**会 reject**。修法是让替身像真 fetch 一样响应中止。同一个错误在套件的
+fetch 替身里又犯了一次，导致超时测试红了——**替身不响应 signal，工作正常的超时
+看起来就像超时从没触发**。
+
+### ★ 我自己写的一条变异分类错了
+
+`.tmp-run/mutate-poll-guard.mjs` 里我先把 `POLL_LEASE_MS: 30_000 → 45_000` 标成
+**等价变异**（理由「测试不依赖具体数值」），实测**报红**：那条测试把时钟推进 31 秒，
+45 秒的租约落在窗口内。所以测试**确实在约束租约长度**，它是真坏法。
+改判之后另找了一条真的等价变异（租约收到 5s，与 5 秒间隔相等，测试取的时点仍在同一侧）。
+
+真坏法 **7/7 命中、等价变异 1/1 保持绿**、`restoredExactly: true`：
+`no-guard-at-all`、`lease-never-expires`、`lease-cleared-unconditionally`、
+`no-request-timeout`、`lease-longer-than-the-test-moves`、`polls-while-hidden`、
+`never-catches-up`。
+
+### ★ 两条测试缺口是靠变异发现的，不是靠想
+
+第一轮 `realCaught: 2/4`，而 `suiteNeverRan: []` 证明套件真的跑起来了——
+所以是**测试不足**：
+
+| 没红的变异 | 缺什么 | 补法 |
+|---|---|---|
+| `lease-cleared-unconditionally` | 只挂住一个请求，两种情况行为相同 | 挂住**两个**，让两份租约可区分 |
+| `no-request-timeout` | 只看「轮询有没有恢复」，而租约独自也能恢复 | 在 25s 这个**两个阈值之间**的时点问，那里只可能由请求自己结束 |
+
+第二条的设计值得记：**两个机制覆盖同一个后果时，观察后果分不出哪个在起作用**，
+必须找到它们行为分叉的那个窗口。
+
+### 测试基建
+
+- `packages/dsh-browser-bridge/test/dom-shim.js`：`document` 补 `visibilityState: 'visible'`（可写）。
+  此前它是 `undefined`，于是**任何针对它的守卫都静默走「可见」分支**，跳过逻辑无法被测试。
+- `packages/dsh-browser-bridge/test/panel-stream.test.js`：host 替身新增
+  `chatRequests`（在门口计数，不是事后推断）与 `holdNextChat`（把回答时机交给测试），
+  且该替身**响应 `options.signal`**——真实 fetch 就是这么做的。
+- 新增 5 条测试，691 → **696** 条。
+
+### 验证读数（已绿，不必重跑）
+
+- `npm test` → **696 passed, 0 failed, 0 skipped**
+- `npm run check:extension` → exit 0
+- 真实浏览器：超时中止挂住的 fetch（`AbortError`，71ms）、不可达宿主立即 reject、
+  **面板每个请求都带超时信号**（`panelSendsSignal.hasSignal: true`）
+- 探针：`.tmp-run/probe-overlap.js`、`probe-hung-host.js`、`probe-hidden-polling.js`、
+  `probe-timeout-real.js`、`probe-normal-latency.js`
+- 变异：`.tmp-run/mutate-poll-guard.mjs`
 
 > ## v99：面板窄到半个屏幕时还好不好用
 

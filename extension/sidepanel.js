@@ -59,6 +59,30 @@ const NEAR_BOTTOM_PX = 24
 const POLL_MS = 8000
 
 /**
+ * How long a poll's slot stays claimed before the next tick may take it back.
+ *
+ * Shorter than this and the guard would let the stack it exists to prevent
+ * rebuild; longer and a poll that stopped answering stays stopped. A tick is
+ * skipped while the previous one is still inside this window, so the value is a
+ * "the answer is really not coming" threshold rather than a latency budget —
+ * `REQUEST_TIMEOUT_MS` below is what actually ends a request that never lands.
+ */
+const POLL_LEASE_MS = 30_000
+
+/**
+ * How long the panel waits for the host before giving up on a request.
+ *
+ * Every call goes to loopback, where a healthy host answers in single
+ * milliseconds — measured across all four poll paths: min 2ms, median 3ms, worst
+ * 3ms. This is roughly four orders of magnitude above the worst normal answer, so
+ * a host that is merely busy cannot trip it. What it does catch is the request
+ * that would never settle at all: a suspended process or a half-open port leaves
+ * the promise pending forever rather than rejecting, and those are exactly the
+ * requests that used to pile up for as long as the panel stayed open.
+ */
+const REQUEST_TIMEOUT_MS = 20_000
+
+/**
  * How many rows of a conversation the panel keeps on screen.
  *
  * Reads are windowed from the newest row, and this number grows by one page each
@@ -402,6 +426,17 @@ let menuOpen = false
  */
 let drawnMenuSignature = ''
 /**
+ * Which polls are currently awaiting an answer, keyed by the function itself.
+ *
+ * Keyed by the function rather than kept as one flag per call site: the guard
+ * and the poll it guards then cannot drift apart, and a fifth poll added later
+ * gets the same protection by being passed through `runOneAtATime` at all.
+ *
+ * See `runOneAtATime` for why an unguarded `setInterval` against a slow host
+ * accumulates rather than recovers.
+ */
+const inFlightPolls = new Map()
+/**
  * The open `@` picker, or null.
  *
  * `start` is where the `@` sits in the composer, so accepting a candidate can
@@ -528,6 +563,14 @@ async function bridge(path, options = {}) {
     const response = await fetch(`http://127.0.0.1:${harnessPort}${path}`, {
       method,
       cache: 'no-store',
+      // Every request is to loopback, where a healthy host answers in single
+      // milliseconds — measured, 2–3ms across all four poll paths. This ceiling
+      // is three orders of magnitude above that, so it cannot fire on a host
+      // that is merely busy; what it catches is the host that is *never* going
+      // to answer, because a suspended process or a half-open port leaves the
+      // promise pending forever rather than failing. Those are the requests that
+      // otherwise accumulate for as long as the panel is open.
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       ...(options.body === undefined
         ? {}
         : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(options.body) }),
@@ -4520,25 +4563,124 @@ async function start() {
     requestSelectionFromPage().catch(() => {})
   })
 
+  // The other half of skipping polls while hidden: the reader is looking again,
+  // so everything the timers would have asked about is now worth asking. This is
+  // also what makes the transcript's own timer skippable — without it, a turn
+  // that finished while the panel was in a background window would sit unseen
+  // until the next tick, which is up to eight seconds of looking at a stale
+  // answer.
+  document.addEventListener('visibilitychange', () => {
+    catchUpAfterBeingHidden()
+  })
+
   setInterval(() => {
-    refreshGroups().catch(() => {})
+    runOneAtATime(refreshGroups)
   }, 5000)
   // The attachment chip's state is the host's answer about *this extension*, and
   // it changes independently of the session list — the service worker sleeps and
   // wakes on its own schedule.
   setInterval(() => {
-    refreshHealth().catch(() => {})
+    runOneAtATime(refreshHealth)
   }, 5000)
   setInterval(() => {
-    refreshTabs().catch(() => {})
+    runOneAtATime(refreshTabs)
   }, 5000)
   // The transcript refreshes on its own, so a turn started in the DSH window
   // shows up here without pressing reload — except mid-send, where a concurrent
   // read could race the reply into a half-drawn list.
   setInterval(() => {
     if (sending) return
-    refreshTranscript().catch(() => {})
+    runOneAtATime(refreshTranscript)
   }, POLL_MS)
+}
+
+/**
+ * Run a poll, but never start a second copy while the first is still going.
+ *
+ * `setInterval` does not wait for its callback to finish, and all four of these
+ * polls `await` a network request. A host that takes longer to answer than the
+ * interval is therefore enough to make them stack, and nothing brings the stack
+ * back down: measured against a host answering in 12s, a 16-second window had
+ * **5 requests in flight at once** — three of them on `/browser-bridge/chat`
+ * alone — and all 5 were still pending at the end. Carried through a working
+ * day that is thousands of unresolved fetches, each holding a socket and the
+ * closures around it, and three of the four also call into a redraw
+ * (`renderContexts`, `drawHistory`, `drawSend`) on landing, so the pile-up is
+ * repeated painting as well as repeated networking.
+ *
+ * A flag per function rather than one shared flag: the three fast polls and the
+ * transcript poll answer different questions and are allowed to overlap *each
+ * other*. What must not happen is the same question being asked twice at once,
+ * which cannot produce a newer answer than the first one will.
+ *
+ * The lease is what keeps this from being worse than no guard at all, and it is
+ * not hypothetical: `bridge()` sets no timeout and no `AbortController`, so a
+ * request against a suspended host never settles. With a bare flag the first
+ * such request owns the slot forever and that poll **stops running for good** —
+ * measured, 22 seconds produced exactly one request and no second one. Losing a
+ * poll silently is worse than the pile-up it replaced, because the pile-up at
+ * least keeps trying. So the slot is held on a clock rather than on trust: if
+ * the answer has not arrived by the time the next tick comes round, the tick is
+ * allowed through and the newer answer wins. The stale request is left to settle
+ * on its own; it cannot draw anything the fresher one has not already drawn.
+ *
+ * @param {() => Promise<void>} task - The poll to run.
+ * @returns {void}
+ */
+function runOneAtATime(task) {
+  // A poll answers a question about what the reader is looking at, and while the
+  // panel is not on screen there is no reader. Four timers at 5s and 8s come to
+  // roughly 62,640 requests a day, and measured, the panel sent them at the same
+  // rate while hidden as while watched — 40/minute against 50 — so a side panel
+  // left open in a background window kept a core awake all day to redraw
+  // something nobody could see. Setting a browser window aside for an hour is an
+  // ordinary thing to do, which is what makes this worth stopping.
+  //
+  // The work is skipped, not the timer: nothing has to be recomputed on the way
+  // back, because `visibilitychange` runs one round of everything the moment the
+  // panel is visible again. That is why this is a skip rather than a pause —
+  // there is no state to restore, only a stale question not to ask.
+  if (document.visibilityState === 'hidden') return
+  const since = inFlightPolls.get(task)
+  const running = typeof since === 'number' && Date.now() - since < POLL_LEASE_MS
+  if (running) return
+  // The timestamp is also this run's identity, so the cleanup below can tell
+  // "my lease is still mine" from "a later tick took it over while I waited".
+  const lease = Date.now()
+  inFlightPolls.set(task, lease)
+  task()
+    .catch(() => {})
+    .finally(() => {
+      // Only clear a lease this run still owns. A later tick may have taken it
+      // over while this one was still waiting, and clearing that would let the
+      // following tick start a second copy — the pile-up this guard exists to
+      // prevent, reintroduced from below.
+      if (inFlightPolls.get(task) === lease) inFlightPolls.delete(task)
+    })
+}
+
+/**
+ * Catch the panel up on everything that happened while it was not being watched.
+ *
+ * `runOneAtATime` skips its work while the panel is hidden, so this is the other
+ * half of that decision: the moment the reader looks again, a turn may have
+ * started, finished, asked a question, or changed which tabs are attached, and
+ * the panel would otherwise show whatever was true when they looked away.
+ *
+ * All four rather than only the transcript, because they answer different
+ * questions and any of them can go stale over the same interval. Going through
+ * `runOneAtATime` rather than calling the refreshes directly keeps the pile-up
+ * guard in front of them, so a return to visibility cannot itself be the moment
+ * two copies of a poll overlap.
+ *
+ * @returns {void}
+ */
+function catchUpAfterBeingHidden() {
+  if (document.visibilityState === 'hidden') return
+  runOneAtATime(refreshGroups)
+  runOneAtATime(refreshHealth)
+  runOneAtATime(refreshTabs)
+  if (!sending) runOneAtATime(refreshTranscript)
 }
 
 start().catch((error) => say(t('error.startedFailed', { error: error.message })))

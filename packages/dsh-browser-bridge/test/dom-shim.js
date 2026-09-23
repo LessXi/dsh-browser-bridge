@@ -637,6 +637,19 @@ function makeDocument() {
     head: new Element('head'),
     hidden: false,
     /**
+     * Whether the page is on screen, as the panel reads it before deciding
+     * whether a poll is worth running.
+     *
+     * Mutable and separate from `hidden` because the panel reads this one — a
+     * browser keeps the two consistent, and a test needs to drive them the way a
+     * browser would. Without it, `document.visibilityState` was `undefined` in
+     * every suite, so a guard written against it silently took the "visible"
+     * branch and the skipping was untestable.
+     *
+     * @type {string}
+     */
+    visibilityState: 'visible',
+    /**
      * What currently holds focus.
      *
      * The shim keeps this so focus behaviour is testable at all: without it,
