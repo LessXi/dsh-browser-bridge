@@ -264,3 +264,147 @@ test('the screenshots were rendered from the code that is here now', () => {
     'the set of files the screenshots depend on changed',
   )
 })
+
+test('the header shrinks to fit a narrow panel instead of pushing controls off it', () => {
+  // The panel's width is the reader's choice — Chrome's side panel can be dragged
+  // from very narrow to very wide — so "it breaks at some width" is not an edge
+  // case, it is a state a reader can create at any time. This repository had
+  // already met two width defects by accident (a menu pinned at `min-width: 200px`
+  // that hung 8px past the edge of a 200px panel; a reading-measure cap) and had
+  // no criterion that swept the axis, which is why both were found by stumbling.
+  //
+  // This pins the two properties that carry the header at every width, both
+  // proven load-bearing by mutation against a real browser:
+  //
+  //   - `#title { min-width: 0 }` — without it the four header items refuse to
+  //     shrink and leave the panel entirely: measured at 200px, `#new` sat 67px
+  //     past the right edge and `#find-open` 37px, so the two buttons a reader
+  //     needs to start a chat or search for one were simply not on screen. A
+  //     flex item's default `min-width: auto` floors it at its content width,
+  //     which is the whole reason this line exists.
+  //   - `#title-text` keeps `overflow: hidden` with an ellipsis — the title is
+  //     the session's own text and can be any length, so the only stable layout
+  //     is one that cuts it. Without the ellipsis the text still does not escape
+  //     (the `min-width: 0` above absorbs it) but the cut is silent: the reader
+  //     sees a title that just stops, with nothing saying more was there.
+  const html = readFileSync(join(root, 'extension', 'sidepanel.html'), 'utf8')
+  const header = ruleBody(html, 'header')
+  assert.ok(header !== null, 'the panel no longer styles its header')
+
+  const title = ruleBody(html, '#title')
+  assert.ok(title !== null, 'the panel no longer styles the session title')
+  assert.ok(
+    /min-width:\s*0/.test(title),
+    'the title can no longer shrink, so a narrow panel pushes the header controls off screen',
+  )
+  // `flex: 1` is what gives the title the leftover space; a fixed basis would
+  // make it either overflow or leave a gap, depending on the title's length.
+  assert.ok(
+    /flex:\s*1\b/.test(title),
+    'the title no longer takes the leftover width, so the header stops adapting',
+  )
+
+  const titleText = ruleBody(html, '#title-text')
+  assert.ok(titleText !== null, 'the panel no longer styles the title text')
+  assert.ok(
+    /text-overflow:\s*ellipsis/.test(titleText),
+    'a long session title is cut with no ellipsis, so the reader cannot tell it was cut',
+  )
+  assert.ok(
+    /overflow:\s*hidden/.test(titleText),
+    'the title text no longer clips, so it can spill over the icons beside it',
+  )
+  // The caret sits after the text inside the same flex row. It must not shrink,
+  // or a long title squeezes the affordance down to a sliver.
+  const caret = ruleBody(html, '#title .caret')
+  assert.ok(caret !== null, 'the panel no longer styles the title caret')
+  assert.ok(
+    /flex:\s*none/.test(caret),
+    'the caret can be squeezed by a long title, so the history affordance disappears',
+  )
+})
+
+test('every floating surface can be opened and dismissed, so it never hides the conversation', () => {
+  // Overlapping the page is what a floating surface is for; hiding a row the
+  // reader can never uncover is the defect. This repository fixed that once — a
+  // pill pinned over the scroller covered up to 24 characters of the row that
+  // scrolled under it, permanently — so the distinction is recorded here: an
+  // overlay is acceptable when the reader can dismiss it, and the way to say
+  // that in markup is a real role.
+  //
+  // `role="menu"` / `role="listbox"` are the machine-readable form of "the
+  // reader opened this and can close it". A floating layer with no role has no
+  // such promise, which is exactly the state the two menus were in before this
+  // was looked at.
+  const html = readFileSync(join(root, 'extension', 'sidepanel.html'), 'utf8')
+  const script = readFileSync(join(root, 'extension', 'sidepanel.js'), 'utf8')
+
+  // The roles are applied by the code that fills the rows, not written in the
+  // markup: an empty list has to give the role up, because a `listbox` whose only
+  // child is a sentence makes a screen reader announce an option list that is not
+  // there. So the assertion looks for the setter, not for a literal attribute.
+  assert.ok(
+    /setMenu\(false\)|closeMenu\(/.test(script),
+    'the model menu can no longer be dismissed',
+  )
+  for (const [name, role] of [['modelMenu', 'menu'], ['atMenu', 'listbox']]) {
+    assert.ok(
+      new RegExp(`${name}\\.setAttribute\\('role', '${role}'\\)`).test(script),
+      `${name} is never given role="${role}", so it is an overlay with no way to say it can be closed`,
+    )
+  }
+})
+
+/**
+ * The declaration block for a selector, without any `@media` wrapper.
+ *
+ * Splitting on braces rather than matching with a regex: an at-rule's body
+ * contains braces of its own, so a regex that stops at the first `}` returns
+ * half a media query instead of the rule inside it.
+ *
+ * @param {string} source - The stylesheet text.
+ * @param {string} selector - Exact selector to find.
+ * @returns {string|null} The declarations, or null when the rule is absent.
+ */
+function ruleBody(source, selector) {
+  const without = stripAtRules(source)
+  const pattern = new RegExp(`(?:^|[},])\\s*${selector.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}\\s*\\{([^}]*)\\}`, 'm')
+  const match = pattern.exec(without)
+  return match === null ? null : match[1]
+}
+
+/**
+ * Remove every at-rule body, keeping top-level rules only.
+ *
+ * @param {string} source - The stylesheet text.
+ * @returns {string} The text with `@media`/`@supports` bodies removed.
+ */
+function stripAtRules(source) {
+  let out = ''
+  let index = 0
+  while (index < source.length) {
+    const at = source.indexOf('@', index)
+    const brace = source.indexOf('{', index)
+    if (brace === -1) { out += source.slice(index); break }
+    if (at !== -1 && at < brace) {
+      // Copy up to the at-rule, then skip its whole body by counting braces
+      out += source.slice(index, at)
+      let depth = 0
+      let cursor = brace
+      for (; cursor < source.length; cursor += 1) {
+        if (source[cursor] === '{') depth += 1
+        else if (source[cursor] === '}') {
+          depth -= 1
+          if (depth === 0) { cursor += 1; break }
+        }
+      }
+      index = cursor
+    } else {
+      const close = source.indexOf('}', brace)
+      if (close === -1) { out += source.slice(index); break }
+      out += source.slice(index, close + 1)
+      index = close + 1
+    }
+  }
+  return out
+}

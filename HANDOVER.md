@@ -1,9 +1,9 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v98 已交付并入库。** 下一节就是最新的一轮改动；下面标 v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v98 那一段为止即可。
+> **当前状态：v99 已交付并入库。** 下一节就是最新的一轮改动；下面标 v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v99 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（688 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（691 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 > （真浏览器 e2e 那 4 条需要机器上有 Playwright Chromium 或 Chrome for Testing；
@@ -16,8 +16,82 @@
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
 >
-> **已入库**：v3→v98 的全部改动已提交并推送到 `origin/main`。工作区干净。
+> **已入库**：v3→v99 的全部改动已提交并推送到 `origin/main`。工作区干净。
 > （v92 是 `e3ad6ba`，v91 是 `3d96bf1`，v90 是 `767e4cd`，v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
+
+> ## v99：面板窄到半个屏幕时还好不好用
+
+v95/v97/v98 三轮分别在字号、输入法、动效轴上做判据。本轮选的是**宽度**：
+Chrome 侧栏可以拖，宽度由读者决定，从很窄到很宽都合法，所以「在某个宽度下坏掉」
+不是边缘情况，是读者随时能造出来的状态。
+
+这个仓库已经**撞见**过两个宽度缺陷（v76 的菜单 `min-width: 200px` 在 200px 面板里
+顶出右边缘 8px；以及阅读栏上限），但**没有任何判据主动扫这条轴**——两次都是碰巧。
+
+### 结论：面板通过了，从 380px 一路窄到 168px
+
+11 个场景 × 200px 全部 `ok: true`；380 / 300 / 240 / 200 / 168 五档全部无裁剪、
+无出界、无遮挡、无可点目标不达标。168px 下 `code.` 伸出右边缘 13px，追下去是
+**可横向滚动**的（`pre { overflow-x: auto }`，滚动余量 62px）——代码块按设计不折行，
+超出边缘是它的正常状态，不是缺陷。
+
+### ★ 判据错了四次，每次都把正确实现读成缺陷
+
+这是本轮真正的工作量所在。四条假阳性，每条都差点让我去「修」一个没坏的东西：
+
+| 读数 | 看起来像 | 实际上 | 判据修正 |
+|---|---|---|---|
+| 默认 380px 就报 1 处裁剪 | 面板默认宽度就坏 | `span.args` 的 `text-overflow: ellipsis` 刻意截断 | 排除 `ellipsis + nowrap` |
+| 默认 380px 报「重叠 218x14」 | 两段文字压在一起 | `Range.getClientRects()` 为**同一文本节点**返回多个矩形 | 同一 owner 不比 |
+| 240px 报「标题被 ⌄ 压住 7px」 | header 挤坏了 | `getClientRects()` **不遵守祖先的 `overflow: hidden`**——文字已省略，矩形仍延伸；实测 caret 与文字恒有 4px 间隙 | 文字矩形与**所有祖先裁剪框**求交 |
+| 200px 报「Example Domain 被菜单压住 87x6」 | 浮层遮住正文 | 那是**读者自己打开的**菜单，点外面就关 | 按 `role="menu"/"listbox"/"dialog"` 排除可解除的层 |
+
+第三条最危险：`#title { min-width: 0 }` 正在**按设计工作**（标题被正确省略），
+而我的判据把它读成了「标题被图标压住」。**判据错的时候，正确的实现在读数里
+和坏掉的一模一样。**
+
+### ★ 一个到处报绿的判据必须证明它会报红
+
+四条假阳性修完之后，11 个场景全部 `ok: true`。这个结果本身不可信——**一条永远
+为真的断言也「全部通过」**。所以注入一个真实缺陷验证：给 `header` 加
+`position: absolute; z-index: 40`（复刻 v74 那类常驻遮挡），判据立刻报红 3 处，
+具体到「打造类似codex的dsh网页插件 × 更早的内容 47x15」。还原后 `git diff --numstat`
+为空。
+
+### 新增守卫测试（`test/screenshots.test.js`，+2 条 → 691）
+
+1. `the header shrinks to fit a narrow panel instead of pushing controls off it`
+   —— 钉住两个**经变异证明承重**的属性：`#title { min-width: 0 }`（去掉后实测
+   200px 下面板里四个 header 元素全部出界，`#new` 出界 **67px**、`#find-open`
+   **37px**——两个最要紧的按钮直接不在屏幕上）与 `#title-text` 的省略号截断
+   （去掉后不溢出，但截断变成静默的，读者看不出标题被切过）。
+2. `every floating surface can be opened and dismissed, so it never hides the conversation`
+   —— 记录「浮层遮住页面是它存在的意义，遮住一行读者永远揭不开才是缺陷」这条
+   区分，并钉住两个菜单的 `role`。
+
+### 变异验证（`.tmp-run/mutate-width-guards.mjs`）
+
+**6/6 命中**，每条红的都是期望的那条测试（`failedInstead: []`），
+`restoredExactly: true`：`title-min-width-removed`、`title-flex-basis-fixed`、
+`ellipsis-removed`、`caret-can-shrink`、`menu-role-dropped`、`listbox-role-dropped`。
+脚本对每个变异都断言**套件真的跑起来了**（`suiteRan`）——锚点没找到、源码没改时
+测试当然还是绿的，那是等价变异（v36 踩过：3 个坏法全报未命中，因为变异什么都没改）。
+
+### 验证读数（已绿，不必重跑）
+
+- `npm test` → **691 passed, 0 failed, 0 skipped**（689 → 691）
+- `npm run check:extension` → exit 0
+- 11 场景 × 200px 全部 `ok: true`；380/300/240/200/168 五档全部干净
+- 判据报红验证：注入遮挡 → 3 处红；还原 → `git diff --numstat` 空
+- 画廊指纹守卫未触发（本轮只改测试文件，未动 `extension/`）
+
+### 新增探针（`.tmp-run/`，被 gitignore）
+
+`probe-width-sweep.js`（判据本体：裁剪 / 出界 / 遮挡 / 可点目标四类，含
+`visibleRect` 祖先裁剪求交与 `insideOpenOverlay` 语义排除）、
+`probe-header-squeeze.js`（量 header 内容盒、每个子元素的 flex 与盒子、
+`caretOverlapsTextBy`）、`probe-overflow-reach.js`（伸出边缘的元素能否滚到）、
+`mutate-width-guards.mjs`。截图 `r40-*.png`。
 
 > ## v98：读者说了不要动，模型菜单的箭头还是转了 180 度
 
