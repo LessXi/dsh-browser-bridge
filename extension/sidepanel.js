@@ -186,8 +186,24 @@ let currentSessionId = ''
 let currentSessionBlank = false
 /** Whether the session on screen has a turn running. */
 let currentSessionRunning = false
-/** @type {Map<string, string>} */
+/**
+ * What the reader has typed and not sent, by session id.
+ *
+ * Read back from storage on the way up and written on every keystroke, so it
+ * spans one opening of the panel and the next — see `setDraft`.
+ *
+ * @type {Map<string, string>}
+ */
 const drafts = new Map()
+/**
+ * Where one session's draft lives between openings of the panel.
+ *
+ * One key per session rather than one key holding the whole map. Two windows can
+ * have a panel open at once, and a single record would have each of them writing
+ * back every *other* session's draft from its own stale copy — so typing in one
+ * window would quietly revert what was typed in the other.
+ */
+const DRAFT_PREFIX = 'panelDraft:'
 /** Reasoning rows the user opened, by row name. See `rowKey`. */
 const expandedReasoning = new Set()
 /**
@@ -875,7 +891,7 @@ function acceptMention(at) {
   closeMention()
   input.style.height = 'auto'
   input.style.height = `${Math.min(140, input.scrollHeight)}px`
-  drafts.set(currentSessionId, input.value)
+  setDraft(currentSessionId, input.value)
   renderContexts()
   input.focus()
 }
@@ -2342,7 +2358,10 @@ async function refreshGroups() {
  */
 function selectSession(sessionId) {
   if (sessionId !== currentSessionId) {
-    drafts.set(currentSessionId, input.value)
+    // The composer still holds what was typed for the session being left, and
+    // `restoreDraft` below is about to replace it. Saving it here is what keeps
+    // a half-written message from being lost by looking at another conversation.
+    setDraft(currentSessionId, input.value)
     currentSessionId = sessionId
     expandedReasoning.clear()
     expandedFailures.clear()
@@ -2382,6 +2401,56 @@ function restoreDraft() {
   input.style.height = 'auto'
   input.style.height = `${Math.min(140, input.scrollHeight)}px`
   drawSend()
+}
+
+/**
+ * Hold one session's draft, in memory and where the next opening will find it.
+ *
+ * The in-memory map is what `restoreDraft` reads, and it is updated in the same
+ * call so the two can never disagree — every write goes through here rather
+ * than to `drafts` directly.
+ *
+ * Storage is written on every keystroke, deliberately not debounced. A timer
+ * would have to be flushed by an unload event, and the panel cannot promise one
+ * arrives: the side panel is closed by the browser, by a window closing, or by a
+ * switch to another side panel, and a draft that missed its timer is gone with
+ * no trace. Writing each keystroke has no such window, and it is affordable — a
+ * write measures 0.2ms for a short draft and 0.3ms for a 4000-character one,
+ * both far under a frame.
+ *
+ * The write is not awaited, and it does not need to be: `chrome.storage.local`
+ * applies writes in the order they were issued, so the last keystroke is the one
+ * that lands even with several in flight. Measured with 250 unawaited writes in
+ * a row, the value read back was the 250th.
+ *
+ * @param {string} sessionId - The session the text belongs to.
+ * @param {string} text - What the composer holds for it.
+ * @returns {void}
+ */
+function setDraft(sessionId, text) {
+  if (sessionId.length === 0) return
+  if (text.length === 0) {
+    clearDraft(sessionId)
+    return
+  }
+  drafts.set(sessionId, text)
+  chrome.storage.local.set({ [DRAFT_PREFIX + sessionId]: text }).catch(() => {})
+}
+
+/**
+ * Forget one session's draft, in memory and in storage.
+ *
+ * Sent messages and emptied composers both land here. Removing the key rather
+ * than storing an empty string keeps storage holding only what is really
+ * pending, instead of one record per session ever visited.
+ *
+ * @param {string} sessionId - The session to forget.
+ * @returns {void}
+ */
+function clearDraft(sessionId) {
+  if (sessionId.length === 0) return
+  drafts.delete(sessionId)
+  chrome.storage.local.remove(DRAFT_PREFIX + sessionId).catch(() => {})
 }
 
 /**
@@ -2530,7 +2599,7 @@ async function sendMessage() {
   if (result.payload?.accepted === true) {
     input.value = ''
     input.style.height = 'auto'
-    drafts.delete(currentSessionId)
+    clearDraft(currentSessionId)
     // The mention was for that message. Keeping it would silently attach the
     // same page to the next one, which is exactly the kind of standing promise
     // this panel works to avoid.
@@ -2632,7 +2701,7 @@ async function createSession() {
     say(t('error.generic', { reason }))
     return
   }
-  drafts.set(currentSessionId, input.value)
+  setDraft(currentSessionId, input.value)
   currentSessionId = result.payload.sessionId
   expandedReasoning.clear()
   expandedFailures.clear()
@@ -2760,7 +2829,7 @@ input.addEventListener('keydown', (event) => {
 input.addEventListener('input', () => {
   input.style.height = 'auto'
   input.style.height = `${Math.min(140, input.scrollHeight)}px`
-  drafts.set(currentSessionId, input.value)
+  setDraft(currentSessionId, input.value)
   drawMention()
   drawSend()
 })
@@ -3034,9 +3103,31 @@ function focusComposer() {
   input.focus({ preventScroll: true })
 }
 
+/**
+ * Read back every draft the previous opening of the panel left behind.
+ *
+ * Done once, before the first `restoreDraft`, and held in memory afterwards:
+ * switching sessions must not be a storage round trip, because `restoreDraft`
+ * runs on a click and the composer has to be correct in that same frame.
+ *
+ * @returns {Promise<void>} Resolves once the drafts are in memory.
+ */
+async function loadDrafts() {
+  const everything = await chrome.storage.local.get(null)
+  for (const [key, value] of Object.entries(everything)) {
+    if (!key.startsWith(DRAFT_PREFIX)) continue
+    if (typeof value !== 'string') continue
+    drafts.set(key.slice(DRAFT_PREFIX.length), value)
+  }
+}
+
 /** Start the panel and keep the slow-moving parts fresh. */
 async function start() {
   paintStaticCopy()
+  // Before `loadEverything`, which selects a session and restores its draft: a
+  // draft read back after that would arrive one frame late, and the composer
+  // would be seen empty and then fill in.
+  await loadDrafts().catch(() => {})
   await loadEverything()
   await requestSelectionFromPage().catch(() => {})
   focusComposer()

@@ -36,6 +36,15 @@ const extensionDir = join(here, '..', '..', '..', 'extension')
 const SESSION = 'session-16ac81ea-14e0-4086-922a-57c74a66818c'
 const OTHER = 'session-0f1e2d3c-4b5a-4c6d-8e7f-901234567890'
 
+/**
+ * The browser's storage, kept between the "openings" a test simulates.
+ *
+ * Shared rather than rebuilt per test because that is the point of it: a draft
+ * written while one panel was open is read back when the next one starts, and
+ * a per-test store could never show that.
+ */
+const storage = makeStorage()
+
 // ─────────────────────────────────────────────────────────────────────────────
 // The browser, as far as the panel can tell
 // ─────────────────────────────────────────────────────────────────────────────
@@ -192,12 +201,43 @@ globalThis.chrome = {
     onActivated: { addListener: () => {} },
     onUpdated: { addListener: () => {} },
   },
-  storage: {
-    local: {
-      get: async (defaults) => ({ ...defaults }),
-      set: async () => {},
+  storage: { local: storage },
+}
+
+/**
+ * `chrome.storage.local`, as far as the panel can tell.
+ *
+ * A store that actually keeps things, because the panel persists the composer's
+ * draft and the question that matters is whether it is still there afterwards.
+ * An answer-everything stub cannot be asked that: it hands back the defaults it
+ * was given, so a draft that was never written reads back the same as one that
+ * was — which is how the composer's text came to be lost on every reopening of
+ * the panel with the suite green.
+ *
+ * Enough of the real contract to catch the mistakes that matter: `get` with
+ * defaults returns the stored value when there is one, `remove` deletes.
+ *
+ * @param {Record<string, unknown>} [initial] - Keys already in storage.
+ * @returns {object} The double.
+ */
+function makeStorage(initial = {}) {
+  /** @type {Record<string, unknown>} */
+  const records = { ...initial }
+  return {
+    /**
+     * What is really in storage, which is what a reopening of the panel reads.
+     *
+     * @returns {Promise<Record<string, unknown>>} A copy of the store.
+     */
+    snapshot: async () => ({ ...records }),
+    get: async (defaults) => ({ ...(defaults ?? {}), ...records }),
+    set: async (values) => {
+      Object.assign(records, values)
     },
-  },
+    remove: async (keys) => {
+      for (const key of Array.isArray(keys) ? keys : [keys]) delete records[key]
+    },
+  }
 }
 
 const realFetch = globalThis.fetch
@@ -3118,3 +3158,156 @@ test('both menu rows put their mark in the same place', async (t) => {
     'every model row needs a mark slot',
   )
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The draft outlives the panel
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Put text in the composer the way a person typing would. */
+function typeDraft(text) {
+  input.value = text
+  input.emit('input', {})
+}
+
+/**
+ * Wait for the panel's unawaited writes to reach the store.
+ *
+ * The writes are deliberately not awaited by the panel — awaiting them would put
+ * a storage round trip inside the keystroke — so a test that reads storage has
+ * to let the microtask queue drain first.
+ *
+ * @returns {Promise<void>} Resolves once queued writes have landed.
+ */
+async function letWritesLand() {
+  for (let index = 0; index < 20; index += 1) await Promise.resolve()
+}
+
+/** Show one session the way a person does, by clicking its row in the history. */
+function selectSession(title) {
+  registry.get('title').click()
+  const history = registry.get('history')
+  const row = [...history.querySelectorAll('button')].find((button) =>
+    button.textContent.includes(title),
+  )
+  assert.ok(row, `the history must list a row for ${title}`)
+  row.click()
+}
+
+test('what was typed is still in storage when the panel is closed and reopened', async (t) => {
+  // The defect this covers: `drafts` was a plain in-memory `Map`, while
+  // `panelSessionId` was persisted. So the panel remembered *which conversation*
+  // you were reading and forgot *what you had written in it* — the one thing a
+  // closed side panel must not lose, and the commonest way to lose it, because
+  // closing and reopening the side panel is how the thing is used.
+  //
+  // Confirmed in a real Chrome before it was fixed: type, reload the panel, and
+  // the composer came back empty while the header still named the session.
+  t.onCleanup(() => typeDraft(''))
+
+  const typed = 'half a question I have not sent yet'
+  typeDraft(typed)
+  await letWritesLand()
+
+  const stored = await storage.snapshot()
+  assert.equal(
+    stored[`panelDraft:${SESSION}`],
+    typed,
+    'the composer must be written where the next opening of the panel will look',
+  )
+})
+
+test('an emptied composer leaves no draft behind', async (t) => {
+  // Deleting the text is not the same as having an empty draft. Keeping the key
+  // would leave a row in storage for every session ever visited.
+  t.onCleanup(() => typeDraft(''))
+
+  typeDraft('something')
+  await letWritesLand()
+  typeDraft('')
+  await letWritesLand()
+
+  const stored = await storage.snapshot()
+  assert.equal(
+    stored[`panelDraft:${SESSION}`],
+    undefined,
+    'clearing the composer must remove the key rather than store an empty string',
+  )
+})
+
+test('a draft is sent, not kept', async (t) => {
+  // The other half of persistence: text that has been sent is not a draft any
+  // more, and a reopening that put it back would offer to send it twice.
+  t.onCleanup(() => {
+    host.sent.length = 0
+    typeDraft('')
+  })
+
+  // Counted from the current total rather than from zero: another test in this
+  // file may already have sent something, and the runner decides the order.
+  const sentBefore = host.sent.length
+  typeDraft('send me')
+  await letWritesLand()
+  assert.equal(
+    (await storage.snapshot())[`panelDraft:${SESSION}`],
+    'send me',
+    'the draft must be stored while it is still a draft',
+  )
+
+  sendButton.click()
+  await settle()
+  await letWritesLand()
+
+  assert.equal(host.sent.length, sentBefore + 1, 'the click must have sent the message')
+  assert.equal(input.value, '', 'a sent message leaves the composer empty')
+  assert.equal(
+    (await storage.snapshot())[`panelDraft:${SESSION}`],
+    undefined,
+    'a sent message must not come back as a draft on the next opening',
+  )
+})
+
+test('reopening the panel puts the draft back in the composer', async () => {
+  // Writing the draft down is only half of it. The other half is reading it back
+  // *before* the first session is drawn, and asserting that here needs a panel
+  // that is really starting for the first time — a second `import` of the same
+  // module returns the instance that is already running and re-runs nothing, so
+  // the module is loaded under a fresh URL to get a genuinely new one.
+  //
+  // This is the assertion that fails if `loadDrafts` is dropped, or if it is
+  // moved after `loadEverything` — in that order the composer is drawn empty,
+  // the header names a session, and the text arrives a frame later (or never).
+  const typed = 'a draft that must survive the panel being closed'
+  typeDraft(typed)
+  await letWritesLand()
+  assert.equal(
+    (await storage.snapshot())[`panelDraft:${SESSION}`],
+    typed,
+    'the draft has to be in storage before the reopening can be asked about it',
+  )
+
+  // The clock stub is put back for the duration of the import. `start` arms four
+  // intervals, and the first panel's were captured so a five-second poll could
+  // not rewrite the transcript mid-assertion; a second panel arming real ones
+  // would keep the runner's process alive forever after the last test.
+  globalThis.setInterval = (body) => {
+    clocks.push(body)
+    return clocks.length
+  }
+  try {
+    const reopened = await import(
+      `${pathToFileURL(join(extensionDir, 'sidepanel.js')).href}?reopened=${turn += 1}`
+    )
+    assert.ok(reopened, 'a fresh copy of the panel must load')
+    // `start` is asynchronous, and its first act is the storage read.
+    await settle()
+  } finally {
+    globalThis.setInterval = realSetInterval
+  }
+
+  assert.equal(
+    input.value,
+    typed,
+    'a reopened panel must put back what was typed into it',
+  )
+})
+
