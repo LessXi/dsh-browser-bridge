@@ -1,7 +1,7 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v84 已交付并入库。** 下一节就是最新的一轮改动；下面标 v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v84 那一段为止即可。
+> **当前状态：v85 已交付并入库。** 下一节就是最新的一轮改动；下面标 v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v85 那一段为止即可。
 >
 > **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（619 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
@@ -16,7 +16,7 @@
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
 >
-> **已入库**：v3→v84 的全部改动已提交并推送到 `origin/main`。工作区干净。
+> **已入库**：v3→v85 的全部改动已提交并推送到 `origin/main`。工作区干净。
 > （v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
 
 > ## ⚠️ 两条并行版本线（2026-09-23 处理，后续轮次务必先读这段）
@@ -184,7 +184,85 @@
 > - `earlier.png` 与 `hostDown.png` **sha256 相同**：那张图画的是阻塞屏，
 >   「更早的内容」胶囊根本没出现在交付的图里。成因未定位。
 
-> ### v84：失败行有了出路——但出路不是「重试」（本轮）
+> ### v85：截图必须只取决于代码，不取决于拍它的时刻（本轮）
+>
+> #### 一、缺陷：同一份代码渲染出**不同的图**
+>
+> `working` 场景（那一行「思考中…」）连跑两次得到**不同的文件**：
+> 第一次 `bd63eb68…` / 100983 字节，第二次 `0dde4556…` / 101026 字节，**差 43 字节**。
+> 对照 `normal` 与 `streaming` 两次完全相同（`1ce63e8e224d` / 99190 字节）。
+>
+> 为什么这要紧：`docs/screenshots/*.png` 是 README 直接引用的**产品声明**，
+> 而 `test/screenshots.test.js` 只能守「文件存在」与「不是空白」。
+> **一张会自己变的图显示不了回归——因为每一次渲染都是一次回归**；
+> 而且每次 `node tools/gallery.mjs` 都产生无意义的字节改动污染 diff，
+> 审阅者看到的是一堆二进制变化，读不出哪一张真的不一样了。
+>
+> #### 二、修法：按**产品真实支持的设置**渲染，不是给截图开后门
+>
+> 面板**早就支持** `prefers-reduced-motion: reduce`，规则在
+> `extension/sidepanel.html`：`.working { animation: none; color: var(--tertiary); background: none; -webkit-background-clip: initial; }`
+> ——它把渐变换成实色，**字照样看得见**。所以：
+>
+> - `tools/preview.mjs` 的 `Emulation.setEmulatedMedia` 的 `features` 加入
+>   `{ name: 'prefers-reduced-motion', value: reducedMotion }`（与已有的
+>   `prefers-color-scheme`、`forced-colors` 同一机制）。
+> - 新增 CLI 参数 `--reduced-motion reduce|no-preference`，**默认 `reduce`**。
+>   要看动效本身用 `--reduced-motion no-preference`。
+>
+> 向系统请求减少动效的读者拿到的就是这份渲染，所以图仍然是产品的图。
+>
+> #### 三、验证：判据是**跑真 gallery 两次**
+>
+> 不逐个场景测——README 的图来自 `tools/gallery.mjs`，不是来自单场景调用，
+> 所以直接量那个契约（`.tmp-run/probe-gallery-twice.mjs`）：
+>
+> | 读数 | 结果 |
+> | --- | --- |
+> | 12 张界面图，两次渲染 | **`unstable: []`（逐字节相同）** |
+> | 3 张海报，两次渲染 | **`unstable: []`** |
+> | gallery 两次退出码 | 0 / 0（各约 26.7s） |
+> | 与已提交版本对照 | 只有 `working.png` 变化——那正是本次改动的产物 |
+>
+> 另有一处**判据错误**值得记：第一版探针用 `stdout.indexOf('{')` 解析 preview 的输出，
+> 抓到的是它先打印的 `dom: {...}`，于是每个读数都是 `null`，脚本报「那行没有文字、
+> 不可见、动画还在跑」。**探针错了会把好实现报成坏的**，和把坏的报成好的一样糟。
+> 拆成两个脚本后：`probe-gallery-twice.mjs` 管可复现性，
+> `probe-working-legibility.mjs` 管可读性（认准 `  probe: ` 标记行）。
+>
+> 可读性实测（两档必须**区分得开**，否则说明参数根本没接上）：
+>
+> | 读数 | `reduce`（默认） | `no-preference` |
+> | --- | --- | --- |
+> | `color` | `oklab(… / 0.56)` 实色 | `rgba(0, 0, 0, 0)` 透明 |
+> | `usesGradientText` | false | true |
+> | `animationName` | `none` | `sweep` |
+> | `hasText` / `visible` | true / true | true / true |
+>
+> #### 四、新守卫测试与变异
+>
+> `packages/dsh-browser-bridge/test/screenshots.test.js` 新增
+> `a screenshot is a function of the code, not of when it was taken`，
+> 钉住三件会**独立**失效的事：默认值必须是 `reduce`、
+> 该值必须真的交给浏览器（解析了却没人用比没有参数更糟，因为看起来修好了）、
+> reduce 规则里必须**说出用什么颜色**（丢掉渐变却不说颜色 = 文字透明，
+> 而这种图**仍然"可复现"**，只是复现的是一张看不见字的图）。
+>
+> `.tmp-run/mutate-reproducible-shot.mjs`：**3/3 命中**、`restoredExactly: true`
+> （`default-back-to-no-preference`、`flag-never-wired`、`invisible-under-reduce`）。
+>
+> #### 五、一处澄清：v82 的「可复现」与本轮不同
+>
+> v82 说的可复现是**「可以重新生成」**（工具入库、声明式画廊、拒绝 <8KB 产物）。
+> 本轮说的是**「逐字节相同」**。前者保证截图不会静默过期，后者保证
+> 「图变了」这件事本身有意义。两件都要有。
+>
+> #### 六、读数
+>
+> - `npm test` → **621 passed, 0 failed, 0 skipped**（620 → 621）
+> - `npm run check:extension` → exit 0
+>
+> ### v84：失败行有了出路——但出路不是「重试」
 >
 > #### 一、缺陷：一次回合死掉之后，读者拿不回自己的问题
 >

@@ -181,3 +181,43 @@ test('the preview tool keeps its scratch directory somewhere git ignores', () =>
     'the preview tool no longer collects profiles an interrupted run left behind',
   )
 })
+
+test('a screenshot is a function of the code, not of when it was taken', () => {
+  // The working row animates, so two renders of that scene were *different
+  // images* — the same code produced 100983 bytes one run and 101026 the next,
+  // and they hashed differently. Both were "the product", which is the problem:
+  // a picture that changes on its own cannot show a regression, because every
+  // run is one, and every `node tools/gallery.mjs` churned the diff with byte
+  // noise that no reviewer can read.
+  //
+  // The fix is to render what a reader who asked their system for less motion
+  // sees. The panel already honours that setting — it drops the working row's
+  // gradient for a flat colour — so this is a rendering the product genuinely
+  // has, not a test-only mode.
+  //
+  // Two independent ways to lose that, so both are pinned: the emulated feature
+  // must be `reduce` by default, and it must be wired into the media emulation
+  // at all (a flag nothing reads is worse than no flag, because it looks fixed).
+  const preview = readFileSync(join(root, 'tools', 'preview.mjs'), 'utf8')
+  const fallback = /const reducedMotion = textOf\('reduced-motion', '([^']+)'\)/.exec(preview)
+  assert.ok(fallback !== null, 'the preview tool no longer decides a reduced-motion value')
+  assert.equal(
+    fallback[1],
+    'reduce',
+    `the default render is '${fallback[1]}', so the working scene is not reproducible`,
+  )
+  assert.ok(
+    /name: 'prefers-reduced-motion', value: reducedMotion/.test(preview),
+    'the reduced-motion value is never handed to the browser, so the default does nothing',
+  )
+  // And the panel must keep the row readable under that setting: dropping the
+  // gradient without naming a colour would render transparent text, which looks
+  // exactly like a scene that legitimately has nothing to say.
+  const html = readFileSync(join(root, 'extension', 'sidepanel.html'), 'utf8')
+  const reduceBlock = /@media \(prefers-reduced-motion: reduce\) \{\s*\.working \{([^}]*)\}/.exec(html)
+  assert.ok(reduceBlock !== null, 'the reduced-motion rule for the working row is gone')
+  assert.ok(
+    /color:\s*var\(--/.test(reduceBlock[1]),
+    'the working row drops its gradient without naming a colour, so it renders invisible',
+  )
+})

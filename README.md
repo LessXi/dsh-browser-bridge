@@ -162,6 +162,13 @@ node tools/poster.mjs --check   # 同上，只检查
 `tools/gallery.mjs` 里每张图都写着**为什么它在画廊里**；`tools/poster.mjs` 里每张海报都写着
 它的主张与论据，**数字改动必须改那个文件**，所以在正文里漂移不了。
 
+这些图是**可复现**的：同一份代码连渲两次，12 张界面图与 3 张海报逐字节相同。做到这一点靠的是
+渲染时声明 `prefers-reduced-motion: reduce`——面板本来就支持这个设置（它会把「思考中…」的渐变
+换成实色，字照样看得见），所以这仍是产品的真实渲染，不是给截图开的特权。少了这一步，
+`working` 那一屏每次都是**不同的图**（实测两次相差 43 字节），而一张会自己变的图**显示不了
+回归，因为每次渲染都是一次回归**。要看动效本身就用
+`node tools/preview.mjs working out.png --reduced-motion no-preference`。
+
 `tools/preview.mjs` 可以把任意场景渲染成 PNG，也可以只回答一个问题：
 
 ```powershell
@@ -396,7 +403,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 619 条
+npm test                          # 全部 621 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -486,7 +493,7 @@ Chrome for Testing 都装进带版本号的目录，写死路径会在一台机�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 619 条
+npm test                 # 621 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）

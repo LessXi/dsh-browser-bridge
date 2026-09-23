@@ -35,6 +35,13 @@
  * different contrast — a palette that passes in one can fail in the other, so
  * both are worth rendering deliberately.
  *
+ * `--reduced-motion reduce|no-preference` defaults to `reduce` so that a
+ * screenshot is a function of the code alone. A scene holding the working row
+ * animates, and two renders of it differed by 43 bytes; the picture in the
+ * README would otherwise be a photograph of one arbitrary instant. The panel
+ * keeps the row legible under reduced motion (it drops the gradient for a flat
+ * `--tertiary`), so nothing is hidden by asking for it.
+ *
  * Scenarios are named states the panel can be in. Each one is a fixture the
  * panel has no way to reach on its own, which is exactly why they are worth
  * rendering: `firstRun` (extension installed, host never started) was invisible
@@ -862,6 +869,19 @@ async function main() {
   if (forcedColors !== 'none' && forcedColors !== 'active') {
     throw new Error(`--forced-colors must be none or active, got ${forcedColors}`)
   }
+  // Screenshots default to the reduced-motion rendering, because a screenshot
+  // that changes on every run cannot testify to anything. `normal` and
+  // `streaming` were already byte-identical between runs; `working` was not —
+  // two renders differed by 43 bytes — because its sweep is a live animation.
+  //
+  // `no-preference` is still reachable for looking at the motion itself. It is
+  // not the default because it makes the image unreproducible, and an
+  // unreproducible image in the README is a claim that silently stops being
+  // about this product the moment it is regenerated under different timing.
+  const reducedMotion = textOf('reduced-motion', 'reduce')
+  if (reducedMotion !== 'reduce' && reducedMotion !== 'no-preference') {
+    throw new Error(`--reduced-motion must be reduce or no-preference, got ${reducedMotion}`)
+  }
   // A side panel is narrow, and narrow is where layouts break. 380 is a
   // mid-range Chrome side panel; pass --width 300 for the tightest real case.
   const width = valueOf('width', 380)
@@ -951,10 +971,22 @@ async function main() {
     // Decide the light/dark side of `color-scheme: light dark` explicitly. The
     // panel's `Canvas`/`CanvasText` tokens resolve against this, so leaving it
     // to the headless default means one of the two palettes is never measured.
+    //
+    // `prefers-reduced-motion` is here for reproducibility rather than for the
+    // palette. The panel honours it — the rule that stops `.working`'s sweep is
+    // in `sidepanel.html` — and without it a scene containing that row renders a
+    // different image every time: two runs of `working` differed by 43 bytes and
+    // hashed differently, while `normal` was byte-identical. A screenshot that is
+    // not reproducible cannot show a regression, because every run is one.
+    //
+    // Emulating a setting the product genuinely supports is not a test-only
+    // back door: a reader who asks their system for less motion gets this same
+    // rendering, so the picture is still a picture of the product.
     await cdp.send('Emulation.setEmulatedMedia', {
       features: [
         { name: 'prefers-color-scheme', value: scheme },
         { name: 'forced-colors', value: forcedColors },
+        { name: 'prefers-reduced-motion', value: reducedMotion },
       ],
     }, sessionId)
 
