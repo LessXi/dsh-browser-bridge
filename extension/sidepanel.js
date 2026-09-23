@@ -1537,6 +1537,54 @@ function rowKey(row) {
 }
 
 /**
+ * Which label a trigger row's source kind gets.
+ *
+ * The harness's own `turnTriggerDetails` maps the same kinds to the same idea,
+ * and this mirrors its names rather than inventing a second vocabulary: one
+ * event should not be called two things depending on which surface reported it.
+ * The harness knows more kinds than it lists — `skill-catalog`, `runtime-context`
+ * and the plugin namespaces arrive with a prefix or not at all — so the mapping
+ * is a prefix test for those and a name for the ones that are enumerated.
+ *
+ * An unrecognised kind still gets a label. A new kind of notification should
+ * read as "something else started this turn", which is true, rather than as
+ * nothing at all, which is what the panel showed before.
+ *
+ * @param {string} kind - The `source.kind` the host sent.
+ * @param {string} provider - The `source.provider`, when the host sent one.
+ * @returns {string} The label to show.
+ */
+function triggerLabel(kind, provider) {
+  // GitHub events arrive as `webhook` with `provider: 'github'` rather than as a
+  // kind of their own — the harness tells them apart the same way
+  // (`turnTriggerDetails` reads `source.provider`). Checking the provider here
+  // keeps the two surfaces naming one event one way instead of the panel
+  // inventing a `github` kind nothing ever sends.
+  if (kind === 'webhook' && provider === 'github') return t('trigger.github')
+  // Written as translator calls rather than as a table of key strings, because
+  // the panel's own localization guard reads the source for literal lookups and
+  // treats a key it cannot see as dead weight — correctly, since that is what a
+  // leftover key looks like. A mapping of plain strings would be invisible to
+  // it, and the guard would have to be weakened to let this through.
+  const exact = {
+    goal: t('trigger.goal'),
+    'agent-message': t('trigger.agent'),
+    'team-message': t('trigger.team'),
+    'subagent-settled': t('trigger.subagent'),
+    webhook: t('trigger.webhook'),
+    schedule: t('trigger.schedule'),
+    'tool-jobs': t('trigger.job'),
+    'skill-catalog': t('trigger.skill'),
+    'runtime-context': t('trigger.request'),
+  }
+  if (kind in exact) return exact[kind]
+  // `plugin`, `plugin:acp-nudge`, `plugin:billion-context-dsh` — the plugin
+  // kinds are namespaced with a colon, and all of them are a plugin talking.
+  if (kind === 'plugin' || kind.startsWith('plugin:')) return t('trigger.plugin')
+  return t('trigger.other')
+}
+
+/**
  * Render one transcript row.
  *
  * @param {object} row - A row from the host's `messages` action.
@@ -1607,6 +1655,21 @@ function renderRow(row) {
       else expandedReasoning.add(key)
       drawTranscript(rows)
     })
+    return wrapper
+  }
+
+  if (row.kind === 'trigger') {
+    // A label, not a bubble. The message behind it was not written by anyone in
+    // this conversation — it is the machine telling the model to start — so
+    // giving it a speaker's shape would be a lie about who said it. What the
+    // reader needs is only the answer to "why is it talking", and that is one
+    // line they can skip.
+    const wrapper = document.createElement('div')
+    wrapper.className = 'trigger'
+    const label = document.createElement('span')
+    label.className = 'trigger-label'
+    label.textContent = triggerLabel(row.text, row.provider)
+    wrapper.append(label)
     return wrapper
   }
 

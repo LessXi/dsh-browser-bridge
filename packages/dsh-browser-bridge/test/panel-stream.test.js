@@ -1691,6 +1691,68 @@ test('a reasoning row and an answer with the same words are still two rows', asy
   )
 })
 
+test('a turn nobody typed a question for is labelled with what started it', async () => {
+  // Measured on this machine: 112 of 243 turns across 156 real sessions were
+  // opened by something other than the reader. Without a row for them the panel
+  // drew the model answering nothing, and the reader had no way to find out why
+  // it had started talking. The injected words stay out of the transcript — a
+  // skill catalog is 9 KB — so only the label is asserted here.
+  await show([
+    { kind: 'user', text: '帮我看一下这个页面' },
+    { kind: 'assistant', text: '好。' },
+    { kind: 'trigger', text: 'goal' },
+    { kind: 'assistant', text: '继续检查剩下的部分。' },
+  ])
+
+  const labels = transcript.querySelectorAll('.trigger-label')
+  assert.equal(labels.length, 1, 'the turn with no question was not labelled')
+  assert.equal(
+    labels[0].textContent,
+    '继续执行目标',
+    `the label did not name the trigger: ${JSON.stringify(labels[0].textContent)}`,
+  )
+  // The label is not a control. Giving it a `pointer` cursor, a tab stop or a
+  // click handler would promise the reader that something happens when they
+  // click it, and nothing does. The shim has neither `tabIndex` nor an `onclick`
+  // that defaults to null — real Chromium reports -1 and null, which the
+  // affordance probe checks — so this holds what the shim can answer: it is not
+  // a button, and nothing was attached to it.
+  assert.equal(labels[0].tagName, 'SPAN', 'a trigger label must not be a button')
+  assert.equal(
+    labels[0].listeners.get('click'),
+    undefined,
+    'a trigger label must have no click handler: it is a caption, not a control',
+  )
+})
+
+test('a GitHub event is named as one rather than as a generic webhook', async () => {
+  // The harness distinguishes them by `source.provider`, not by a kind of their
+  // own. A panel that invented a `github` kind would name an event nothing
+  // sends, and would call the real one by the wrong name.
+  await show([
+    { kind: 'trigger', text: 'webhook', provider: 'github' },
+    { kind: 'trigger', text: 'webhook' },
+    { kind: 'trigger', text: 'schedule' },
+  ])
+
+  const labels = [...transcript.querySelectorAll('.trigger-label')].map((node) => node.textContent)
+  assert.deepEqual(labels, ['收到 GitHub 事件', '收到外部事件', '定时任务'])
+})
+
+test('an unrecognised trigger still gets a label rather than silence', async () => {
+  // A notification kind the panel has never heard of is exactly the case where
+  // it must say something: a new kind of event should read as "something else
+  // started this turn", which is true, not as nothing at all.
+  await show([{ kind: 'trigger', text: 'some-future-kind' }])
+
+  const labels = transcript.querySelectorAll('.trigger-label')
+  assert.equal(labels.length, 1, 'an unknown trigger drew nothing at all')
+  assert.ok(
+    (labels[0].textContent ?? '').length > 0,
+    'an unknown trigger produced an empty label',
+  )
+})
+
 test('a compaction row says how much conversation it stands in for', async () => {
   // Compaction removes the conversation it summarizes from the surface, so
   // without this row the transcript simply begins: the discussion starts

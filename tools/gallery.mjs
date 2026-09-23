@@ -172,6 +172,13 @@ const SHOTS = [
     why: 'A conversation that was compacted, with its summary opened. Compaction removes the history it summarizes from the surface, so without this row the transcript simply begins — the discussion starts mid-thought and nothing says it was ever longer. On this machine 30 of 156 sessions have been compacted, one of them 77 times.',
   },
   {
+    file: 'triggered.png',
+    scenario: 'triggered',
+    scheme: 'dark',
+    locale: 'zh-CN',
+    why: 'Turns the reader did not start. 112 of the 243 turns across this machine’s real sessions were opened by a goal round, a team message or a subagent notification rather than by the person reading — and the panel used to draw nothing at all for them, so the model appeared to answer nobody. The injected words stay out of the transcript; only the one line naming the cause is shown.',
+  },
+  {
     file: 'picture.png',
     scenario: 'picture',
     scheme: 'dark',

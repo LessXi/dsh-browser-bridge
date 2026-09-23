@@ -140,6 +140,23 @@ export const zh = Object.freeze({
   // say how much of the conversation it stands in for.
   'row.compaction': '上下文已压缩',
   'row.compaction.count': '{count} 条历史记录',
+  // What started a turn the reader did not start. Their own words are the
+  // question; these name everything else, mirroring the harness's own wording
+  // (`message.trigger.*`) so the same event reads the same way in both UIs.
+  // Agreement matters here: a reader who sees 「收到团队消息」 in the harness and
+  // something different in the panel would be looking at two names for one event.
+  'trigger.request': '收到执行请求',
+  'trigger.goal': '继续执行目标',
+  'trigger.agent': '收到任务消息',
+  'trigger.team': '收到团队消息',
+  'trigger.subagent': '子任务状态更新',
+  'trigger.github': '收到 GitHub 事件',
+  'trigger.webhook': '收到外部事件',
+  'trigger.schedule': '定时任务',
+  'trigger.job': '后台任务状态更新',
+  'trigger.plugin': '插件状态更新',
+  'trigger.skill': '技能目录已更新',
+  'trigger.other': '收到一条消息',
   'row.compaction.unknown': '更早的内容已折叠',
 
   // A picture the reader sent. The alt text is used only when the message
@@ -297,6 +314,18 @@ export const en = Object.freeze({
   'row.working': 'Thinking…',
   'row.compaction': 'Context compacted',
   'row.compaction.count': '{count} history items',
+  'trigger.request': 'Execution requested',
+  'trigger.goal': 'Continuing goal',
+  'trigger.agent': 'Task message received',
+  'trigger.team': 'Team message received',
+  'trigger.subagent': 'Subtask status updated',
+  'trigger.github': 'GitHub event received',
+  'trigger.webhook': 'External event received',
+  'trigger.schedule': 'Scheduled task',
+  'trigger.job': 'Background task updated',
+  'trigger.plugin': 'Plugin status updated',
+  'trigger.skill': 'Skill catalog updated',
+  'trigger.other': 'Message received',
   'row.compaction.unknown': 'Earlier content folded away',
 
   'image.alt': 'Image',

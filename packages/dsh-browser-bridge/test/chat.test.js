@@ -43,6 +43,18 @@ function userEvent(text, plugin = undefined) {
   return { seq: 1, time: 1, type: 'user/message', data: { content: [{ type: 'text', text }], source } }
 }
 
+/**
+ * A message the machine sent to the model rather than one the reader typed.
+ *
+ * Real ones measured on this machine, by kind: `goal` 114, `plugin` 319,
+ * `team-message` 42, `subagent-settled` 18, `agent-message` 6. None of them is
+ * shown as its own row — this fixture exists so the *turn* they open can be
+ * labelled without their words being pasted into the transcript.
+ */
+function injectedEvent(kind, text = 'injected') {
+  return { seq: 1, time: 1, type: 'user/message', data: { content: [{ type: 'text', text }], source: { kind } } }
+}
+
 /** An assistant message. Note the extra `message` level. */
 function assistantEvent(content) {
   return { seq: 3, time: 3, type: 'assistant/message', data: { turn: 1, step: 1, message: { role: 'assistant', content } } }
@@ -84,8 +96,8 @@ function resultEvent(callId, options = {}) {
 const SURFACE = { isAppendSurfaceEvent: (event) => event.surfaceOp === undefined || event.surfaceOp === 'append' }
 
 /** A turn ending. `reason` is absent on a turn that simply ran out of work. */
-function turnEndEvent(reason) {
-  return { seq: 9, time: 9, type: 'turn/end', data: { turn: 1, ...(reason === undefined ? {} : { reason }) } }
+function turnEndEvent(reason, turn = 1) {
+  return { seq: 9, time: 9, type: 'turn/end', data: { turn, ...(reason === undefined ? {} : { reason }) } }
 }
 
 /**
@@ -133,6 +145,98 @@ test('a user message becomes a user row, and injected context does not', () => {
     userEvent('<skills>…</skills>', '@deepseek-ai/dsh-skill-catalog'),
   ], SURFACE)
   assert.deepEqual(rows, [{ kind: 'user', text: '11' }])
+})
+
+test('a turn the reader never started says what did start it', () => {
+  // The words of a goal round are not the conversation and are not shown. The
+  // turn they open is, and without a name for it the panel shows the model
+  // answering nothing — 112 of the 243 turns in this machine's real sessions.
+  const rows = describeEvents([
+    turnStartEvent(1),
+    injectedEvent('goal', '<goal_round>Objective: keep improving the panel'),
+    assistantEvent([{ type: 'text', text: 'Round 42.' }]),
+  ], SURFACE)
+  assert.deepEqual(rows, [
+    { kind: 'trigger', text: 'goal' },
+    { kind: 'assistant', text: 'Round 42.' },
+  ])
+})
+
+test('an injected message does not paste its own words into the transcript', () => {
+  // A skill catalog is 9 KB. Showing the trigger names the cause; showing the
+  // cause's body would bury the conversation the reader came for.
+  const rows = describeEvents([
+    turnStartEvent(1),
+    injectedEvent('skill-catalog', '<system-reminder>A skill is a reusable set of…</system-reminder>'),
+  ], SURFACE)
+  assert.deepEqual(rows, [{ kind: 'trigger', text: 'skill-catalog' }])
+})
+
+test('a turn is labelled once, however many notifications join it', () => {
+  // Real turns carry several: a goal round, a runtime-context snapshot and an
+  // acp nudge can all arrive in the same one. One label per turn is what keeps
+  // the transcript about the conversation instead of about the plumbing.
+  const rows = describeEvents([
+    turnStartEvent(7),
+    injectedEvent('goal'),
+    injectedEvent('runtime-context'),
+    injectedEvent('plugin:acp-nudge'),
+  ], SURFACE)
+  assert.deepEqual(rows, [{ kind: 'trigger', text: 'goal' }])
+})
+
+test('a question the reader typed is not labelled as a trigger', () => {
+  // The reader's own message is the turn's opening row; adding a trigger above
+  // it would say the turn was started by something other than them.
+  const rows = describeEvents([
+    turnStartEvent(1),
+    userEvent('帮我看一下这个页面'),
+    assistantEvent([{ type: 'text', text: '好。' }]),
+  ], SURFACE)
+  assert.deepEqual(rows, [
+    { kind: 'user', text: '帮我看一下这个页面' },
+    { kind: 'assistant', text: '好。' },
+  ])
+})
+
+test('each turn gets its own label, and the label does not leak into the next', () => {
+  const rows = describeEvents([
+    turnStartEvent(1),
+    injectedEvent('goal'),
+    turnEndEvent(),
+    turnStartEvent(2),
+    injectedEvent('team-message'),
+    turnEndEvent(),
+  ], SURFACE)
+  assert.deepEqual(rows, [
+    { kind: 'trigger', text: 'goal' },
+    { kind: 'trigger', text: 'team-message' },
+  ])
+})
+
+test('a turn number that comes round again is still labelled again', () => {
+  // Turn numbers are not unique for the life of a session — a resumed or
+  // truncated log can count from a number it has used before. Closing a turn has
+  // to forget its label, or the next turn carrying that number is taken for one
+  // already named and gets no row at all: the model answers nothing, which is
+  // the failure this whole row exists to prevent.
+  //
+  // Found by mutation: dropping the `labelledTurns.delete(turn)` in `turn/end`
+  // turned no test red. Reproduced with the probe first — same number reused
+  // across a completed turn drew one label where there should be two — so this
+  // is a test gap rather than an equivalent mutation.
+  const rows = describeEvents([
+    turnStartEvent(5),
+    injectedEvent('goal'),
+    turnEndEvent(undefined, 5),
+    turnStartEvent(5),
+    injectedEvent('team-message'),
+    turnEndEvent(undefined, 5),
+  ], SURFACE)
+  assert.deepEqual(rows, [
+    { kind: 'trigger', text: 'goal' },
+    { kind: 'trigger', text: 'team-message' },
+  ])
 })
 
 test('this bridge’s own attachment shows as a notice carrying its summary', () => {

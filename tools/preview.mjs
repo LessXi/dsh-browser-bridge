@@ -357,10 +357,18 @@ const DEFAULT_GROUPS = [
       // day old and the median is a week — so the days branch is the one a reader
       // actually sees, and a fixture that never reaches it cannot show what it
       // looks like. This row is the median.
+      //
+      // Six days, not seven, and the difference is not cosmetic. `relativeTime`
+      // switches from a relative label to an absolute date at `days >= 7`, so a
+      // row placed exactly on the boundary renders differently depending on the
+      // hour it is rendered: a gallery run on one side of the boundary produced
+      // 64951 differing pixels in `sessions.png` and a diff that looked like a
+      // regression. Six days is inside the branch being shown, so the picture is
+      // the same at every hour.
       {
         id: 'session-d',
         title: 'Investigate the flaky snapshot test',
-        updatedAt: Date.now() - 7 * 24 * 60 * 60_000,
+        updatedAt: Date.now() - 6 * 24 * 60 * 60_000,
         running: false,
         blank: false,
         model: { provider: 'deepseek', model: 'deepseek-v4-pro', reasoningEffort: 'high' },
@@ -713,6 +721,26 @@ const COMPACTED_MESSAGES = [
   { kind: 'assistant', text: '审批卡有三个等权按钮，没有默认项——给同意界面的一侧加权重是记录在案的暗黑模式。' },
 ]
 
+/**
+ * A conversation the reader did not start every turn of.
+ *
+ * Real ones on this machine: 112 of 243 turns were opened by something other
+ * than the reader — a goal round most often, then team messages and subagent
+ * notifications. The injected words themselves are not rows (a skill catalog is
+ * 9 KB); only the label saying what started the turn is.
+ */
+const TRIGGERED_MESSAGES = [
+  { kind: 'user', text: '帮我看一下这个页面有多少张图' },
+  { kind: 'assistant', text: '这一页有 12 张图，主要是产品截图。' },
+  // The reader stopped here. Everything below arrived on its own.
+  { kind: 'trigger', text: 'goal' },
+  { kind: 'assistant', text: '继续把剩下的检查做完：图的替代文字、尺寸声明、以及懒加载。' },
+  { kind: 'trigger', text: 'team-message' },
+  { kind: 'assistant', text: '收到队友的消息，已经把结论写回共享任务。' },
+  { kind: 'trigger', text: 'subagent-settled' },
+  { kind: 'assistant', text: '后台的子任务结束了，结果已并入上面的答复。' },
+]
+
 const FAILED_MESSAGES = [
   { kind: 'user', text: '帮我把这个页面上的表格抓下来' },
   { kind: 'assistant', text: '好，我先建一个会话。' },
@@ -1019,6 +1047,7 @@ const SCENARIOS = {
    * conversation that is still being added to.
    */
   compacted: { messages: COMPACTED_MESSAGES },
+  triggered: { messages: TRIGGERED_MESSAGES },
   /** The same checkpoint with its summary opened. */
   compactedOpen: { click: '.compaction-line', messages: COMPACTED_MESSAGES },
   /**

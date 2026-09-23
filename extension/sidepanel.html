@@ -239,6 +239,18 @@
           height: 0;
           border-top: 1px solid CanvasText;
         }
+        /* The third instance of the same mechanism, which is why it is written
+           as a rule about the property rather than about this element.
+           A trigger label is a tinted pill: `background: var(--hit)`, which is
+           `CanvasText` at 12%. This mode repaints every background as `Canvas`,
+           so the pill composited to `rgb(0, 0, 0)` over a `rgb(0, 0, 0)`
+           backdrop — measured, identical to the answer text beside it. Its only
+           remaining difference was being 2px smaller, which is not a label.
+           Comparing the *declared* colour says the two differ
+           (`rgba(0,0,0,0.12)` against `rgba(0,0,0,0)`); comparing what reaches
+           the screen says they do not. The screen is the judge.
+           A border is what this mode keeps, so the pill gets one. */
+        .trigger-label { border: 1px solid CanvasText; }
       }
       [hidden] { display: none !important; }
 
@@ -733,6 +745,24 @@
         flex-direction: column;
         gap: 8px;
         margin: 2px 0;
+      }
+      /* A turn the reader did not start. Centred and quiet: it is a caption on
+         the reply below it, not a contribution to the conversation, and it must
+         not read as something a participant said. No border, because a border
+         would give it the shape of a bubble. */
+      .trigger {
+        display: flex;
+        justify-content: center;
+        margin: 2px 0;
+      }
+      .trigger-label {
+        padding: 2px 8px;
+        border-radius: var(--radius-sm);
+        background: var(--hit);
+        color: var(--muted);
+        font-size: var(--text-xs);
+        line-height: 1.5;
+        text-align: center;
       }
       .compaction-line {
         display: flex;

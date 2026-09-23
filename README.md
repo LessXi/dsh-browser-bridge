@@ -446,7 +446,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 696 条
+npm test                          # 全部 705 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -536,7 +536,7 @@ Chrome for Testing 都装进带版本号的目录，写死路径会在一台机�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 696 条
+npm test                 # 705 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -567,7 +567,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面五层测试，696 条。包括真实 Chrome 驱动的快照、点击、输入、截图，
+**已自动化验证**：上面五层测试，705 条。包括真实 Chrome 驱动的快照、点击、输入、截图，
 以及**载入真实扩展的真实 Chromium** 走完整协议并核对页面真的被点到了。扩展的首次连接也已
 在真实 Chrome 里端到端验证过：清空 storage 后，扩展自己读了 health、取了令牌、带着正确令牌
 发起升级（`.tmp-run/probe-enrol-real-browser.js`）。

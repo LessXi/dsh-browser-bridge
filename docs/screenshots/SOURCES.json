@@ -1,6 +1,6 @@
 {
   "note": "Fingerprint of the files these screenshots were rendered from. Written by tools/gallery.mjs; checked by test/screenshots.test.js. Do not edit by hand.",
-  "fingerprint": "b40669bdf5f882c94320efb7e31d9d30f5ed7e224b42974cf95727fc3a18bb45",
+  "fingerprint": "3d6db892f4554cbf72eb5df93e27d03a7ed1930cf0c7fbf747f1180d50c0469a",
   "files": [
     "/extension/background.js",
     "/extension/bootstrap.js",
