@@ -45,7 +45,7 @@
 
 import { spawn } from 'node:child_process'
 import { createServer } from 'node:http'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, writeSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, writeSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -785,6 +785,47 @@ function bootstrapSource(port, scenario, tabUrl) {
   `
 }
 
+/**
+ * Delete profile directories whose owning process is gone.
+ *
+ * Cleanup on the way out only runs when there is a way out. A cancelled run, a
+ * Ctrl-C, or a killed probe leaves its Chrome profile behind, and nothing else
+ * will ever remove it — the process that knew about it is the one that died. So
+ * the next run collects them, which is the only moment anybody is guaranteed to
+ * be looking.
+ *
+ * The pid is read back out of the directory name rather than tracked in a file:
+ * the name already carries it, and a file would be one more thing an interrupted
+ * run could fail to write.
+ *
+ * `process.kill(pid, 0)` is the liveness test — signal 0 sends nothing and only
+ * checks. A live pid means a concurrent preview is using that profile, and two
+ * previews do run at once. `EPERM` means the pid exists but belongs to another
+ * user: also alive, also not ours to remove. Only `ESRCH` — no such process —
+ * means the directory is genuinely orphaned. Reaping on any other error would
+ * eventually delete a profile out from under a running Chrome.
+ *
+ * @param {string} root - The directory holding `chrome-profile-<timestamp>-<pid>`.
+ * @returns {void}
+ */
+function reapOrphanProfiles(root) {
+  let entries = []
+  try { entries = readdirSync(root) } catch { return }
+  for (const name of entries) {
+    const match = /^chrome-profile-\d+-(\d+)$/.exec(name)
+    if (match === null) continue
+    const pid = Number(match[1])
+    let alive = true
+    try {
+      process.kill(pid, 0)
+    } catch (error) {
+      alive = error.code !== 'ESRCH'
+    }
+    if (alive) continue
+    try { rmSync(join(root, name), { recursive: true, force: true }) } catch { /* still held */ }
+  }
+}
+
 async function main() {
   const args = process.argv.slice(2)
   if (args.includes('--list')) {
@@ -841,7 +882,16 @@ async function main() {
   await new Promise((ok) => staticServer.listen(0, '127.0.0.1', ok))
   const staticPort = staticServer.address().port
 
-  const profile = join(HERE, `chrome-profile-${Date.now()}-${process.pid}`)
+  // Under a `.tmp-` directory, and that is the point: this directory is created
+  // next to the tool and removed on the way out, so a run that is killed — a
+  // cancelled probe, Ctrl-C, a full disk — leaves it behind. When the tool lived
+  // in `.tmp-run/` the repository's `.tmp-*` ignore rule covered it by accident.
+  // Moved into `tools/` for the README, it stopped being covered, and one
+  // interrupted run left an 11.6 MB directory that `git add -A` would have
+  // committed. The name is what keeps that impossible, not the cleanup.
+  const profiles = join(HERE, '.tmp-profiles')
+  reapOrphanProfiles(profiles)
+  const profile = join(profiles, `chrome-profile-${Date.now()}-${process.pid}`)
   mkdirSync(profile, { recursive: true })
   // A crashed audit must not exit 0. `audit-all.mjs` treats a non-zero code as a
   // hard failure, and this is what lets it: without it a broken instrument and
@@ -1397,6 +1447,9 @@ let outAfterProbe = undefined
     // while it shuts down, so removing the directory straight away lost the race
     // and the error was swallowed as "held open". The cost was silent: 1,323
     // orphaned profile directories had accumulated in `.tmp-run/`.
+    //
+    // This is the tidy path. `reapOrphanProfiles` is the one that matters, since
+    // a killed run never reaches here.
     await new Promise((done) => {
       if (chrome.exitCode !== null || chrome.signalCode !== null) { done(); return }
       const give_up = setTimeout(done, 5_000)

@@ -144,3 +144,40 @@ test('every poster is drawn from a screenshot the gallery actually produces', ()
   const unknown = used.filter((name) => !produced.has(name))
   assert.deepEqual(unknown, [], `the posters are drawn from files the gallery does not produce: ${unknown.join(', ')}`)
 })
+
+test('the preview tool keeps its scratch directory somewhere git ignores', () => {
+  // The tool creates a Chrome profile next to itself and removes it on the way
+  // out — so a run that is *killed* leaves it behind, and the process that knew
+  // about it is the one that died. While the tool lived in `.tmp-run/`, the
+  // repository's `.tmp-*` ignore rule covered that leak by accident. It moved to
+  // `tools/` for the README, the rule stopped applying, and one cancelled probe
+  // left an 11.6 MB directory that `git add -A` would have committed.
+  //
+  // Two things have to hold, and they fail independently: the directory must sit
+  // under an ignored name, and the tool must reap what earlier runs abandoned.
+  const ignore = readFileSync(join(root, '.gitignore'), 'utf8')
+  const patterns = ignore.split('\n').map((line) => line.trim()).filter((line) => line !== '' && !line.startsWith('#'))
+  assert.ok(patterns.includes('.tmp-*'), 'the ignore rule the scratch directory relies on is gone from .gitignore')
+
+  const preview = readFileSync(join(root, 'tools', 'preview.mjs'), 'utf8')
+  // The profile directory is built in two steps: a `.tmp-` parent anchored at
+  // HERE, then the per-run directory inside it. Match that pair, not any
+  // `join(HERE, ...)` — the tool has several, and the first one (`audit-in-page.js`)
+  // is a file it reads, not scratch space.
+  const parent = /const (\w+) = join\(HERE, '([^']+)'\)/.exec(preview)
+  assert.ok(parent !== null, 'the preview tool no longer builds its scratch path with join(HERE, ...)')
+  assert.ok(
+    parent[2].startsWith('.tmp-'),
+    `the preview tool's scratch directory is ${parent[2]}, which git does not ignore`,
+  )
+  assert.ok(
+    new RegExp(`join\\(${parent[1]}, \`chrome-profile-`).test(preview),
+    `the chrome profile is no longer created inside ${parent[1]}`,
+  )
+  // The *call*, not the name: matching `/reapOrphanProfiles\(/` would also hit the
+  // function's own definition and stay green with the call deleted.
+  assert.ok(
+    /^\s+reapOrphanProfiles\(/m.test(preview),
+    'the preview tool no longer collects profiles an interrupted run left behind',
+  )
+})
