@@ -1646,6 +1646,133 @@ test('a reasoning row and an answer with the same words are still two rows', asy
   )
 })
 
+test('a compaction row says how much conversation it stands in for', async () => {
+  // Compaction removes the conversation it summarizes from the surface, so
+  // without this row the transcript simply begins: the discussion starts
+  // mid-thought and nothing says it was ever longer. Measured across this
+  // machine's sessions, 30 of 156 have been compacted.
+  await show([
+    { kind: 'user', text: '第一个问题' },
+    { kind: 'compaction', compactionId: 'c-compaction-count', shadowed: 293, text: '这一段被压缩了' },
+    { kind: 'user', text: '第二个问题' },
+  ])
+
+  const lines = transcript.querySelectorAll('.compaction-line')
+  assert.equal(lines.length, 1, 'the compaction row was not drawn')
+  // The count is the reading that makes the row worth having: it is the
+  // difference between "the conversation starts here" and "the conversation was
+  // longer than this".
+  assert.match(
+    lines[0].textContent,
+    /293/,
+    `the row did not state how much it covers: ${JSON.stringify(lines[0].textContent)}`,
+  )
+})
+
+test('a compaction row opens to show its summary, and the caret follows', async () => {
+  // The summary is the only surviving account of the part that was removed, and
+  // it is real prose — 1.3k to 6.1k characters on this machine. Closed by
+  // default, because a row that opens to that much text would be most of a screen.
+  await show([
+    { kind: 'compaction', compactionId: 'c-compaction-open', shadowed: 12, text: '被折叠的那一段' },
+  ])
+
+  assert.equal(
+    transcript.querySelector('.compaction-body'),
+    null,
+    'the summary was drawn before anything was clicked',
+  )
+  const line = transcript.querySelector('.compaction-line')
+  assert.equal(line.getAttribute('aria-expanded'), 'false', 'a closed row did not say it was closed')
+
+  line.emit('click', {})
+  await settle()
+
+  const bodies = transcript.querySelectorAll('.compaction-body')
+  assert.equal(bodies.length, 1, `clicking the row opened ${bodies.length} summaries`)
+  assert.equal(bodies[0].textContent, '被折叠的那一段', 'the row opened a different summary')
+  assert.equal(
+    transcript.querySelector('.compaction-line').getAttribute('aria-expanded'),
+    'true',
+    'the open row did not say it was open',
+  )
+  // The caret is the visible half of the same fact, and it has its own element:
+  // a redraw that updated the attribute but not the caret would leave the row
+  // claiming to be closed while it showed its summary.
+  assert.match(transcript.querySelector('.compaction-caret').textContent, /⌃/, 'the caret still points closed')
+
+  transcript.querySelector('.compaction-line').emit('click', {})
+  await settle()
+  assert.equal(transcript.querySelector('.compaction-body'), null, 'a second click did not close the row')
+})
+
+test('a checkpoint with no summary is still drawn, and is not a control', async () => {
+  // The host cannot promise the summary arrived — it is model-written prose. The
+  // fact the row exists to tell does not depend on it, so the row is drawn either
+  // way; but a button that reveals nothing is a tab stop that costs the reader a
+  // press, so with no summary it is not a button.
+  await show([{ kind: 'compaction', compactionId: 'c-compaction-bare', shadowed: 7, text: '' }])
+
+  const lines = transcript.querySelectorAll('.compaction-line')
+  assert.equal(lines.length, 1, 'a summary-less checkpoint was dropped entirely')
+  assert.equal(lines[0].tagName, 'DIV', 'a row with nothing to reveal was still made focusable')
+  assert.match(lines[0].textContent, /7/, 'the row did not state how much it covers')
+})
+
+test('two checkpoints that read the same open one at a time', async () => {
+  // Their key falls back to the text, and two checkpoints *can* carry the same
+  // text — a model summarizing two ranges in the same words is enough. Sharing a
+  // name is how an empty `callId` once made every tool row the same row, and here
+  // the damage is in the open set: opening one would open both.
+  //
+  // The rows must carry a summary, or there is nothing to open and the shared key
+  // costs nothing observable.
+  const same = '两段被压缩的对话摘要文字完全相同'
+  await show([
+    { kind: 'compaction', compactionId: 'c-compaction-twin-1', shadowed: 1, text: same },
+    { kind: 'user', text: '中间' },
+    { kind: 'compaction', compactionId: 'c-compaction-twin-1-2', shadowed: 2, text: same },
+  ])
+
+  const lines = transcript.querySelectorAll('.compaction-line')
+  assert.equal(lines.length, 2, 'the two checkpoints were not both drawn')
+  lines[0].emit('click', {})
+  await settle()
+
+  const bodies = transcript.querySelectorAll('.compaction-body')
+  assert.equal(
+    bodies.length,
+    1,
+    `opening one checkpoint opened ${bodies.length} of them — they share a row name`,
+  )
+})
+
+test('switching sessions forgets which compaction rows were open', async () => {
+  // A compaction id is only unique within its own session, so an open row carried
+  // across a switch would open whatever row in the *next* conversation happened to
+  // share its name. The sibling sets are cleared for this reason, and so is this
+  // one — leaving it out is invisible until two sessions happen to share an id.
+  const checkpoint = (text) => ({ kind: 'compaction', compactionId: 'c-compaction-switch', shadowed: 3, text })
+  await show([checkpoint('第一个会话的摘要')])
+  transcript.querySelector('.compaction-line').emit('click', {})
+  await settle()
+  assert.equal(
+    transcript.querySelectorAll('.compaction-body').length,
+    1,
+    'the row never opened, so nothing below is proved',
+  )
+
+  await switchTo(OTHER)
+  await switchTo(SESSION)
+  await show([checkpoint('第二个会话的摘要')])
+
+  assert.equal(
+    transcript.querySelector('.compaction-body'),
+    null,
+    'a compaction row was open in a session the reader had left',
+  )
+})
+
 test('a row keeps its node when a redraw does not change it', async () => {
   // The transcript used to be rebuilt with `replaceChildren` on every change, so
   // every row was a new node every time — which is invisible in a screenshot and

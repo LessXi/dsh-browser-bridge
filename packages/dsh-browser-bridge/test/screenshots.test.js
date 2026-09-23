@@ -24,7 +24,8 @@
  * @module dsh-browser-bridge/test/screenshots
  */
 
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -219,5 +220,47 @@ test('a screenshot is a function of the code, not of when it was taken', () => {
   assert.ok(
     /color:\s*var\(--/.test(reduceBlock[1]),
     'the working row drops its gradient without naming a colour, so it renders invisible',
+  )
+})
+
+test('the screenshots were rendered from the code that is here now', () => {
+  // Every guard above asks whether an image *exists*. None asked whether it still
+  // shows the product, and it stopped doing so: the commit that gave the answer
+  // its reading measure changed the panel's layout and did not regenerate the
+  // gallery, and neither did the three panel-style commits that followed.
+  // `picture.png` spent four commits — 661756 differing pixels of 1094400 —
+  // showing a layout the product no longer had, with this whole file green.
+  //
+  // Existence is not freshness. This recomputes the fingerprint from the working
+  // tree here rather than reading the tool's own function, so a change to what
+  // the gallery hashes cannot quietly keep both sides in agreement.
+  const record = JSON.parse(readFileSync(join(SHOTS, 'SOURCES.json'), 'utf8'))
+  const files = readdirSync(join(root, 'extension'))
+    .filter((name) => name.endsWith('.js') || name.endsWith('.html') || name.endsWith('.css'))
+    .map((name) => join(root, 'extension', name))
+  files.push(join(root, 'tools', 'preview.mjs'))
+
+  const hash = createHash('sha256')
+  for (const file of files.sort()) {
+    hash.update(file.slice(root.length).replaceAll('\\', '/'))
+    hash.update('\0')
+    hash.update(readFileSync(file))
+    hash.update('\0')
+  }
+  const actual = hash.digest('hex')
+
+  assert.equal(
+    actual,
+    record.fingerprint,
+    'the panel or the preview tool changed since the screenshots were rendered — '
+    + 'run `node tools/gallery.mjs` and commit the images with the change that moved them',
+  )
+  // The file list is asserted too, so a new extension file cannot join the panel
+  // without the fingerprint covering it: a hash over a list that quietly shrank
+  // is a hash that stops noticing.
+  assert.deepEqual(
+    record.files,
+    files.map((file) => file.slice(root.length).replaceAll('\\', '/')),
+    'the set of files the screenshots depend on changed',
   )
 })

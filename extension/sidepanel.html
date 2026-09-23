@@ -223,6 +223,22 @@
         #earlier, #to-bottom, #model-menu, #at-menu, #composer {
           border: 1px solid CanvasText;
         }
+        /* The compaction rule is drawn the same way those hairlines were: a
+           pseudo-element with `background: var(--line-soft)`. This mode repaints
+           every background as `Canvas`, so both halves of the rule came out the
+           colour of the page behind them — measured under the emulated feature,
+           they composited to `rgb(0, 0, 0)` over a `rgb(0, 0, 0)` backdrop, which
+           is 8% of black over black. The label survived and the boundary it exists
+           to draw did not, leaving a row that still said 「上下文已压缩」 while
+           showing no line at all.
+           So in this mode the rule is a border, which is the one separator the mode
+           keeps and repaints into a system colour. `height` goes to zero because a
+           border draws its own line: keeping both would make it two pixels. */
+        .compaction-line::before,
+        .compaction-line::after {
+          height: 0;
+          border-top: 1px solid CanvasText;
+        }
       }
       [hidden] { display: none !important; }
 
@@ -334,11 +350,14 @@
          alone, because a reasoning row is not a `.row` — it is `.reasoning` —
          so a hit on one used to draw no outline at all. Selecting the message
          inside each kind of row is what makes one rule cover every kind, and a
-         sixth kind will only need adding to this list, not a second rule. */
+         sixth kind will only need adding to this list, not a second rule.
+         A compaction row is that sixth kind: `.compaction`, whose label is the
+         only element carrying the summary's words. */
       #transcript .row.hit:has(> .bubble) > .bubble,
       #transcript .row.hit > .answer,
       #transcript .row.hit > .failure,
-      #transcript .reasoning.hit > .reasoning-toggle {
+      #transcript .reasoning.hit > .reasoning-toggle,
+      #transcript .compaction.hit > .compaction-line {
         background: var(--hit);
         outline: 2px solid var(--accent);
         outline-offset: 2px;
@@ -701,6 +720,55 @@
         white-space: pre-wrap;
         overflow-wrap: anywhere;
         max-height: 168px;
+        overflow-y: auto;
+      }
+
+      /* Compaction is a boundary, not a message: the conversation above this
+         line is not all the conversation there was. So it is drawn as a rule
+         across the transcript with a label sitting on it, rather than as another
+         bubble — a bubble would read as something someone said at this point,
+         which is exactly the false impression the row exists to correct. */
+      .compaction {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        margin: 2px 0;
+      }
+      .compaction-line {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        min-height: 24px;
+        padding: 0;
+        color: var(--faint);
+        font-size: var(--text-xs);
+        text-align: left;
+      }
+      /* The rule is a pseudo-element on each side of the label, so it spans
+         whatever width the panel happens to be and the label stays centred
+         without a fixed size to keep in sync. */
+      .compaction-line::before,
+      .compaction-line::after {
+        content: '';
+        flex: 1 1 auto;
+        height: 1px;
+        background: var(--line-soft);
+      }
+      button.compaction-line:hover { color: var(--muted); }
+      button.compaction-line:hover::before,
+      button.compaction-line:hover::after { background: var(--line); }
+      .compaction-title { flex: none; }
+      .compaction-note { flex: none; color: var(--muted); }
+      .compaction-caret { flex: none; }
+      .compaction-body {
+        border-left: 2px solid var(--line-soft);
+        padding-left: 10px;
+        color: var(--muted);
+        font-size: var(--text-xs);
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        max-height: 240px;
         overflow-y: auto;
       }
 

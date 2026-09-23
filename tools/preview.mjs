@@ -691,6 +691,28 @@ const SEARCH_MESSAGES = searchableMessages()
  * the screen. The panel shows the mapped sentence and demotes the raw text to a
  * detail line. That whole path had never been rendered in a preview.
  */
+/**
+ * A compaction checkpoint in the middle of a conversation.
+ *
+ * `shadowed` is the count the host derives from the checkpoint's own `surfaceOp`
+ * range. Measured on real sessions those ranges run from a handful of events to
+ * a few hundred; this fixture uses a plausible middle size. The summary text has
+ * the shape real ones have: prose written for a reader, not a machine record.
+ */
+const COMPACTED_MESSAGES = [
+  { kind: 'user', text: '这个插件现在能做什么？' },
+  { kind: 'assistant', text: '它能在这个侧栏里读写 DSH 的会话，也能驱动你正在看的那一页。' },
+  { kind: 'user', text: '那搜索呢？' },
+  {
+    kind: 'compaction',
+    compactionId: 'b3f1c0a2-5d4e-4c8f-9a1b-2e7d6f0c3a58',
+    shadowed: 293,
+    text: '这一段对话讨论了侧栏面板的三个能力：会话读写、页面驱动，以及跨整段会话的搜索。搜索在宿主侧完成，因为面板只持有最新 60 行——让它回答「我的对话里有没有这个词」会把真实存在的词报成不存在。会话读写的窗口按绝对行号定位而不是按从末尾数的条数，因为对话还在被写入。',
+  },
+  { kind: 'user', text: '继续，把审批那条也说说。' },
+  { kind: 'assistant', text: '审批卡有三个等权按钮，没有默认项——给同意界面的一侧加权重是记录在案的暗黑模式。' },
+]
+
 const FAILED_MESSAGES = [
   { kind: 'user', text: '帮我把这个页面上的表格抓下来' },
   { kind: 'assistant', text: '好，我先建一个会话。' },
@@ -989,6 +1011,16 @@ const SCENARIOS = {
   longReasoningOpen: { click: '.reasoning-toggle', messages: DAY_MESSAGES },
   /** A turn that failed: the mapped sentence plus the provider's own words. */
   failed: { messages: FAILED_MESSAGES },
+  /**
+   * A conversation that has been compacted once.
+   *
+   * The checkpoint sits in the middle rather than at the top, because that is
+   * where it lands in a real session: compaction happens to the oldest part of a
+   * conversation that is still being added to.
+   */
+  compacted: { messages: COMPACTED_MESSAGES },
+  /** The same checkpoint with its summary opened. */
+  compactedOpen: { click: '.compaction-line', messages: COMPACTED_MESSAGES },
   /**
    * The failed tool call with its reason opened.
    *

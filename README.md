@@ -150,6 +150,23 @@ JSON 意味着**每次轮询约 84 MB**。所以面板拿到的是引用，字�
 一封少了页面的信**。所以它只把话还给你。没有提问的回合（目标轮、定时唤醒）不画这个按钮。
 
 <p align="center">
+  <img src="docs/screenshots/compaction.png" width="330" alt="上下文已压缩：一条横线标出这里少了多少历史，展开是那段摘要">
+</p>
+
+**对话被压缩之后，它会告诉你少了多少。** 上下文压缩会把被总结掉的那段历史从对话里**移走**，
+而面板此前不认识这件事：翻到上面，对话就这么开始了，像是本来就只有这么长。没有那行标记，
+你无法分辨「我们没聊过这个」和「聊过，但被折走了」。
+
+所以压缩点画成一条**横线**而不是气泡——它是一条边界，不是一个谁在此处说过的话。线上写着这段
+标记替掉了多少条历史（数字取自事件自带的 `surfaceOp` 区间，不是面板数出来的行数：留下的是
+残存，区间才是被替换的量），线下面收着那段摘要。这台机器上的 156 个会话里有 **30 个**被压缩过，
+最多的一位被压缩了 **77 次**。
+
+摘要默认折叠：真人的摘要在这台机器上长 1.3k–6.1k 字符，展开着就是大半屏。摘要**没送到**时
+（它由模型写成，宿主不保证它一定在），这行照样画，只是不再是个按钮——一个点开什么都没有的
+控件，是白占一次 Tab 的控件。
+
+<p align="center">
   <img src="docs/screenshots/host-down.png" width="330" alt="宿主没有运行：说明白并给一个有用的动作">
   <img src="docs/screenshots/high-contrast.png" width="330" alt="Windows 高对比度模式下的同一个面板">
 </p>
@@ -422,7 +439,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 673 条
+npm test                          # 全部 686 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -512,7 +529,7 @@ Chrome for Testing 都装进带版本号的目录，写死路径会在一台机�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 673 条
+npm test                 # 686 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -543,7 +560,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面五层测试，673 条。包括真实 Chrome 驱动的快照、点击、输入、截图，
+**已自动化验证**：上面五层测试，686 条。包括真实 Chrome 驱动的快照、点击、输入、截图，
 以及**载入真实扩展的真实 Chromium** 走完整协议并核对页面真的被点到了。扩展的首次连接也已
 在真实 Chrome 里端到端验证过：清空 storage 后，扩展自己读了 health、取了令牌、带着正确令牌
 发起升级（`.tmp-run/probe-enrol-real-browser.js`）。
@@ -624,6 +641,11 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 | ★ 变异脚本自己坏了，会读成「测试没抓到」（v95） | 我把 `if (false) return` **插在**真实守卫**之前**，于是三个「变异」什么都没改，全部报未命中——那是**等价变异**。改成真正删除守卫后 **3/3 命中**。**先证明变异真的改变了行为，再谈命中率** |
 | ★★ 改动既有断言时，用差分证明没改瞎（v95） | 为让新测试不污染后续，我改了两条既有断言，两处都长得像「改松了让它通过」。所以对同一批真实坏法分别跑**基线版本**与**我的版本**，按测试名比较失败集合：`lostByMine: []`、`gainedByMine: ['an IME Escape …']`——没丢掉任何检查，还多抓到一条。**「读起来像放宽了」不能靠读代码判断，要用变异量** |
 | ★ 共享的测试状态会让判据依赖执行顺序（v95） | 那条宣告测试读的是**全文件共享**、从不重置的 `announcerWrites` 数组与 `#announcer` 区域。它一直绿，只是因为它前面那些测试恰好把写入留在了队列里；我的测试多了一次 `settleToIdle()` 就把它们放了出来，于是它报出一句属于**别的测试**的话（`'streaming 29'`）。改成读**启动边界**之前写入的部分，与同文件既有的 `startupToast` / `startupFocus` 同一手法 |
+| ★★ 一个没进变更签名的展开集，是「变化看起来不像变化」的集合（v96） | `drawTranscript` 用一行 JSON 做「有没有变」的签名，里面只列了两个展开集。新加的 `expandedCompactions` 不在其中，于是**点击改了集合、签名却完全一样**，函数在早返回处直接 return——按钮是对的、监听器是对的、集合也变了，屏幕上什么都不发生。凡是「哪一行是展开的」这类状态，都必须进这一行 |
+| ★★ 守卫挡掉的正是唯一能解释它的那条事件（v96） | 压缩检查点是一条 `surfaceOp: 'replace'` 的 `user/message`，而 `appended(event)` 的职责就是跳过替换事件。把处理逻辑写在守卫**之后**，代码再对也永不执行。**要问的不是「这段代码对不对」，而是「它到底会不会被跑到」** |
+| ★★ 存在不等于新鲜：README 的图连着四个提交在说旧产品（v96） | 三条截图守卫问的全是「文件在不在」，没有一条问它是否还像现在的产品。实测用 HEAD 的源文件渲出来的图与已提交的图差 **661756 / 1094400 像素**，而根因是四个提交前一次改排版没重渲画廊。修法是让画廊记录**渲染所依据的文件指纹**，测试自己重算它 |
+| ★★ 比颜色要合成之后比，不能比声明的字符串（v96） | 高对比度下分界线实测是 `rgba(0,0,0,0.08)` 压在 `rgb(0,0,0)` 上——**同一种颜色**，线不可见。而第一版探针比字符串，判为「不同」，报 `rulesVisible: true`：缺陷在自己写的判据里消失了。alpha 合成之后立刻读出真相 |
+| ★ 用 PowerShell 的 `Set-Content` 写源码会改掉行尾，而 `git show` 经管道会骗你（v96） | 我据此以为整棵树丢了 CRLF，准备写脚本改回去。`.gitattributes` 写着 `* text=auto eol=lf`——**磁盘上 LF 才是对的**，是 `core.autocrlf=true` 下 `git show` 出来时被重新编码。判据用 `git diff --numstat`：真实改动 `95 1`，行尾重写是成千行对成千行。已写进 `AGENTS.md` |
 
 最后一步在探针上报错 `llm-deepseek: no API key for provider route "deepseek-official"`——
 **这是探针进程拿不到凭据，不是插件缺陷**。已核对 `$DSH_HOME/.credentials.yaml`：里面只有一条
@@ -3890,7 +3912,7 @@ packages/dsh-browser-bridge/
 │  ├─ chat.js             # 侧栏对话：会话列表（与 DSH 同源）、事件→行的语义映射、投递
 │  ├─ ingest.js           # 右键菜单/选区落成上下文附件
 │  └─ client.js           # 浏览器端 UI（手写 __ModuleLoader__ 包装）
-└─ test/                  # 673 条，含真实 Chrome 端到端与真扩展 e2e
+└─ test/                  # 686 条，含真实 Chrome 端到端与真扩展 e2e
 
 extension/
 ├─ manifest.json

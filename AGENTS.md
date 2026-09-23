@@ -68,3 +68,36 @@ overwrites whatever is there, including work you never read.
   `node` processes from earlier runs make the real-browser tests flaky — a run
   under that pressure reports a failure that a clean run does not. Confirm a red
   run with a second, clean one before treating it as a real defect.
+
+## Line endings: the working tree is LF, and PowerShell lies about it
+
+`.gitattributes` sets `* text=auto eol=lf`, so **LF on disk is correct** and the
+committed blobs are LF.
+
+`git show HEAD:file | Out-File ...` reports CRLF on this machine with
+`core.autocrlf=true`, because the pipe re-encodes on the way out. Concluding from
+that reading that a file "lost CRLF" is a **measurement artifact**, not a
+finding — it nearly cost a round to a script that would have rewritten the whole
+tree to CRLF.
+
+To judge whether a diff is real, let git answer:
+
+```
+git diff --numstat -- <file>   # insertions/deletions, not a whole-file rewrite
+```
+
+A genuine focused change reads as `95  1`; a line-ending rewrite reads as
+thousands of lines both ways.
+
+## Screenshots are claims, and claims rot
+
+`docs/screenshots/` is rendered from the panel, so it goes stale whenever the
+stylesheet moves. That happened: a commit changed the answer's reading measure
+and did not regenerate the gallery, three more commits moved panel styles, and
+`picture.png` spent four commits showing a layout the product no longer had —
+661756 differing pixels of 1094400 — while every test stayed green.
+
+`tools/gallery.mjs` now records a fingerprint of the files it rendered from
+(`docs/screenshots/SOURCES.json`), and `test/screenshots.test.js` recomputes it
+from the working tree. **Change the panel or `tools/preview.mjs`, and you must run
+`node tools/gallery.mjs` in the same commit** — not a later one.

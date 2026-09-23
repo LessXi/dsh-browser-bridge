@@ -806,6 +806,62 @@ test('every surface that floats over the page keeps an edge in High Contrast', (
   }
 })
 
+test('a separator drawn with a background keeps a line in High Contrast', (t) => {
+  // The scan above finds surfaces that separate themselves with `--elevation`.
+  // It cannot find a separator drawn as a **background** — a pseudo-element one
+  // pixel tall, which is how the compaction rule is drawn — and that category
+  // fails in this mode for the same reason: `forced-colors` repaints every
+  // background as `Canvas`, so the line comes out the colour of the page behind
+  // it. Measured under the emulated feature, both halves of the compaction rule
+  // composited to `rgb(0, 0, 0)` over a `rgb(0, 0, 0)` backdrop: 8% of black over
+  // black, which is black. The label survived and the boundary it exists to draw
+  // did not.
+  //
+  // Found here rather than by the eye, because the row still *said* 「上下文已压缩」
+  // — it was the line that had gone.
+  const forcedStart = css.indexOf('@media (forced-colors: active)')
+  assert.ok(forcedStart >= 0, 'the stylesheet needs a `@media (forced-colors: active)` block')
+  const open = css.indexOf('{', forcedStart)
+  let depth = 1
+  let cursor = open + 1
+  while (cursor < css.length && depth > 0) {
+    if (css[cursor] === '{') depth += 1
+    else if (css[cursor] === '}') depth -= 1
+    cursor += 1
+  }
+  const forced = css.slice(open + 1, cursor - 1)
+
+  // Separators: a rule whose only job is to paint a one-pixel line, which it can
+  // only do with `background` or a border. Height-pinned and content-empty, so
+  // this does not sweep up cards and badges that happen to have a background.
+  const separators = []
+  for (const match of css.matchAll(/([^{}@]+)\{([^{}]*)\}/g)) {
+    const body = match[2]
+    if (!/content:\s*''/.test(body)) continue
+    if (!/(?:^|;)\s*height:\s*1px/.test(body)) continue
+    if (!/(?:^|;)\s*background:/.test(body)) continue
+    for (const part of match[1].split(',')) {
+      const selector = part.trim()
+      if (selector.length > 0 && !separators.includes(selector)) separators.push(selector)
+    }
+  }
+  assert.ok(
+    separators.length > 0,
+    'expected at least one separator drawn as a one-pixel background; if this is 0 the check below proves nothing',
+  )
+
+  for (const selector of separators) {
+    // `ruleBody` cannot read a pseudo-element rule out of the mode's block, so
+    // the block is searched directly for a border on the same selector.
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const inMode = new RegExp(`${escaped}\\s*(?:,[^{}]*)?\\{[^{}]*border`).test(forced)
+    assert.ok(
+      inMode,
+      `${selector} draws its line with a background, which \`forced-colors: active\` repaints as \`Canvas\` — the line becomes the colour of the page behind it and the boundary disappears while the label stays`,
+    )
+  }
+})
+
 /**
  * One attribute's value on a tag in the markup.
  *

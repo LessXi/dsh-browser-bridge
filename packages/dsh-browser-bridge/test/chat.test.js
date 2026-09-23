@@ -378,6 +378,111 @@ test('a replaced message is not replayed as new conversation', () => {
   assert.deepEqual(describeEvents([replaced, userEvent('still here')], SURFACE), [{ kind: 'user', text: 'still here' }])
 })
 
+test('a compaction checkpoint becomes a row that says how much it covers', () => {
+  // Compaction is the event that *removes* the conversation it summarizes, so it
+  // arrives as a replacement — the very thing the guard above is there to skip.
+  // Handled after that guard it would never draw, and a reader scrolling up would
+  // find the conversation starting mid-thought with nothing to explain why.
+  //
+  // The count comes from the checkpoint's own range rather than from counting
+  // rows here: rows are what survived, the range is what was replaced.
+  const checkpoint = {
+    seq: 462,
+    time: 9,
+    type: 'user/message',
+    surfaceOp: { op: 'replace', startSeq: 19, endSeq: 311 },
+    data: {
+      content: [{ type: 'text', text: 'The discussion covered the panel and its search.' }],
+      source: { kind: 'compact-checkpoint', compactionId: 'b3f1c0a2' },
+    },
+  }
+  assert.deepEqual(describeEvents([checkpoint], SURFACE), [{
+    kind: 'compaction',
+    text: 'The discussion covered the panel and its search.',
+    shadowed: 293,
+    compactionId: 'b3f1c0a2',
+  }])
+})
+
+test('a compaction row survives the guard that skips replacements', () => {
+  // The same event with the surface rule that rejects replacements: the guard is
+  // what makes the ordering load-bearing, so this is the reading that would have
+  // caught the row being placed after it. `SURFACE` is the peer's own append test.
+  const checkpoint = {
+    seq: 462,
+    time: 9,
+    type: 'user/message',
+    surfaceOp: { op: 'replace', startSeq: 19, endSeq: 311 },
+    data: {
+      content: [{ type: 'text', text: 'summary' }],
+      source: { kind: 'compact-checkpoint', compactionId: 'x' },
+    },
+  }
+  const rows = describeEvents([checkpoint], SURFACE)
+  assert.equal(rows.length, 1, 'the checkpoint was dropped — it is being read after the guard')
+  assert.equal(rows[0].kind, 'compaction')
+})
+
+test('a checkpoint with no usable range still draws, without a count', () => {
+  // A row that cannot say how much it covers is still the only mark that the
+  // conversation was ever longer than it looks, so it is worth drawing. A
+  // malformed range must not become a negative or NaN count on screen.
+  const draw = (surfaceOp) => describeEvents([{
+    seq: 1,
+    time: 1,
+    type: 'user/message',
+    ...(surfaceOp === undefined ? {} : { surfaceOp }),
+    data: { content: [{ type: 'text', text: 's' }], source: { kind: 'compact-checkpoint', compactionId: 'x' } },
+  }], SURFACE)[0]
+
+  assert.equal(draw(undefined).shadowed, 0, 'no range must read as zero, not undefined')
+  assert.equal(draw({ op: 'replace' }).shadowed, 0, 'a range with no endpoints must read as zero')
+  assert.equal(draw({ op: 'replace', startSeq: 311, endSeq: 19 }).shadowed, 0, 'an inverted range must not go negative')
+  assert.equal(draw({ op: 'replace', startSeq: 5, endSeq: 5 }).shadowed, 1, 'a one-event range covers one event')
+})
+
+test('a checkpoint with no summary is still a row', () => {
+  // The host cannot promise the summary arrived — it is model-written prose. The
+  // row is what tells the reader the conversation was longer, and that fact does
+  // not depend on the prose being present.
+  const rows = describeEvents([{
+    seq: 1,
+    time: 1,
+    type: 'user/message',
+    surfaceOp: { op: 'replace', startSeq: 1, endSeq: 10 },
+    data: { content: [], source: { kind: 'compact-checkpoint', compactionId: 'x' } },
+  }], SURFACE)
+  assert.deepEqual(rows, [{ kind: 'compaction', text: '', shadowed: 10, compactionId: 'x' }])
+})
+
+test('two checkpoints with no summary are still two rows', () => {
+  // The panel names rows by `compactionId` when it has one; the fallback key is
+  // the text, and a summary-less checkpoint has none. Without the id two of them
+  // would be one row name, which is how an empty `callId` once made every tool
+  // row the same row.
+  const checkpoint = () => ({
+    seq: 1,
+    time: 1,
+    type: 'user/message',
+    surfaceOp: { op: 'replace', startSeq: 1, endSeq: 10 },
+    data: { content: [], source: { kind: 'compact-checkpoint', compactionId: 'x' } },
+  })
+  const first = checkpoint()
+  const second = checkpoint()
+  second.data.source.compactionId = 'y'
+  const rows = describeEvents([first, second], SURFACE)
+  assert.deepEqual(rows.map((row) => row.compactionId), ['x', 'y'])
+})
+
+test('a plugin snapshot is still a context row, not a compaction row', () => {
+  // Both arrive on `user/message` and both are the host's own injections rather
+  // than something the person typed, so the two branches sit next to each other
+  // and a change to one can absorb the other.
+  assert.deepEqual(describeEvents([userEvent('snapshot', 'browser-bridge')], SURFACE), [
+    { kind: 'context', text: 'snapshot' },
+  ])
+})
+
 test('the local surface rule agrees with the peer’s on these events', () => {
   const events = [userEvent('a'), { ...userEvent('b'), surfaceOp: 'replace' }]
   assert.deepEqual(describeEvents(events, null), describeEvents(events, SURFACE))

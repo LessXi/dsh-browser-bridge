@@ -1,9 +1,9 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v95 已交付并入库。** 下一节就是最新的一轮改动；下面标 v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> **当前状态：v96 已交付并入库。** 下一节就是最新的一轮改动；下面标 v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
 > 只想知道「现在能做什么、下一步做什么」，读到 v95 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（673 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（686 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 > （真浏览器 e2e 那 4 条需要机器上有 Playwright Chromium 或 Chrome for Testing；
@@ -16,8 +16,124 @@
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
 >
-> **已入库**：v3→v95 的全部改动已提交并推送到 `origin/main`。工作区干净。
+> **已入库**：v3→v96 的全部改动已提交并推送到 `origin/main`。工作区干净。
 > （v92 是 `e3ad6ba`，v91 是 `3d96bf1`，v90 是 `767e4cd`，v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
+
+> ## v96：对话被压缩了，而面板不知道
+
+本轮换到**上下文压缩（compaction）**这条轴。前面几十轮量的都是面板自己怎么画，
+这一条问的是：**宿主把对话改短了，面板看得出来吗？**
+
+**答：看不出来，而且这不是罕见的边角。** 实测这台机器的 `~/.dsh/sessions`
+（`.tmp-run/probe-compaction-reality.mjs`，逐帧解 zstd 后统计）：**156 个会话里
+30 个被压缩过**，共 167 个压缩点、370 个被替换事件，最多的一个会话被压缩了
+**77 次**。
+
+**缺陷**：压缩检查点是一条 `user/message`，`source.kind === 'compact-checkpoint'`。
+而 `packages/dsh-browser-bridge/lib/chat.js` 的 `describeEvents` 在 `user/message`
+分支里只认识两支——`source.kind === 'user'` 与 `source.plugin === PLUGIN_ID`——
+**其余静默丢弃**。被丢弃的正好是唯一解释「对话为什么变短」的那一条。
+
+后果不是「少了一行提示」，而是**读者无法分辨两件不同的事**：「我们没聊过这个」
+与「聊过，但被折走了」。翻到上面，对话就那么开始了，像是本来就只有这么长。
+
+**★ 机制上的关键**：`appended(event)` 这道守卫在分支最前面，而它的职责就是跳过
+**替换**事件——检查点恰恰是 `surfaceOp: { op: 'replace', startSeq, endSeq }`，
+**它就是那个替换**。所以处理压缩必须放在守卫**之前**。放在之后，代码写得再对
+也永远不会执行，而且**测试如果不专门构造这个顺序就抓不到**——变异里专门留了一条
+`checkpoint-after-the-appended-guard` 守着它。
+
+**修法**：`chat.js` 在守卫前新增 `source?.kind === 'compact-checkpoint'` 分支，
+产出 `{ kind: 'compaction', text, shadowed, compactionId }`。三个字段各有理由：
+
+- `shadowed` = `endSeq - startSeq + 1`，取自事件**自带**的区间，不是面板数出来的
+  行数。留下的是残存，区间才是被替换的量。真实区间实测从 `19–311`（293 条）到
+  `672–744`（73 条）不等。
+- `text` 是**给人读的摘要散文**，实测 1339–6117 字符——它是被移走那段历史**唯一
+  幸存的记录**，所以留着并且能展开，而不是丢掉。
+- `compactionId` 是行的名字。`rowKey` 的兜底是文本，而**摘要没送到时文本是空的**
+  ——两个空摘要的检查点就会共用一个行名，这正是 v71 记录过的
+  「空 `callId` 让所有 tool 行变成同一行」的同一种坏法。
+
+**面板侧**（`extension/sidepanel.js`）：`renderRow` 新增 `compaction` 分支，
+画成**一条横线加中间的标签**，而不是气泡——它是一条**边界**，不是谁在此处说过的话；
+画成气泡会读成「有人在这里说了这句」，恰是这行要纠正的错觉。摘要默认折叠。
+
+**★ 本轮真实撞到、且是本仓库反复出现的同一类缺陷**：`expandedCompactions` 集合与
+渲染分支都加好了，点击却什么都不发生。原因不在新代码，而在 `drawTranscript` 的
+**变更签名**里只列了 `expandedReasoning` 与 `expandedFailures`——新集合没进签名，
+于是点击改了集合、签名看起来**毫无变化**，函数在早返回处直接 return。
+**一个没进签名的展开集，是一个「变化看起来不像变化」的集合。** 已修复，并加了变异
+`signature-omits-the-open-set` 守着。
+
+**★ 高对比度下的第二处缺陷**：分界线是用伪元素的 `background: var(--line-soft)`
+画的，而 `forced-colors: active` **把每个 background 重绘为 `Canvas`**——线于是变成
+背后页面的颜色。实测两半的 `background` 都是 `rgb(0,0,0)`、背后也是 `rgb(0,0,0)`，
+即 8% 的黑压在全黑上。**标签还在，边界没了。** 修法用本仓库已记录的那条判据（v75）：
+该模式**只保留 `border`**，所以在 `@media (forced-colors: active)` 块里改用
+`border-top: 1px solid CanvasText` 并把 `height` 归零（border 自己画线，留着会变两像素）。
+
+**★ 判据错了会把缺陷读没了（本仓库第七次同类）**：第一版探针直接比颜色**字符串**，
+于是 `rgba(0,0,0,0.08)` 与 `rgb(0,0,0)` 被判为「不同」——探针报 `rulesVisible: true`，
+而那条线在屏幕上是**同一种颜色**。判据必须是**合成之后**的结果，不是声明的字符串。
+改成 alpha 合成后立刻读出 `beforeSameAsBackground: true`。
+
+**★ 我自己第二个错误**：改动 `sidepanel.js` 时用 PowerShell `Set-Content` 写回过一次
+文件，把行尾从 CRLF 变成了 LF。随后我用 `git show HEAD:file | Out-File ...` 去核对行尾，
+**报告说 HEAD 是 CRLF**——于是我准备写一个脚本把整棵树改回 CRLF。停下来的原因是查了
+`.gitattributes`：仓库写着 `* text=auto eol=lf`，**磁盘上 LF 才是对的**，而
+`core.autocrlf=true` 下 `git show` 经管道出来时被重新编码了。**那是测量假象，不是发现。**
+判据应该是 `git diff --numstat`：真实改动读作 `95 1`，行尾重写读作成千行对成千行。
+已把这一条写进 `AGENTS.md`，因为一个把整棵树改坏的行尾脚本比它要防的问题更糟。
+
+**★ 顺带修好一个更严重的、已存在四轮的缺陷**：`picture.png` 与截图里的产品**不一致**。
+查证过程：该场景**确定性**（同代码连渲两次 sha256 相同），而**用 HEAD 的源文件**渲出来
+的图与**已提交**的图差 **661756 / 1094400 像素**——所以不是本轮改坏的，是提交进去的
+时候就已经是旧的。
+
+根因：`58ed8b1`（给回答加阅读宽度、不再让面板宽度决定行长）**改了面板排版却没重渲
+画廊**，其后 `3d96bf1`/`e3ad6ba`/`6c5f54c` 三个动样式的提交也都没重渲。
+**README 上的图是产品声明，而它连着四个提交在说一件产品已经不再做的事。**
+
+守卫的缺口在于：`test/screenshots.test.js` 的三条断言问的全是「文件**在不在**」
+（存在、是 PNG、体积够、场景还在），**没有一条问它是不是还**像现在**的产品**。
+
+修法：`tools/gallery.mjs` 渲染完后写出 `docs/screenshots/SOURCES.json`，记录
+**渲染所依据的文件指纹**（`extension/` 下全部 js/html/css + `tools/preview.mjs`，
+按路径与内容一起哈希，路径也进哈希所以改名也算变化）；`screenshots.test.js`
+**自己重算**一遍这个指纹（不是读工具的函数，否则改了哈希范围两边会一起悄悄跟着变），
+不一致就报「面板变了而截图没跟着重渲」，并给出重渲命令。
+
+**变异验证**（`.tmp-run/mutate-freshness.mjs`，3/3 命中、`restoredExactly: true`）：
+`a-style-changed-without-regenerating`（**这正是真实发生过的那件事**）、
+`the-preview-fixture-changed`、`the-record-was-hand-edited`。
+
+**验证读数**：
+- `npm test` → **686 passed, 0 failed, 0 skipped**（672 → 686）
+- `npm run check:extension` → exit 0
+- 压缩变异 `.tmp-run/mutate-compaction.mjs`：**真坏法 11/11 命中**、
+  **等价变异 1/1 保持绿**、三个文件 `restoredExactly: true`
+- 新鲜度变异：**3/3 命中**、复原精确
+- 真实浏览器：`compacted` 场景 6 行、压缩行渲染出「上下文已压缩 293 条历史记录 ⌄」；
+  `compactedOpen` 点开后 caret 变 `⌃` 且摘要正文出现
+- 高对比度：分界线 `beforeVia: "border"`、合成色 `rgb(255,255,255)`、`rulesVisible: true`
+  （修复前 `rgb(0,0,0)` 压在 `rgb(0,0,0)` 上）
+- 浅色方案与普通深色方案均 `rulesVisible: true`，线仍由 `background` 画（行为未变）
+
+**★ 一条被判定为等价的变异（如实标注，没有算进命中率）**：去掉 `height: 0` 只留
+`border-top`，在高对比度下量出来的几何**完全相同**（`beforeHeight` 都是 1px、行的
+24px 与线心 464 都不变）。所以「测试没红」是对的。脚本把两类分开统计
+（`realCaught` 与 `equivalentHeld`），**不混成一个「命中数」**。
+
+**新增能力**：`tools/preview.mjs` 新增 `compacted` 与 `compactedOpen` 两个场景
+（夹具 `COMPACTED_MESSAGES`）；`tools/gallery.mjs` 新增第 14 张图 `compaction.png`；
+`README.md` 新增「对话被压缩之后，它会告诉你少了多少」一节。
+
+**新增探针（`.tmp-run/`，被 gitignore）**：`probe-compaction-reality.mjs`（真实日志
+统计）、`probe-checkpoint-shape.mjs`（事件字段与邻域）、`probe-compaction-click.js`
+（点击为何无效）、`probe-compaction-edges.js`（**合成后**比色）、`probe-rule-height.js`、
+`probe-rule-height-equivalence.mjs`、`probe-shot-determinism.mjs`（场景确定性）、
+`diff-committed-shots.mjs`、`mutate-compaction.mjs`、`mutate-freshness.mjs`。
 
 > ## v95：输入法在拼字，面板却在听命令
 

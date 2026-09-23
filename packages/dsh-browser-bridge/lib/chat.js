@@ -529,10 +529,45 @@ export function describeEvents(events, api) {
 
     switch (event.type) {
       case 'user/message': {
-        // A replacement carries a compaction summary, not something the person
-        // said at this point in the conversation.
-        if (!appended(event)) break
         const source = data?.source
+        // Compaction is handled before the `appended` guard below, and that
+        // ordering is the point rather than an accident. A checkpoint is a
+        // *replacement* — it is the event that removes the range it summarizes —
+        // so the guard, whose whole job is to skip replacements, would drop the
+        // one event that explains why the conversation got shorter.
+        //
+        // Without a row here the transcript simply begins: a reader who scrolls
+        // up finds the discussion starting mid-thought, with nothing to say it
+        // was ever longer. Measured across this machine's sessions, that is not
+        // hypothetical — 30 of 156 sessions have been compacted, one of them 77
+        // times.
+        if (source?.kind === 'compact-checkpoint') {
+          // The interval is the honest count of what this checkpoint covers. It
+          // comes from the event's own `surfaceOp` rather than from counting rows
+          // here, because rows are what survived; the range is what was replaced.
+          const op = event.surfaceOp
+          const from = op?.startSeq
+          const to = op?.endSeq
+          const shadowed = Number.isInteger(from) && Number.isInteger(to) && to >= from
+            ? to - from + 1
+            : 0
+          // The summary is shown rather than dropped: it is the only surviving
+          // account of the part of the conversation just removed, and it is
+          // written for a reader — real ones on this machine run 1.3k–6.1k
+          // characters of prose.
+          rows.push({
+            kind: 'compaction',
+            text: textBlocks(data?.content),
+            shadowed,
+            // Carried so the panel can name the row. Its key falls back to the
+            // text, and a checkpoint whose summary failed to arrive has none —
+            // which would make every such row the same row, the way an empty
+            // `callId` once made every tool row the same row.
+            compactionId: typeof source.compactionId === 'string' ? source.compactionId : '',
+          })
+          break
+        }
+        if (!appended(event)) break
         if (source?.kind === 'user') {
           const text = textBlocks(data?.content)
           const images = imageBlocks(data?.content)

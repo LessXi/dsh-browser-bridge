@@ -330,6 +330,14 @@ const expandedReasoning = new Set()
  * happened to carry the same name.
  */
 const expandedFailures = new Set()
+/**
+ * Compaction rows the user opened, by row name. See `rowKey`.
+ *
+ * Kept apart from the other two for the same reason they are kept from each
+ * other: a row is only ever one kind, and one set would let opening a compaction
+ * also open whichever reasoning row happened to share its name.
+ */
+const expandedCompactions = new Set()
 /** The last drawn transcript, for the "did anything change" comparison. */
 let drawnSignature = ''
 /**
@@ -1471,6 +1479,13 @@ function rowKey(row) {
     if (typeof row.callId === 'string' && row.callId.length > 0) return `tool\u0000${row.callId}`
     return `tool\u0000${row.name ?? ''}\u0000${row.summary ?? ''}`
   }
+  // A compaction row is identified by its own id rather than by its summary.
+  // The text fallback below is exactly wrong for it: a checkpoint whose summary
+  // did not arrive has no text, so every such row would share one key and
+  // opening one would open all of them.
+  if (row.kind === 'compaction' && typeof row.compactionId === 'string' && row.compactionId.length > 0) {
+    return `compaction\u0000${row.compactionId}`
+  }
   // A message that is only a picture has no text, so two of them in a row would
   // otherwise be the same key. The ids are what tell them apart, and a content
   // address is unique by construction.
@@ -1549,6 +1564,53 @@ function renderRow(row) {
       else expandedReasoning.add(key)
       drawTranscript(rows)
     })
+    return wrapper
+  }
+
+  if (row.kind === 'compaction') {
+    const wrapper = document.createElement('div')
+    wrapper.className = 'compaction'
+    const summary = typeof row.text === 'string' ? row.text : ''
+    const open = summary.length > 0 && expandedCompactions.has(key)
+    // A real button when the summary arrived, a plain div when it did not — the
+    // same choice the tool row makes, because a control that reveals nothing is
+    // a control that wastes a tab stop.
+    const line = document.createElement(summary.length > 0 ? 'button' : 'div')
+    if (summary.length > 0) line.type = 'button'
+    line.className = 'compaction-line'
+    if (summary.length > 0) line.setAttribute('aria-expanded', String(open))
+    const title = document.createElement('span')
+    title.className = 'compaction-title'
+    title.textContent = t('row.compaction')
+    line.append(title)
+    // The count is what was replaced, from the event's own range. A row that
+    // cannot say how much it covers is still worth drawing: it is the only mark
+    // that the conversation was ever longer than it now looks.
+    const shadowed = Number.isInteger(row.shadowed) ? row.shadowed : 0
+    const note = document.createElement('span')
+    note.className = 'compaction-note'
+    note.textContent = shadowed > 0
+      ? t('row.compaction.count', { count: shadowed })
+      : t('row.compaction.unknown')
+    line.append(note)
+    if (summary.length > 0) {
+      const caret = document.createElement('span')
+      caret.className = 'compaction-caret'
+      caret.textContent = open ? '⌃' : '⌄'
+      line.append(caret)
+      line.addEventListener('click', () => {
+        if (expandedCompactions.has(key)) expandedCompactions.delete(key)
+        else expandedCompactions.add(key)
+        drawTranscript(rows)
+      })
+    }
+    wrapper.append(line)
+    if (open) {
+      const body = document.createElement('div')
+      body.className = 'compaction-body'
+      body.textContent = summary
+      wrapper.append(body)
+    }
     return wrapper
   }
 
@@ -1810,7 +1872,11 @@ function updateToBottom() {
  */
 function drawTranscript(next) {
   rows = next
-  const signature = JSON.stringify(next) + JSON.stringify([...expandedReasoning]) + JSON.stringify([...expandedFailures])
+  const signature = JSON.stringify(next) + JSON.stringify([...expandedReasoning]) + JSON.stringify([...expandedFailures]) + JSON.stringify([...expandedCompactions])
+  // Every open set belongs in the line above. A set missing from it is a set
+  // whose changes look like no change at all: the click lands, the set updates,
+  // and the early return below skips the redraw — measured on the compaction
+  // row, the caret stayed `⌄` and its summary never appeared.
   // A settled stream gives way to the real rows the moment they actually
   // change. Doing it here rather than on the `end` frame is what keeps the
   // text on screen if the re-read raced the append.
@@ -1873,6 +1939,9 @@ function rowIsOpen(row, key) {
       typeof row.failure === 'string' && row.failure !== '' && expandedFailures.has(key)
     )
   }
+  if (row.kind === 'compaction') {
+    return typeof row.text === 'string' && row.text.length > 0 && expandedCompactions.has(key)
+  }
   return false
 }
 
@@ -1921,6 +1990,24 @@ function applyRowOpen(node, row, open) {
       node.append(reason)
     } else if (!open) {
       detail?.remove()
+    }
+  }
+  if (row.kind === 'compaction') {
+    const line = node.querySelector('.compaction-line')
+    if (line === null) return
+    // A checkpoint whose summary never arrived has no control and no caret.
+    if (typeof row.text !== 'string' || row.text.length === 0) return
+    line.setAttribute('aria-expanded', String(open))
+    const caret = node.querySelector('.compaction-caret')
+    if (caret !== null) caret.textContent = open ? '⌃' : '⌄'
+    const body = node.querySelector('.compaction-body')
+    if (open && body === null) {
+      const detail = document.createElement('div')
+      detail.className = 'compaction-body'
+      detail.textContent = row.text
+      node.append(detail)
+    } else if (!open) {
+      body?.remove()
     }
   }
 }
@@ -2166,6 +2253,9 @@ async function goToMatch(position) {
 function hiddenRowText(row) {
   if (row.kind === 'reasoning') return typeof row.text === 'string' ? row.text : ''
   if (row.kind === 'tool') return typeof row.failure === 'string' ? row.failure : ''
+  // A compaction summary is drawn only once the row is opened, so a match inside
+  // it is a match the reader cannot see until the row is opened for them.
+  if (row.kind === 'compaction') return typeof row.text === 'string' ? row.text : ''
   return ''
 }
 
@@ -2198,6 +2288,7 @@ function revealMatch(index) {
   if (needle.length === 0 || !hidden.toLowerCase().includes(needle)) return false
   if (row.kind === 'reasoning') expandedReasoning.add(key)
   else if (row.kind === 'tool') expandedFailures.add(key)
+  else if (row.kind === 'compaction') expandedCompactions.add(key)
   else return false
   return true
 }
@@ -3331,6 +3422,7 @@ async function refreshGroups() {
     currentSessionId = next
     expandedReasoning.clear()
     expandedFailures.clear()
+    expandedCompactions.clear()
     drawnSignature = ''
     restoreDraft()
   }
@@ -3354,6 +3446,7 @@ function selectSession(sessionId) {
     currentSessionId = sessionId
     expandedReasoning.clear()
     expandedFailures.clear()
+    expandedCompactions.clear()
     drawnSignature = ''
     transcript.replaceChildren()
     drawnRows = []
@@ -3720,6 +3813,7 @@ async function createSession() {
   currentSessionId = result.payload.sessionId
   expandedReasoning.clear()
   expandedFailures.clear()
+  expandedCompactions.clear()
   drawnSignature = ''
   rows = []
   transcript.replaceChildren()

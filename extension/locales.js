@@ -136,6 +136,11 @@ export const zh = Object.freeze({
   'row.reasoning': '思考',
   'row.context': '已附带',
   'row.working': '思考中…',
+  // Compaction. The count is the range the checkpoint replaced, so the row can
+  // say how much of the conversation it stands in for.
+  'row.compaction': '上下文已压缩',
+  'row.compaction.count': '{count} 条历史记录',
+  'row.compaction.unknown': '更早的内容已折叠',
 
   // A picture the reader sent. The alt text is used only when the message
   // carries no filename of its own.
@@ -290,6 +295,9 @@ export const en = Object.freeze({
   'row.reasoning': 'Thinking',
   'row.context': 'Attached',
   'row.working': 'Thinking…',
+  'row.compaction': 'Context compacted',
+  'row.compaction.count': '{count} history items',
+  'row.compaction.unknown': 'Earlier content folded away',
 
   'image.alt': 'Image',
   'image.open': 'Click to open the original',

@@ -24,13 +24,56 @@
  */
 
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, rmSync, statSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO = resolve(HERE, '..')
 const OUT = join(REPO, 'docs', 'screenshots')
+const EXTENSION = join(REPO, 'extension')
+
+/**
+ * Where the fingerprint of the sources these images were rendered from is kept.
+ *
+ * A screenshot is a claim about what the product looks like, and it goes stale
+ * the moment the stylesheet moves — silently, because every guard this repository
+ * had only asked whether the file *exists*. It drifted exactly that way: the
+ * commit that gave the answer its reading measure changed the panel's layout and
+ * did not regenerate the gallery, and neither did the three panel-style commits
+ * after it. `picture.png` spent four commits showing a layout the product no
+ * longer had, with every test green.
+ *
+ * So the gallery records what it drew from, and `screenshots.test.js` recomputes
+ * that fingerprint from the working tree. Regenerating is still a deliberate act;
+ * forgetting to is now a failure instead of a silence.
+ */
+const SOURCES = join(OUT, 'SOURCES.json')
+
+/** Every file whose contents decide what a screenshot looks like. */
+function sourceFiles() {
+  const files = readdirSync(EXTENSION)
+    .filter((name) => name.endsWith('.js') || name.endsWith('.html') || name.endsWith('.css'))
+    .map((name) => join(EXTENSION, name))
+  // The preview tool holds the fixtures, so it decides what is on screen too.
+  files.push(join(HERE, 'preview.mjs'))
+  return files.sort()
+}
+
+/** A stable fingerprint of those files, by path and by content. */
+function sourceFingerprint() {
+  const hash = createHash('sha256')
+  for (const file of sourceFiles()) {
+    // The path is hashed too, so renaming a file is a change rather than a
+    // reshuffle that happens to hash the same.
+    hash.update(file.slice(REPO.length).replaceAll('\\', '/'))
+    hash.update('\0')
+    hash.update(readFileSync(file))
+    hash.update('\0')
+  }
+  return hash.digest('hex')
+}
 
 /**
  * The gallery.
@@ -122,6 +165,13 @@ const SHOTS = [
     why: 'A turn that died offers the reader their question back — the one recourse the host can actually keep, because it cannot re-run a turn.',
   },
   {
+    file: 'compaction.png',
+    scenario: 'compactedOpen',
+    scheme: 'dark',
+    locale: 'zh-CN',
+    why: 'A conversation that was compacted, with its summary opened. Compaction removes the history it summarizes from the surface, so without this row the transcript simply begins — the discussion starts mid-thought and nothing says it was ever longer. On this machine 30 of 156 sessions have been compacted, one of them 77 times.',
+  },
+  {
     file: 'picture.png',
     scenario: 'picture',
     scheme: 'dark',
@@ -196,5 +246,13 @@ if (checking) {
     const size = shoot(entry)
     process.stdout.write(`${entry.file.padEnd(24)} ${String(Math.round(size / 1024)).padStart(4)} KB\n`)
   }
+  // Written last, and only after every shot succeeded: a fingerprint recorded
+  // beside a half-rendered gallery would claim freshness for images that were
+  // never produced.
+  writeFileSync(SOURCES, `${JSON.stringify({
+    note: 'Fingerprint of the files these screenshots were rendered from. Written by tools/gallery.mjs; checked by test/screenshots.test.js. Do not edit by hand.',
+    fingerprint: sourceFingerprint(),
+    files: sourceFiles().map((file) => file.slice(REPO.length).replaceAll('\\', '/')),
+  }, null, 2)}\n`)
   process.stdout.write(`\n${SHOTS.length} screenshots written to docs/screenshots/\n`)
 }
