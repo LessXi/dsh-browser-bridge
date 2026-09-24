@@ -547,6 +547,35 @@ export function describeEvents(events, api, out) {
     return typeof turn === 'number' && Number.isInteger(turn) ? turn : null
   }
 
+  /**
+   * When an event happened, in epoch milliseconds.
+   *
+   * Every message event carries this — measured across this machine's logs, all
+   * 18010 of them, not one missing — and the panel threw it away. A conversation
+   * that reads as one continuous scroll can span days: the longest here is 37.9
+   * hours, and the three longest sessions (8182, 3165 and 3165 messages) each
+   * cross three calendar days, which is more than a hundred windows of the sixty
+   * rows the panel holds. Without a stamp, "yesterday you asked" and "a minute ago
+   * you asked" are the same picture.
+   *
+   * `null` when the log has no usable time, rather than 0: epoch zero is 1970, and
+   * a date separator claiming that would be worse than none.
+   *
+   * @param {object} event - One session event.
+   * @returns {number | null} Epoch milliseconds, or null.
+   */
+  const timeOf = (event) => {
+    const time = event?.time
+    if (typeof time === 'number' && Number.isFinite(time) && time > 0) return time
+    // A string is accepted because the field is not schema-pinned in the logs this
+    // was written against, and an ISO date parses to the same epoch milliseconds.
+    if (typeof time === 'string') {
+      const parsed = Date.parse(time)
+      if (Number.isFinite(parsed) && parsed > 0) return parsed
+    }
+    return null
+  }
+
   for (const event of events) {
     if (typeof event?.type !== 'string') continue
     const data = event.data
@@ -583,6 +612,7 @@ export function describeEvents(events, api, out) {
             kind: 'compaction',
             text: textBlocks(data?.content),
             shadowed,
+            at: timeOf(event),
             // Carried so the panel can name the row. Its key falls back to the
             // text, and a checkpoint whose summary failed to arrive has none —
             // which would make every such row the same row, the way an empty
@@ -600,7 +630,7 @@ export function describeEvents(events, api, out) {
           // with no caption saw nothing at all — the panel showed a turn that
           // began with no question.
           if (text.length > 0 || images.length > 0) {
-            rows.push({ kind: 'user', text, ...(images.length > 0 ? { images } : {}) })
+            rows.push({ kind: 'user', text, at: timeOf(event), ...(images.length > 0 ? { images } : {}) })
             // The question belongs to the turn it arrived in; see
             // `questionByTurn`. Only a question the reader typed can be handed
             // back, so injected context — goal rounds, compaction notices, the
@@ -663,18 +693,22 @@ export function describeEvents(events, api, out) {
         if (!appended(event)) break
         const content = data?.message?.content
         if (!Array.isArray(content)) break
+        // Read once per event rather than per block: every block of one message
+        // arrived at the same instant, and stamping them separately would let a
+        // multi-part answer straddle a midnight that the message itself did not.
+        const at = timeOf(event)
         for (const block of content) {
           if (typeof block !== 'object' || block === null) continue
           if (block.type === 'text') {
             // Prose blocks are joined per block so a message that interleaves
             // reasoning and text still reads in the order it was produced.
             const text = asText(block.text).trim()
-            if (text.length > 0) rows.push({ kind: 'assistant', text })
+            if (text.length > 0) rows.push({ kind: 'assistant', text, at })
             continue
           }
           if (block.type === 'reasoning') {
             const text = asText(block.text).trim()
-            if (text.length > 0) rows.push({ kind: 'reasoning', text })
+            if (text.length > 0) rows.push({ kind: 'reasoning', text, at })
           }
         }
         break
@@ -746,6 +780,7 @@ export function describeEvents(events, api, out) {
           text,
           ...(code !== '' ? { code } : {}),
           ...(question === undefined ? {} : { question }),
+          at: timeOf(event),
         })
         break
       }
@@ -758,6 +793,10 @@ export function describeEvents(events, api, out) {
           name: asText(data?.name) || 'tool',
           summary: toolSummary(data),
           status: 'pending',
+          // Stamped like every other row, because a day can begin with a tool
+          // call: the separator is drawn from whichever row opens the day, and a
+          // row that cannot say when it happened would leave that day unmarked.
+          at: timeOf(event),
         }
         rows.push(row)
         if (callId.length > 0) toolRows.set(callId, row)

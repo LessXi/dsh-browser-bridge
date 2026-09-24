@@ -35,6 +35,25 @@ import {
  */
 const SEARCH_LIMIT = 30
 
+/**
+ * Compare rows to what is expected, ignoring the timestamp.
+ *
+ * The fixtures below number their events `1, 2, 3 …` rather than carrying real
+ * clock values, because a test should read as a sequence. That makes `at` — the
+ * epoch milliseconds every row records so the panel can draw a day separator — an
+ * artefact of the fixture, and asserting it in every row expectation would mean
+ * editing a dozen of them whenever a fixture gains an event.
+ *
+ * It is not ignored silently: `at` is asserted directly by the tests that are
+ * *about* it, so a row that loses its stamp fails there rather than everywhere.
+ *
+ * @param {object[]} rows - What `describeEvents` produced.
+ * @returns {object[]} The rows with `at` removed, for `deepEqual`.
+ */
+function withoutStamps(rows) {
+  return rows.map(({ at, ...rest }) => rest)
+}
+
 /** A user message as the harness logs it. */
 function userEvent(text, plugin = undefined) {
   const source = plugin === undefined
@@ -144,7 +163,7 @@ test('a user message becomes a user row, and injected context does not', () => {
     userEvent('You are an AI agent powered by DeepSeek Harness.', '@deepseek-ai/dsh-system-prompt'),
     userEvent('<skills>…</skills>', '@deepseek-ai/dsh-skill-catalog'),
   ], SURFACE)
-  assert.deepEqual(rows, [{ kind: 'user', text: '11' }])
+  assert.deepEqual(withoutStamps(rows), [{ kind: 'user', text: '11' }])
 })
 
 test('a turn the reader never started says what did start it', () => {
@@ -156,7 +175,7 @@ test('a turn the reader never started says what did start it', () => {
     injectedEvent('goal', '<goal_round>Objective: keep improving the panel'),
     assistantEvent([{ type: 'text', text: 'Round 42.' }]),
   ], SURFACE)
-  assert.deepEqual(rows, [
+  assert.deepEqual(withoutStamps(rows), [
     { kind: 'trigger', text: 'goal' },
     { kind: 'assistant', text: 'Round 42.' },
   ])
@@ -169,7 +188,7 @@ test('an injected message does not paste its own words into the transcript', () 
     turnStartEvent(1),
     injectedEvent('skill-catalog', '<system-reminder>A skill is a reusable set of…</system-reminder>'),
   ], SURFACE)
-  assert.deepEqual(rows, [{ kind: 'trigger', text: 'skill-catalog' }])
+  assert.deepEqual(withoutStamps(rows), [{ kind: 'trigger', text: 'skill-catalog' }])
 })
 
 test('a turn is labelled once, however many notifications join it', () => {
@@ -182,7 +201,7 @@ test('a turn is labelled once, however many notifications join it', () => {
     injectedEvent('runtime-context'),
     injectedEvent('plugin:acp-nudge'),
   ], SURFACE)
-  assert.deepEqual(rows, [{ kind: 'trigger', text: 'goal' }])
+  assert.deepEqual(withoutStamps(rows), [{ kind: 'trigger', text: 'goal' }])
 })
 
 test('a question the reader typed is not labelled as a trigger', () => {
@@ -193,7 +212,7 @@ test('a question the reader typed is not labelled as a trigger', () => {
     userEvent('帮我看一下这个页面'),
     assistantEvent([{ type: 'text', text: '好。' }]),
   ], SURFACE)
-  assert.deepEqual(rows, [
+  assert.deepEqual(withoutStamps(rows), [
     { kind: 'user', text: '帮我看一下这个页面' },
     { kind: 'assistant', text: '好。' },
   ])
@@ -208,7 +227,7 @@ test('each turn gets its own label, and the label does not leak into the next', 
     injectedEvent('team-message'),
     turnEndEvent(),
   ], SURFACE)
-  assert.deepEqual(rows, [
+  assert.deepEqual(withoutStamps(rows), [
     { kind: 'trigger', text: 'goal' },
     { kind: 'trigger', text: 'team-message' },
   ])
@@ -233,7 +252,7 @@ test('a turn number that comes round again is still labelled again', () => {
     injectedEvent('team-message'),
     turnEndEvent(undefined, 5),
   ], SURFACE)
-  assert.deepEqual(rows, [
+  assert.deepEqual(withoutStamps(rows), [
     { kind: 'trigger', text: 'goal' },
     { kind: 'trigger', text: 'team-message' },
   ])
@@ -249,7 +268,7 @@ test('this bridge’s own attachment shows as a notice carrying its summary', ()
       source: { kind: 'plugin', plugin: 'browser-bridge', form: 'notice', summary: '当前标签页 · Example' },
     },
   }], SURFACE)
-  assert.deepEqual(rows, [{ kind: 'context', text: '当前标签页 · Example' }])
+  assert.deepEqual(withoutStamps(rows), [{ kind: 'context', text: '当前标签页 · Example' }])
 })
 
 test('an assistant message reads its prose and folds its reasoning, in order', () => {
@@ -259,7 +278,7 @@ test('an assistant message reads its prose and folds its reasoning, in order', (
       { type: 'text', text: 'Sure — here you go.' },
     ]),
   ], SURFACE)
-  assert.deepEqual(rows, [
+  assert.deepEqual(withoutStamps(rows), [
     { kind: 'reasoning', text: 'The user just sent "11".' },
     { kind: 'assistant', text: 'Sure — here you go.' },
   ])
@@ -271,7 +290,7 @@ test('tool-call blocks inside a message do not become rows; the event does', () 
     callEvent('c1', 'pwsh', '{"command":"npm test"}'),
     resultEvent('c1'),
   ], SURFACE)
-  assert.deepEqual(rows, [{ kind: 'tool', callId: 'c1', name: 'pwsh', summary: 'npm test', status: 'ok' }])
+  assert.deepEqual(withoutStamps(rows), [{ kind: 'tool', callId: 'c1', name: 'pwsh', summary: 'npm test', status: 'ok' }])
 })
 
 test('no row ever contains a bracketed block type', () => {
@@ -300,7 +319,7 @@ test('a failed tool result marks its own row rather than adding one', () => {
 })
 
 test('a result with no matching call is dropped', () => {
-  assert.deepEqual(describeEvents([resultEvent('nowhere')], SURFACE), [])
+  assert.deepEqual(withoutStamps(describeEvents([resultEvent('nowhere')], SURFACE)), [])
 })
 
 test('a failed tool call carries the reason it gave', () => {
@@ -370,7 +389,7 @@ test('a turn that died leaves a lasting row, not just a live toast', () => {
   // A failed turn commits no assistant message. Without this row the stored
   // transcript is the user's message and then nothing, so reloading the panel
   // made a crash look like a conversation that simply stopped.
-  assert.deepEqual(describeEvents([userEvent('probe'), FAILED_TURN], SURFACE), [
+  assert.deepEqual(withoutStamps(describeEvents([userEvent('probe'), FAILED_TURN], SURFACE)), [
     { kind: 'user', text: 'probe' },
     {
       kind: 'failed',
@@ -453,13 +472,13 @@ test('a turn that took several messages hands back the one that opened it', () =
 test('a turn stopped on purpose is not recorded as a failure', () => {
   // The person pressed stop; the panel already showed that as their own action.
   // Writing it into the transcript as a crash would be a lie that persists.
-  assert.deepEqual(describeEvents([turnEndEvent({ kind: 'aborted', reason: 'user' })], SURFACE), [])
+  assert.deepEqual(withoutStamps(describeEvents([turnEndEvent({ kind: 'aborted', reason: 'user' })], SURFACE)), [])
 })
 
 test('an ordinary turn end adds nothing', () => {
   // Most turns end with no reason at all, and none of them are failures.
-  assert.deepEqual(describeEvents([turnEndEvent(undefined)], SURFACE), [])
-  assert.deepEqual(describeEvents([turnEndEvent({ kind: 'completed' })], SURFACE), [])
+  assert.deepEqual(withoutStamps(describeEvents([turnEndEvent(undefined)], SURFACE)), [])
+  assert.deepEqual(withoutStamps(describeEvents([turnEndEvent({ kind: 'completed' })], SURFACE)), [])
 })
 
 test('a failure reason is clipped to something a row can hold', () => {
@@ -472,14 +491,14 @@ test('a failure reason is clipped to something a row can hold', () => {
 test('a failure with no message still becomes a row', () => {
   // The panel needs a row either way; it supplies its own wording when the
   // reason is empty, but the row has to exist for that to be reachable.
-  assert.deepEqual(describeEvents([turnEndEvent({ kind: 'error', error: {} })], SURFACE), [
+  assert.deepEqual(withoutStamps(describeEvents([turnEndEvent({ kind: 'error', error: {} })], SURFACE)), [
     { kind: 'failed', text: '' },
   ])
 })
 
 test('a replaced message is not replayed as new conversation', () => {
   const replaced = { ...userEvent('compacted away'), surfaceOp: 'replace' }
-  assert.deepEqual(describeEvents([replaced, userEvent('still here')], SURFACE), [{ kind: 'user', text: 'still here' }])
+  assert.deepEqual(withoutStamps(describeEvents([replaced, userEvent('still here')], SURFACE)), [{ kind: 'user', text: 'still here' }])
 })
 
 test('a compaction checkpoint becomes a row that says how much it covers', () => {
@@ -500,7 +519,7 @@ test('a compaction checkpoint becomes a row that says how much it covers', () =>
       source: { kind: 'compact-checkpoint', compactionId: 'b3f1c0a2' },
     },
   }
-  assert.deepEqual(describeEvents([checkpoint], SURFACE), [{
+  assert.deepEqual(withoutStamps(describeEvents([checkpoint], SURFACE)), [{
     kind: 'compaction',
     text: 'The discussion covered the panel and its search.',
     shadowed: 293,
@@ -556,7 +575,7 @@ test('a checkpoint with no summary is still a row', () => {
     surfaceOp: { op: 'replace', startSeq: 1, endSeq: 10 },
     data: { content: [], source: { kind: 'compact-checkpoint', compactionId: 'x' } },
   }], SURFACE)
-  assert.deepEqual(rows, [{ kind: 'compaction', text: '', shadowed: 10, compactionId: 'x' }])
+  assert.deepEqual(withoutStamps(rows), [{ kind: 'compaction', text: '', shadowed: 10, compactionId: 'x' }])
 })
 
 test('two checkpoints with no summary are still two rows', () => {
@@ -582,7 +601,7 @@ test('a plugin snapshot is still a context row, not a compaction row', () => {
   // Both arrive on `user/message` and both are the host's own injections rather
   // than something the person typed, so the two branches sit next to each other
   // and a change to one can absorb the other.
-  assert.deepEqual(describeEvents([userEvent('snapshot', 'browser-bridge')], SURFACE), [
+  assert.deepEqual(withoutStamps(describeEvents([userEvent('snapshot', 'browser-bridge')], SURFACE)), [
     { kind: 'context', text: 'snapshot' },
   ])
 })
@@ -593,8 +612,65 @@ test('the local surface rule agrees with the peer’s on these events', () => {
 })
 
 test('an empty or unreadable event list produces no rows', () => {
-  assert.deepEqual(describeEvents([], SURFACE), [])
-  assert.deepEqual(describeEvents([null, {}, { type: 'user/message' }], SURFACE), [])
+  assert.deepEqual(withoutStamps(describeEvents([], SURFACE)), [])
+  assert.deepEqual(withoutStamps(describeEvents([null, {}, { type: 'user/message' }], SURFACE)), [])
+})
+
+test('every conversational row carries when it happened', () => {
+  // The panel draws a day separator from this, and it cannot draw one from a row
+  // that will not say when it happened. Measured on this machine: all 18010
+  // message events carry a usable time, none missing, and the longest session
+  // spans 37.9 hours across three calendar days — so a sixty-row window can hold
+  // more than one day and nothing else in the row says which.
+  const events = [
+    { seq: 1, time: 1_700_000_000_000, type: 'user/message', data: { content: [{ type: 'text', text: 'q' }], source: { kind: 'user' } } },
+    { seq: 2, time: 1_700_000_001_000, type: 'turn/start', data: { turn: 1 } },
+    { seq: 3, time: 1_700_000_002_000, type: 'assistant/message', data: { turn: 1, message: { content: [{ type: 'text', text: 'a' }, { type: 'reasoning', text: 'r' }] } } },
+    { seq: 4, time: 1_700_000_003_000, type: 'tool/call', data: { turn: 1, callId: 'c1', name: 'pwsh', arguments: '{}' } },
+    { seq: 5, time: 1_700_000_004_000, type: 'tool/result', data: { turn: 1, callId: 'c1', content: [{ type: 'text', text: 'ok' }] } },
+    { seq: 6, time: 1_700_000_005_000, type: 'turn/end', data: { turn: 1, reason: { kind: 'error', error: { code: 'X', message: 'boom' } } } },
+  ]
+  const rows = describeEvents(events, SURFACE)
+  const conversational = rows.filter((row) => ['user', 'assistant', 'reasoning', 'tool', 'failed'].includes(row.kind))
+  assert.ok(conversational.length >= 5, `expected the fixture to produce conversational rows, got ${rows.length}`)
+  const stamps = new Set(events.map((event) => event.time))
+  for (const row of conversational) {
+    assert.ok(
+      stamps.has(row.at),
+      `a ${row.kind} row carries at=${String(row.at)}, which is not one of the fixture's instants; the day separator needs the real one`,
+    )
+  }
+  // Distinct instants in, distinct instants out: a stamp that came out the same
+  // for every row would satisfy the check above and still draw one day.
+  assert.ok(
+    new Set(conversational.map((row) => row.at)).size > 1,
+    'every row got the same timestamp; the separator would never see a day boundary',
+  )
+})
+
+test('a row whose event has no usable time records nothing rather than 1970', () => {
+  // Epoch zero is a real instant in 1970, and a day separator claiming it would be
+  // worse than no separator: the reader would be told the conversation is
+  // fifty-five years old. `0`, a negative, a string of nonsense and a missing
+  // field must all read as "unknown".
+  for (const bad of [0, -1, Number.NaN, 'whenever', null, undefined]) {
+    const event = { seq: 1, type: 'user/message', data: { content: [{ type: 'text', text: 'q' }], source: { kind: 'user' } } }
+    if (bad !== undefined) event.time = bad
+    const [row] = describeEvents([event], SURFACE)
+    assert.equal(
+      row.at,
+      null,
+      `time ${JSON.stringify(bad)} produced at=${String(row.at)}; an unusable time must be null`,
+    )
+  }
+})
+
+test('an ISO date in the time field parses to the same instant', () => {
+  // The field is not schema-pinned in the logs this reads, and a string is what a
+  // JSON writer reaches for when it does not want to think about epoch units.
+  const iso = '2023-11-14T22:13:20.000Z'
+  const event = { seq: 1, time: iso, type: 'user/message', data: { content: [{ type: 'text', text: 'q' }], source: { kind: 'user' } } }
+  assert.equal(describeEvents([event], SURFACE)[0].at, Date.parse(iso))
 })
 
 // ---------------------------------------------------------------------------

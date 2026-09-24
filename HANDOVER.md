@@ -1,7 +1,7 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v118 已交付并入库。** 下一节就是最新的一轮改动；下面标 v108/v107/v106/v105/v104/v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v118 那一段为止即可。
+> **当前状态：v119 已交付并入库。** 下一节就是最新的一轮改动；下面标 v108/v107/v106/v105/v104/v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v119 那一段为止即可。
 >
 > **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（713 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
@@ -16,10 +16,94 @@
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
 >
-> **已入库**：v3→v109 的全部改动已提交并推送到 `origin/main`。工作区干净。
-> （v108 是 `0bfdf20`，v107 是 `afc1ac1`，v105 是 `4b1f0aa`，v103 是 `91fa7dd`，v102 是 `77b75e3`，v101 是 `cc33dd9`，v99 是 `bff292d`，v92 是 `e3ad6ba`，v91 是 `3d96bf1`，v90 是 `767e4cd`，v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
+> **已入库**：v3→v119 的全部改动已提交并推送到 `origin/main`。工作区干净。
+> （v118 是 `f245e21`，v117 是 `1df4842`，v108 是 `0bfdf20`，v107 是 `afc1ac1`，v105 是 `4b1f0aa`，v103 是 `91fa7dd`，v102 是 `77b75e3`，v101 是 `cc33dd9`，v99 是 `bff292d`，v92 是 `e3ad6ba`，v91 是 `3d96bf1`，v90 是 `767e4cd`，v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
 
-> ## v118：上下文用量的读数，以及它为什么不该是警告
+## v119：一段对话可以横跨好几天，而面板一次只显示 60 行
+
+### 缺陷
+
+面板从来不显示日期。这台机器上最长的会话跨 **37.9 小时**，最大的三个会话各自跨越
+**三个日历天**（8182 / 3165 / 3165 条消息），而面板一次只持有 **60 行**（`PAGE_ROWS`）。
+所以窗口最上面那条消息只告诉读者「有一阵子了」，**分不清是二十分钟前还是两天前**。
+
+宿主侧根本没有把时间传过来：`describeEvents` 解析了每一类事件的语义，
+却把 `event.time` 全部丢掉。实测本机 **18010 条**带时间的消息事件，**没有一条缺时间**——
+数据一直在，只是没被读。
+
+### 判据是日历天，不是二十四小时
+
+这一条决定了整个实现形态。从 23:50 说到 00:10 **跨了天**（二十分钟），
+从 09:00 说到 20:00 **没跨**（十一小时）。按小时算会把这两种情况**都判反**，
+而读者问的是「这是不是昨天」，不是「过了多久」。所以 `crossedDay` 比较的是
+本地日历日的年/月/日，不是时间差。
+
+### 标记写成「今天」「昨天」或一个具体日期
+
+能不用查日历就说出口的只有那两天，其余的直接写日期，用的还是会话列表里同一个
+`calendarDate`（`extension/locales.js`）——**一个读者看到一种写法**。
+`calendarDate` 此前只被 `relativeTime` 调用一次，这一轮把它复用而不是另写一套格式。
+
+### ★ 实现形态：属性，不是插入的节点
+
+日期标记写成 `data-day` **属性**，由 CSS 伪元素绘制，而不是在行与行之间插一个元素。
+这不是风格选择：`reconcileRows` 依赖一条不变量——**行节点是 `#transcript` 子节点的前缀**，
+放置循环按序走这两个列表，而 `.working`/`.live`/`.approval` 追加在它们后面。
+一个插在行之间的小节会落进那个前缀里，让循环按下标对到错的子节点。
+
+伪元素则是**行自己的** flex 子项：`:has()` 与 `flex-basis: 100%` + `order: -1` 让它独占一行并排在前面。
+第一版用了 `align-self: center` + 胶囊样式，**实测标签落在气泡旁边**、读起来像消息的一部分（截图 `r56-days2.png`），
+改成整行 + `order: -1` 后才在消息上方（`r56-days3.png`）。
+
+### ★ 「上一行」必须是上一个**有时间的**行
+
+`dayLabelFor` 向上找的是最近一个**带时间戳**的行，而不是数组里的前一个元素。
+理由是真实数据里有不带时间的行：注入的上下文行（`context`）没有 `time`。
+若按数组前一个元素比，那种行会被读成「这里换天了」，在没有换天的地方画一条日期。
+
+### 交付的读数
+
+| 读数 | 结果 |
+| --- | --- |
+| `npm test` | **733 passed, 0 failed, 0 skipped**（724 → 733，新增 9 条） |
+| `npm run check:extension` | exit 0 |
+| 变异 `.tmp-run/mutate-day-separator.mjs` | **11/11 命中**、文件全部复原 |
+| 19 张截图重渲 | 只有 `SOURCES.json` 指纹与新图 `days.png` 变 |
+
+真实浏览器（`.tmp-run/probe-day-markers.js`，场景 `days`）：
+`markedCount: 3`、`drawnCount: 3`、`overlapCount: 0`，标签依次为 `9月22日` / `昨天` / `今天`，
+落在三条**跨天第一行**上。
+
+### ★ 变异第一轮 9/11，暴露了两个真实缺口
+
+`.tmp-run/mutate-day-separator.mjs` 第一次跑出 `2 of 11 mutation(s) did not behave as declared`：
+
+- `no-separator-on-the-window-opener`（窗口第一行不标日期）——**没有测试**
+- `separator-inserted-as-a-node`（不清掉旧标记）——**没有测试**
+
+两条都是面板侧的逻辑，我把它写在 `sidepanel.js` 里却没写对应的 `panel-stream` 测试。
+补了三条测试之后 **11/11**。第二条尤其值得记：它只在**节点被复用且日期变空**时才生效，
+而原有测试里标记移动时总有新标记补上，这条路径**从没被走到**。
+
+### ★ 测试夹具的一个决定
+
+10 个既有的 `chat.test.js` 断言用 `deepEqual` 比较**整行**，新增 `at` 字段让它们全红。
+修法不是删断言，也不是把 `at` 从比较里永久排除：新增 `withoutStamps(rows)` 助手，
+并让**关于 `at` 的测试直接断言它**（`every conversational row carries when it happened` 等 3 条）。
+夹具用 `time: 1, 2, 3 …` 而不是真实时钟值，因为测试应当读起来像一个序列——
+把 `at` 写进每一处行断言，意味着夹具每加一个事件就要改十几处期望。
+
+### 新增/改动文件
+
+- `packages/dsh-browser-bridge/lib/chat.js`：新增 `timeOf(event)`，给 user/assistant/reasoning/tool/failed/compaction 六类行打 `at`。
+- `extension/locales.js`：新增并导出 `crossedDay(earlier, later)` 与 `dayLabel(when, now, locale, t)`；词条 `day.today` / `day.yesterday`（zh/en）。
+- `extension/sidepanel.js`：`dayLabelFor(rows, index)`；`reconcileRows` 每行写 `data-day`（空则 `removeAttribute`）。
+- `extension/sidepanel.html`：`#transcript > [data-day]` 与 `::before` 规则。
+- `tools/preview.mjs`：场景 `days` 与夹具 `dayCrossingMessages()`（**相对当前日锚定**，好让「今天/昨天」两条路径在任何一天渲染都被走到）。
+- `tools/gallery.mjs`：新增第 19 张图 `days.png`。
+- `README.md`：新增「一段对话可以横跨好几天」一节。
+
+## v118：上下文用量的读数，以及它为什么不该是警告
 
 ### 缺口
 

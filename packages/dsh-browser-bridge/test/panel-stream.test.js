@@ -5625,6 +5625,164 @@ test('the context reading shows the whole truth or a smaller one, never a made-u
   )
 })
 
+/**
+ * Every row's `data-day`, paired with its message text.
+ *
+ * The marker is an attribute rather than an element, so this is the only way to
+ * read it — and reading it rather than the CSS is deliberate: a rule that draws
+ * nothing still leaves the attribute behind, so the assertions below also check
+ * that the stylesheet actually paints what the attribute names.
+ *
+ * @returns {Array<{ day: string, text: string, kind: string }>} One entry per row.
+ */
+function dayMarks() {
+  return [...registry.get('transcript').children].map((node) => ({
+    day: node.getAttribute('data-day') ?? '',
+    text: (node.textContent ?? '').trim().slice(0, 20),
+    kind: node.dataset.kind ?? '',
+  }))
+}
+
+const MINUTE = 60 * 1000
+const DAY = 24 * 60 * MINUTE
+
+/** Two messages a day apart, then one an hour after the second. */
+function messagesAcrossDays() {
+  const noon = new Date()
+  noon.setHours(14, 0, 0, 0)
+  const base = noon.getTime()
+  return [
+    { kind: 'user', text: 'two days ago', at: base - 2 * DAY },
+    { kind: 'assistant', text: 'answer from two days ago', at: base - 2 * DAY + MINUTE },
+    { kind: 'user', text: 'yesterday', at: base - DAY },
+    { kind: 'assistant', text: 'answer from yesterday', at: base - DAY + MINUTE },
+    { kind: 'user', text: 'today', at: base },
+    { kind: 'assistant', text: 'answer from today', at: base + MINUTE },
+  ]
+}
+
+test('a day marker lands on the row that opens each day, and only there', async () => {
+  await openChat()
+  host.messages = messagesAcrossDays()
+  await readTranscript()
+
+  const marks = dayMarks()
+  assert.equal(marks.length, 6, `expected six rows, got ${marks.length}`)
+
+  // The marker belongs to the first row of a day, not to every row of it. Six
+  // rows across three days is three markers; a rule that marked each row would
+  // put a date above every single line.
+  const marked = marks.map((mark) => mark.day)
+  assert.deepEqual(
+    marked.filter((day) => day !== '').length,
+    3,
+    `expected three markers, got ${JSON.stringify(marked)}`,
+  )
+  assert.equal(marks[0].day !== '', true, 'the first row of the window must name its day')
+  assert.equal(marks[2].day !== '', true, 'the row that opens the second day must be marked')
+  assert.equal(marks[4].day !== '', true, 'the row that opens the third day must be marked')
+  // And the ones inside a day are bare, which is what makes the markers mean
+  // something rather than being decoration on every row.
+  assert.equal(marks[1].day, '', 'the answer inside the same day must carry no marker')
+  assert.equal(marks[3].day, '', 'the answer inside the same day must carry no marker')
+  assert.equal(marks[5].day, '', 'the answer inside the same day must carry no marker')
+
+  // The window's first row opens the window whether or not it opens a day. If the
+  // top of the transcript is unlabelled, a reader who pages back cannot tell
+  // whether what they just revealed is from an hour ago or from last week.
+  host.messages = [
+    { kind: 'user', text: 'no stamp at all' },
+    { kind: 'assistant', text: 'the first stamped row opens the window', at: new Date().setHours(14, 0, 0, 0) },
+  ]
+  await readTranscript()
+  const after = dayMarks()
+  assert.equal(
+    after[1].day !== '',
+    true,
+    'the first row that can say when it happened must name its day, even mid-conversation',
+  )
+  assert.equal(
+    after[0].day,
+    '',
+    'a row the host could not time must not claim a day',
+  )
+})
+
+test('a marker is cleared when the window grows under the row that had it', async () => {
+  // The failure this guards is the one the keyed repaint makes possible: a node
+  // is reused across reads, so a marker written on one pass is still on that node
+  // on the next unless it is taken off again. When the window grows upward the
+  // rows shift, and a stale marker would sit above a message from a different
+  // day — the one thing a date must never do.
+  await openChat()
+  host.messages = messagesAcrossDays()
+  await readTranscript()
+  const before = dayMarks().map((mark) => `${mark.day}|${mark.text}`)
+
+  // A row arrives above everything, one day earlier: every marker moves down one.
+  const older = { kind: 'user', text: 'three days ago', at: new Date().setHours(14, 0, 0, 0) - 3 * DAY }
+  host.messages = [older, ...messagesAcrossDays()]
+  await readTranscript()
+
+  const after = dayMarks()
+  assert.equal(after.length, 7, `expected seven rows after paging back, got ${after.length}`)
+  const markedTexts = after.filter((mark) => mark.day !== '').map((mark) => mark.text)
+  assert.deepEqual(
+    markedTexts,
+    ['three days ago', 'two days ago', 'yesterday', 'today'],
+    `markers must sit on the four day-openers, got ${JSON.stringify(markedTexts)}`,
+  )
+  // The answer rows that once had no marker still have none, and the row that was
+  // first is no longer first — so nothing kept the old label by accident.
+  assert.notDeepEqual(after.map((mark) => `${mark.day}|${mark.text}`), before)
+})
+
+test('a row that stops opening a day loses its marker', async () => {
+  // A node is reused across reads whenever its row is the same row, so a marker
+  // written on one pass is still on that node on the next unless it is taken off
+  // again. Every other case here moves markers onto rows that want one; this is
+  // the case where a row that *had* one no longer should.
+  //
+  // The way to produce it is to widen the window upward by exactly one row and
+  // land on a stamp inside the same day: the old first row keeps its node and its
+  // place, and the day it used to open is now opened by the row above it.
+  const noon = new Date()
+  noon.setHours(14, 0, 0, 0)
+  const base = noon.getTime()
+
+  await openChat()
+  // The window opens on the second day, so that row is marked.
+  host.messages = [
+    { kind: 'user', text: 'yesterday', at: base - DAY },
+    { kind: 'assistant', text: 'answer from yesterday', at: base - DAY + MINUTE },
+  ]
+  await readTranscript()
+  const before = dayMarks()
+  assert.equal(before[0].day !== '', true, 'the window opener must name its day to start with')
+
+  // One row arrives above it, from the same day: the marker belongs to that new
+  // row now, and the row that used to carry it must not keep it.
+  host.messages = [
+    { kind: 'user', text: 'earlier the same day', at: base - DAY - MINUTE },
+    ...host.messages,
+  ]
+  await readTranscript()
+  const after = dayMarks()
+  assert.equal(after.length, 3, `expected three rows, got ${after.length}`)
+  assert.equal(
+    after[0].day !== '',
+    true,
+    'the new first row must name the day it opens',
+  )
+  assert.equal(
+    after[1].day,
+    '',
+    `the row that used to open the day still carries "${after[1].day}"; two rows in the same day cannot both open it`,
+  )
+  assert.equal(after[2].day, '', 'the answer inside the day carries no marker')
+})
+
+
 test('reopening the panel puts the draft back in the composer', async () => {
   // Writing the draft down is only half of it. The other half is reading it back
   // *before* the first session is drawn, and asserting that here needs a panel

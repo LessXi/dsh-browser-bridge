@@ -24,7 +24,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { assert, test } from './harness.js'
-import { DICTIONARIES, en, options, optionsTranslator, pickLocale, relativeTime, translator, zh } from '../../../extension/locales.js'
+import { DICTIONARIES, crossedDay, dayLabel, en, options, optionsTranslator, pickLocale, relativeTime, translator, zh } from '../../../extension/locales.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const extensionDir = join(here, '..', '..', '..', 'extension')
@@ -471,4 +471,56 @@ test('the two options dictionaries carry the same keys', () => {
   assert.equal(t('save'), '连接')
   assert.equal(t('cannotConnect', { port: '3080' }), '连不上 3080 端口。')
   assert.equal(optionsTranslator('en')('missing.key'), 'missing.key')
+})
+
+test('a day boundary is a calendar day, not twenty-four hours', () => {
+  // The distinction is the whole reason this is not a subtraction. A conversation
+  // that runs from 23:50 to 00:10 crosses a day in twenty minutes; one that runs
+  // from 09:00 to 20:00 does not cross one in eleven hours. An hour-based rule gets
+  // both backwards, and the reader is asking "was this yesterday", not "how long
+  // ago was this".
+  const late = new Date(2024, 4, 17, 23, 50, 0, 0).getTime()
+  const justAfterMidnight = new Date(2024, 4, 18, 0, 10, 0, 0).getTime()
+  assert.equal(crossedDay(late, justAfterMidnight), true, 'twenty minutes across midnight is a new day')
+
+  const morning = new Date(2024, 4, 18, 9, 0, 0, 0).getTime()
+  const evening = new Date(2024, 4, 18, 20, 0, 0, 0).getTime()
+  assert.equal(crossedDay(morning, evening), false, 'eleven hours inside one day is not a new day')
+
+  // Same instant, and the same day in either direction.
+  assert.equal(crossedDay(morning, morning), false)
+  assert.equal(crossedDay(evening, morning), false, 'ordering must not create a boundary')
+
+  // A missing stamp is not a boundary: a row the host could not time must not be
+  // read as "the day changed here".
+  assert.equal(crossedDay(null, morning), false)
+  assert.equal(crossedDay(morning, null), false)
+  assert.equal(crossedDay(undefined, undefined), false)
+  assert.equal(crossedDay(Number.NaN, morning), false)
+})
+
+test('the day separator names today and yesterday, and dates the rest', () => {
+  const t = translator('zh')
+  const now = new Date(2024, 4, 18, 14, 0, 0, 0).getTime()
+  const at = (day, hour) => new Date(2024, 4, day, hour, 0, 0, 0).getTime()
+
+  assert.equal(dayLabel(at(18, 9), now, 'zh', t), '今天')
+  assert.equal(dayLabel(at(17, 22), now, 'zh', t), '昨天')
+  // Anything older gets a date rather than a vague word, and it is the same
+  // `calendarDate` the session list already prints — one reader, one convention.
+  const older = dayLabel(at(15, 12), now, 'zh', t)
+  assert.notEqual(older, '今天')
+  assert.notEqual(older, '昨天')
+  assert.ok(older.includes('15'), `expected the date to name the day, got ${JSON.stringify(older)}`)
+
+  const english = dayLabel(at(18, 9), now, 'en', translator('en'))
+  assert.equal(english, 'Today')
+})
+
+test('a day boundary is found even when the year rolls over', () => {
+  const t = translator('en')
+  const newYear = new Date(2025, 0, 1, 0, 30, 0, 0).getTime()
+  const lastYear = new Date(2024, 11, 31, 23, 30, 0, 0).getTime()
+  assert.equal(crossedDay(lastYear, newYear), true, 'a year boundary is a day boundary')
+  assert.equal(dayLabel(newYear, newYear, 'en', t), 'Today')
 })

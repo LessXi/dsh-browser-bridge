@@ -195,6 +195,12 @@ export const zh = Object.freeze({
   'time.hours': '{count} 小时前',
   'time.days': '{count} 天前',
 
+  // Drawn between messages when a conversation crosses midnight. The panel holds
+  // sixty rows of a log that can span days, so "this was yesterday" is a fact the
+  // reader cannot get from the scroll position.
+  'day.today': '今天',
+  'day.yesterday': '昨天',
+
   // Only ever shown when something failed.
   'error.generic': '出错了：{reason}',
   'error.notSent': '未发送：{reason}',
@@ -377,6 +383,9 @@ export const en = Object.freeze({
   'time.minutes': '{count}m ago',
   'time.hours': '{count}h ago',
   'time.days': '{count}d ago',
+
+  'day.today': 'Today',
+  'day.yesterday': 'Yesterday',
 
   'error.generic': 'Something went wrong: {reason}',
   'error.notSent': 'Not sent: {reason}',
@@ -676,4 +685,56 @@ function calendarDate(when, locale, now) {
     month: 'short',
     day: 'numeric',
   }).format(when)
+}
+
+/**
+ * Whether two instants fall on different calendar days, in the reader's zone.
+ *
+ * Compared by local calendar day rather than by elapsed hours, because that is
+ * what the reader means by "yesterday". A conversation that runs from 23:50 to
+ * 00:10 crosses a day boundary in twenty minutes; one that runs from 09:00 to
+ * 20:00 does not cross one in eleven hours. An hour-based rule gets both of those
+ * backwards, and the panel is meant to answer the reader's question, not the
+ * clock's.
+ *
+ * @param {number | null} earlier - Epoch milliseconds of the earlier row.
+ * @param {number | null} later - Epoch milliseconds of the later row.
+ * @returns {boolean} True when a date separator belongs between them.
+ */
+export function crossedDay(earlier, later) {
+  if (!Number.isFinite(earlier) || !Number.isFinite(later)) return false
+  const before = new Date(earlier)
+  const after = new Date(later)
+  return before.getFullYear() !== after.getFullYear()
+    || before.getMonth() !== after.getMonth()
+    || before.getDate() !== after.getDate()
+}
+
+/**
+ * The label for a day separator: "Today", "Yesterday", or a written date.
+ *
+ * The two words exist because they are the two days a reader can name without
+ * looking anything up, and the panel is mostly read on the day it was written.
+ * Beyond that the date is the honest answer, and it is the same `calendarDate`
+ * the session list already prints, so one reader sees one convention.
+ *
+ * @param {number} when - Epoch milliseconds of the row that opens the day.
+ * @param {number} now - The reference time.
+ * @param {'zh' | 'en'} locale - Which conventions to print with.
+ * @param {(key: string, values?: object) => string} t - The translator.
+ * @returns {string} The separator's label.
+ */
+export function dayLabel(when, now, locale, t) {
+  const today = new Date(now)
+  const day = new Date(when)
+  const sameDay = today.getFullYear() === day.getFullYear()
+    && today.getMonth() === day.getMonth()
+    && today.getDate() === day.getDate()
+  if (sameDay) return t('day.today')
+  const yesterday = new Date(now - 24 * 60 * 60 * 1000)
+  const isYesterday = yesterday.getFullYear() === day.getFullYear()
+    && yesterday.getMonth() === day.getMonth()
+    && yesterday.getDate() === day.getDate()
+  if (isYesterday) return t('day.yesterday')
+  return calendarDate(when, locale, now)
 }

@@ -806,6 +806,58 @@ const LONG_MESSAGES = [  { kind: 'user', text: '先看一下这个仓库的结�
 ]
 
 /**
+ * A conversation that spans three calendar days, ending today.
+ *
+ * Anchored relative to the current day so the `Today` and `Yesterday` labels are
+ * both exercised whenever this renders. A fixture pinned to literal dates would
+ * cover those two paths only until those dates passed, and would then quietly be
+ * testing the date-format path three times over.
+ *
+ * The gaps are real gaps rather than a tidy midnight: a reader's conversation
+ * stops and resumes the next day, which is what makes the marker worth drawing.
+ * Rows inside one day carry stamps minutes apart, so "adjacent rows are the same
+ * day" is covered as well as the boundary.
+ *
+ * @returns {object[]} Rows in the shape the host sends.
+ */
+function dayCrossingMessages() {
+  const MINUTE = 60 * 1000
+  const DAY = 24 * 60 * MINUTE
+  // A fixed local hour, so the three days are stable whenever this runs.
+  // `setHours` rather than arithmetic on `now` because it is a local-calendar
+  // operation, which is exactly what the separator compares.
+  const today = new Date()
+  today.setHours(14, 0, 0, 0)
+  const noon = today.getTime()
+  const days = [
+    {
+      at: noon - 2 * DAY,
+      question: '上次说要把快照里的坐标换成选择器，改到哪了？',
+      answer: '改完了。`browser_click` 现在优先用选择器，命中不到才回退坐标。',
+    },
+    {
+      at: noon - DAY,
+      question: '回退那条路有测试吗？',
+      answer: '有。两处：选择器命中和选择器落空，各自断言了实际发给页面的参数。',
+    },
+    {
+      at: noon,
+      question: '那现在还能复现那个点不动的问题吗？',
+      answer: '不能了。遮罩层那条路径现在会先报 `element intercepted`，而不是静默点空。',
+    },
+  ]
+  const rows = []
+  for (const day of days) {
+    rows.push({ kind: 'user', text: day.question, at: day.at })
+    rows.push({ kind: 'assistant', text: day.answer, at: day.at + 3 * MINUTE })
+  }
+  // A stamped tool row closing the last day, so the marker is not only ever drawn
+  // on a question — and so a day that opens with a tool call has coverage.
+  rows.push({ kind: 'tool', callId: 'c-day', name: 'browser_snapshot', summary: 'example.com/settings', status: 'ok', at: noon + 4 * MINUTE })
+  return rows
+}
+
+/**
  * A conversation the length of a few days of real use.
  *
  * Built rather than written out, because the point is the *length*: the panel
@@ -1306,6 +1358,21 @@ const SCENARIOS = {
 
   /** A four-column comparison table, the widest thing the panel ever shows. */
   table: { messages: TABLE_MESSAGES },
+
+  /**
+   * A conversation that crosses midnight twice.
+   *
+   * Real logs run long: the longest session on this machine spans 37.9 hours and
+   * the three largest each cross three calendar days. The panel holds sixty rows
+   * of that, so without a day marker the top of the window reads as "a while ago"
+   * whether it was twenty minutes or two days.
+   *
+   * The stamps are anchored to *yesterday* at run time rather than to fixed dates,
+   * so the fixture exercises the `Yesterday` path on any day this is rendered
+   * without depending on when it is rendered. A fixture pinned to a literal date
+   * would silently stop covering the two named days after that date passed.
+   */
+  days: { messages: dayCrossingMessages() },
 
   /**
    * The context reading beside the composer, in both shapes the log produces.

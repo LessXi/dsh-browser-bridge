@@ -36,7 +36,7 @@
  * @module extension/sidepanel
  */
 
-import { pickLocale, relativeTime, translator } from './locales.js'
+import { crossedDay, dayLabel, pickLocale, relativeTime, translator } from './locales.js'
 import { modelLabel, modelMenuModel } from './model-menu.js'
 import { mentionAt, mentionMenu, mentionRows } from './mention.js'
 import { renderMarkdown } from './markdown.js'
@@ -2392,6 +2392,43 @@ function containsNode(outer, node) {
  * @param {object[]} next - The rows to draw, oldest first.
  * @returns {void}
  */
+/**
+ * The day label a row opens with, or an empty string.
+ *
+ * A row carries one when it is the first row of a calendar day *in this window*.
+ * The window matters: the panel holds sixty rows of a log that can run for days,
+ * and the first row it happens to hold is a day's beginning only by accident of
+ * where the window fell. So the boundary is drawn on the first row that has a
+ * stamp — the top of the transcript always names the day it starts in — and then
+ * whenever an adjacent pair crosses midnight.
+ *
+ * The pair is the point. Comparing each row against the previous one *that has a
+ * stamp* rather than against the array's previous element is what keeps a row the
+ * host could not time (an injected context line carries no `time`) from being read
+ * as a day boundary of its own.
+ *
+ * @param {object[]} rows - The whole window.
+ * @param {number} index - Which row to label.
+ * @returns {string} The label, or an empty string.
+ */
+function dayLabelFor(rows, index) {
+  const row = rows[index]
+  const when = row?.at
+  if (!Number.isFinite(when) || when <= 0) return ''
+  let previous = null
+  for (let earlier = index - 1; earlier >= 0; earlier -= 1) {
+    const stamp = rows[earlier]?.at
+    if (Number.isFinite(stamp) && stamp > 0) {
+      previous = stamp
+      break
+    }
+  }
+  // No earlier stamp in the window: this row opens it, so it names its day.
+  if (previous === null) return dayLabel(when, Date.now(), locale, t)
+  if (!crossedDay(previous, when)) return ''
+  return dayLabel(when, Date.now(), locale, t)
+}
+
 function reconcileRows(next) {
   // Focus is about to be at the mercy of node replacement. Where it was is
   // recorded by row and by control, because the node holding it may not survive;
@@ -2407,11 +2444,10 @@ function reconcileRows(next) {
   }
 
   const previous = drawnRows
-  drawnRows = next.map((row) => {
+  drawnRows = next.map((row, index) => {
     const key = rowKey(row)
-    return { row, key, data: JSON.stringify(row), open: rowIsOpen(row, key) }
+    return { row, key, data: JSON.stringify(row), open: rowIsOpen(row, key), day: dayLabelFor(next, index) }
   })
-
   // Claim a node per row, in order. A name can repeat — two rows the reader
   // cannot tell apart — so matches are handed out one at a time rather than
   // through a one-to-one map that would drop the second.
@@ -2442,6 +2478,22 @@ function reconcileRows(next) {
     // rule that enumerates kinds is a rule that keeps missing one — which is
     // exactly how the reasoning row escaped the search outline.
     entry.node.setAttribute('role', 'listitem')
+  }
+
+  // The day marker is an attribute, not an inserted element, and that is a
+  // deliberate choice about where it lives. `reconcileRows` keeps a node per row
+  // and this file relies on row nodes being a *prefix* of the transcript's
+  // children — the placement loop below walks the two in step, and the transient
+  // rows (`.working`, `.live`, `.approval`) are appended behind them. A separator
+  // element interleaved among the rows would sit inside that prefix and make the
+  // walk index against the wrong child.
+  //
+  // Set for every row on every pass, including the ones whose node was reused, so
+  // a window that grows upward relabels the whole visible span. A row that keeps a
+  // stale label would claim a day the rows above it contradict.
+  for (const entry of drawnRows) {
+    if (entry.day.length === 0) entry.node.removeAttribute('data-day')
+    else entry.node.setAttribute('data-day', entry.day)
   }
 
   // Whatever the new window no longer holds goes, and it goes before anything is

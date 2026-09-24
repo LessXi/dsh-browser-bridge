@@ -493,6 +493,27 @@
 
       /* ---- transcript rows ---- */
       .row { display: flex; min-width: 0; }
+
+      /* The day separator.
+         Drawn as a pseudo-element on the row that opens the day rather than as a
+         node between rows: `reconcileRows` requires row nodes to be a prefix of
+         the transcript's children, and an interleaved element would break the walk
+         that keeps each row in place.
+         The row is a flex container, so a pseudo-element child would sit *beside*
+         the message — measured: the label landed next to the bubble and read as
+         part of it. `flex-basis: 100%` gives it the whole line and `order: -1`
+         puts it first, which is a label above the row without adding a node. */
+      #transcript > [data-day] { flex-wrap: wrap; }
+      #transcript > [data-day]::before {
+        content: attr(data-day);
+        order: -1;
+        flex: 0 0 100%;
+        text-align: center;
+        margin: 0 0 2px;
+        color: var(--muted);
+        font-size: var(--text-xs);
+        font-weight: 500;
+      }
       .row[data-kind="user"] { justify-content: flex-end; }
       .bubble {
         /* `fit-content` is what makes a short message a bubble and a long one a
