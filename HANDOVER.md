@@ -1,7 +1,7 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v110 已交付并入库。** 下一节就是最新的一轮改动；下面标 v108/v107/v106/v105/v104/v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v110 那一段为止即可。
+> **当前状态：v111 已交付并入库。** 下一节就是最新的一轮改动；下面标 v108/v107/v106/v105/v104/v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v111 那一段为止即可。
 >
 > **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（713 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
@@ -19,7 +19,82 @@
 > **已入库**：v3→v109 的全部改动已提交并推送到 `origin/main`。工作区干净。
 > （v108 是 `0bfdf20`，v107 是 `afc1ac1`，v105 是 `4b1f0aa`，v103 是 `91fa7dd`，v102 是 `77b75e3`，v101 是 `cc33dd9`，v99 是 `bff292d`，v92 是 `e3ad6ba`，v91 是 `3d96bf1`，v90 是 `767e4cd`，v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
 
-> ## v110：假宿主少一个分支，面板为一次成功的操作报错
+> ## v111：宿主重启之后，面板能不能自己走回来
+
+这一轮的结论是**阴性**：能。所以交付的不是修复，而是**这条轴第一次有了仪器**。
+
+### 为什么这条轴值得一轮
+
+宿主重启在本机是常态而不是假设：用户自己的实例在一次工作会话里换过四次进程——
+`59968`、`54204`、`70332`、`34100`——而端口始终是 `3080`。读者不会去重启宿主，但宿主会自己重启。
+
+面板对「宿主不可达」有一套完整的界面（`#blocked` 三态，v105/v106/v108 都在这条轴上修过）。
+但那些轮次问的都是「不可达时画得对不对」。**没有人问过：宿主回来之后，面板能自己恢复吗。**
+
+### 工具缺口：原来的夹具只能单向掉线
+
+`tools/preview.mjs` 原有 `hostDownAfterFirst`（v108 加的），它让宿主回答一次、然后永远消失。
+所以「宿主回来」这半程**无法被测量**——包括最要紧的那种失败：面板在宿主已经健康之后，
+仍然停在「连不上 dsh web」的界面上，直到读者手动刷新侧栏。
+
+新增 `scenario.hostRestartsAfterMs` / `hostOutageMs` 与场景 `hostRestarts`
+（`{ hostRestartsAfterMs: 6000, hostOutageMs: 12000 }`）。
+
+**按时间而不是按请求数**：面板的恢复靠的是 `setInterval(() => runOneAtATime(refreshGroups), 5000)`
+这个时钟。若让夹具按请求计数决定什么时候开始丢连接，那就是夹具在替面板决定「你什么时候发现」——
+**测量就取代了被测行为**。
+
+### 实测读数（`.tmp-run/probe-recovery-list.js`，一次跑完三个阶段）
+
+| 阶段 | 浮层 | 对话行 | 会话（列表视图下） |
+| --- | --- | --- | --- |
+| 健康 | 关闭 | 4 | — |
+| 掉线（**8.3s** 发现） | 打开 + 下层 `inert` | 4（保留） | — |
+| 恢复（**20.3s**） | 关闭 | 4 | — |
+| 稳定后（切到列表视图） | 关闭 | **4** | **8 项 / 4 会话** |
+
+三轮的结论都是阳性通过：`noticedOutage: true`、`recovered: true`、`wentRoundTrip: true`。
+
+### ★ 我自己的一次假读数
+
+第一版探针（`.tmp-run/probe-host-restart.js`）报 `rowsAfter: 0`——恢复之后对话是空的，看起来像缺陷。
+换成 `.tmp-run/probe-recovery-transcript.js` 再等 8 秒后读到 `transcriptRows: 4`：那是**恢复瞬时的过渡帧**，
+列表正在被重新取回。**在过渡瞬间采样，会把正常的中间态读成缺陷**——本仓库已记录过多次同类错误。
+
+第二版探针另有一处 JS 错误值得记：`const lostTheSentence = …` 被写在 `return` 的对象字面量**内部**，
+而 `verdict` 里引用了它，于是 `ReferenceError: lostTheSentence is not defined`。
+先声明、再放进返回值。
+
+### 草稿也过了同一条轴
+
+宿主重启会触发 `refreshGroups` 回退会话（记住的会话不在列表里时用最近的），并调 `restoreDraft()`——
+而 `restoreDraft` 会把输入框换成新会话的草稿。所以风险是具体的：读者在会话 A 里打了半句话，
+宿主重启导致列表暂时为空，那句话会不会丢。
+
+`.tmp-run/probe-draft-across-restart.js` 四个读数全过：`writtenToStorageImmediately: true`、
+`survivedInField: true`、`survivedInStorage: true`、**`lostTheSentence: false`**。
+
+### 新增守卫测试
+
+`packages/dsh-browser-bridge/test/screenshots.test.js` 新增
+`the preview host can lose the host and get it back, so recovery is testable`：断言 `hostDown` 夹具仍在、
+`hostRestartsAfterMs` 存在、掉线是**按时钟**量的（`Date.now() - hostStartedAt`）、场景 `hostRestarts` 仍在。
+
+这条断言守的是**仪器能力**而不是产品行为：能力一旦消失，本轮这条轴就再也问不出来了，
+而套件里没有任何别的东西会发现。
+
+### 验证读数
+
+- `npm test` → **715 passed, 0 failed, 0 skipped**（714 → 715）
+- `npm run check:extension` → exit 0
+- 画廊 15 张重渲后只有 `SOURCES.json` 指纹变；`search.png` 出现**已记录的焦点环抗锯齿抖动**
+  （1 像素，CSS `(7, 56.5)`，v93/v104/v105 同一位置），已 `git checkout` 还原
+
+### 新增文件（`.tmp-run/`，被 gitignore）
+
+`probe-host-restart.js`（第一版，在过渡帧上采样）、`probe-recovery-transcript.js`（区分空列表与丢对话）、
+`probe-recovery-list.js`（最终判据，含列表视图）、`probe-draft-across-restart.js`。
+## v110：假宿主少一个分支，面板为一次成功的操作报错
 
 **症状**：读者在审批卡上点「只允许一次」，面板弹出 `没能作答：HTTP 200`。
 

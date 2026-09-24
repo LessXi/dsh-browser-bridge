@@ -202,6 +202,8 @@ function probeVersion(port) {
 function makeHost(scenario, state) {
   // Whether the `hostDiedAfterLoad` scenario has already served its one answer.
   let hostAnsweredOnce = false
+  /** When this host came up, so a scripted outage can be measured against it. */
+  const hostStartedAt = Date.now()
   // What the panel has sent during this run. A real host appends it to the
   // conversation, so the rows it answers with next time include it; the mock
   // has to do the same or a sent message is erased on the following poll.
@@ -231,6 +233,23 @@ function makeHost(scenario, state) {
         // Nothing listens: the panel's own fetch fails, which is the point.
         response.destroy()
         return
+      }
+
+      // A host that goes away and comes back, on the same port. This is the shape
+      // a restart actually has: the process changes, the port does not, and the
+      // panel has to notice both the outage and the recovery through nothing but
+      // its own five-second poll.
+      //
+      // It has to be time-based rather than request-counted, because the panel's
+      // recovery is a *clock* — counting requests would let the fixture decide when
+      // the panel finds out, which is the behaviour under measurement.
+      if (typeof scenario.hostRestartsAfterMs === 'number') {
+        const since = Date.now() - hostStartedAt
+        const outageEnds = scenario.hostRestartsAfterMs + (scenario.hostOutageMs ?? 12000)
+        if (since >= scenario.hostRestartsAfterMs && since < outageEnds) {
+          response.destroy()
+          return
+        }
       }
 
       // A host that answered once and then went away. The first request is served
@@ -1045,6 +1064,22 @@ const SCENARIOS = {
    * after it is destroyed.
    */
   hostDiedAfterLoad: { hostDownAfterFirst: true, click: '#title' },
+
+  /**
+   * A host that restarts: it answers, goes away for twelve seconds, and comes back
+   * on the same port.
+   *
+   * This is not a hypothetical shape. The user's own harness changed process four
+   * times during one working session — 59968, 54204, 70332, 34100 — while the port
+   * stayed at 3080. A restart is ordinary; what matters is whether the panel can
+   * find its way back without the reader reloading the sidebar.
+   *
+   * The outage is timed rather than request-counted on purpose: the panel's
+   * recovery is a clock (a five-second poll), and letting the fixture decide when
+   * the panel notices would replace the behaviour under measurement with the
+   * measurement.
+   */
+  hostRestarts: { hostRestartsAfterMs: 6000, hostOutageMs: 12000 },
 
   /**
    * A host running code from before this panel existed: it answers, but its body

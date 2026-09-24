@@ -231,6 +231,43 @@ test('every poster is drawn from a screenshot the gallery actually produces', ()
   assert.deepEqual(unknown, [], `the posters are drawn from files the gallery does not produce: ${unknown.join(', ')}`)
 })
 
+test('the preview host can lose the host and get it back, so recovery is testable', () => {
+  // A harness restart is ordinary here rather than hypothetical: the user's own
+  // instance changed process four times in one working session — 59968, 54204,
+  // 70332, 34100 — while the port stayed at 3080. The panel is supposed to notice
+  // both the outage and the recovery through nothing but its five-second poll.
+  //
+  // That cannot be measured unless the fixture can produce both halves. The tool
+  // already had `hostDownAfterFirst`, which is one-way: the host answers once and
+  // is gone for good, so anything about *coming back* was untestable — including
+  // the failure that matters most, a panel that stays stuck on a "cannot connect"
+  // surface after the host is healthy again.
+  //
+  // The outage is timed rather than counted on purpose. The panel's recovery is a
+  // clock; if the fixture decided when the panel noticed, the measurement would
+  // replace the behaviour it is supposed to observe.
+  const preview = readFileSync(join(root, 'tools', 'preview.mjs'), 'utf8')
+
+  assert.ok(
+    /if \(scenario\.hostDown === true\)/.test(preview),
+    'the always-down fixture is gone; the "never connected" state is no longer reachable',
+  )
+  assert.ok(
+    /scenario\.hostRestartsAfterMs/.test(preview),
+    'the preview host cannot go away and come back, so nothing about recovery after a restart is testable',
+  )
+  // Timed, not request-counted: a count would let the fixture decide when the
+  // panel finds out.
+  assert.ok(
+    /Date\.now\(\) - hostStartedAt/.test(preview),
+    'the scripted outage is not measured against a clock, so the fixture would be driving the panel instead of observing it',
+  )
+  assert.ok(
+    /hostRestarts: \{ hostRestartsAfterMs/.test(preview),
+    'the scenario that exercises a restart is gone, so the recovery path has no way to be run',
+  )
+})
+
 test('the preview tool keeps its scratch directory somewhere git ignores', () => {
   // The tool creates a Chrome profile next to itself and removes it on the way
   // out — so a run that is *killed* leaves it behind, and the process that knew
