@@ -1,6 +1,6 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v126 已交付并入库。** 下一节就是最新的一轮改动；下面标 v108/v107/v106/v105/v104/v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> **当前状态：v127 已交付并入库。** 下一节就是最新的一轮改动；下面标 v108/v107/v106/v105/v104/v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
 > 只想知道「现在能做什么、下一步做什么」，读到 v120 那一段为止即可。
 >
 > **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（713 条）与
@@ -19,6 +19,115 @@
 > **已入库**：v3→v119 的全部改动已提交并推送到 `origin/main`。工作区干净。
 > （v118 是 `f245e21`，v117 是 `1df4842`，v108 是 `0bfdf20`，v107 是 `afc1ac1`，v105 是 `4b1f0aa`，v103 是 `91fa7dd`，v102 是 `77b75e3`，v101 是 `cc33dd9`，v99 是 `bff292d`，v92 是 `e3ad6ba`，v91 是 `3d96bf1`，v90 是 `767e4cd`，v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
 
+## v127：审计不再报读者没有的问题
+
+上一轮的审计在 88 次测量里报 **78 处 finding**，其中 **60 处是表格溢出**——全是假阳性。
+一个每次报 60 处假阳性的工具会被忽略，所以本轮修的是**判据**，不是产品。
+
+修完是 **0 findings**。这个数字本身没有意义，除非能证明判据还会报红——所以下面每一条
+都配了注入验证。
+
+### 一、溢出：从「右边是否超出视口」改为「能否滚到」
+
+原判据只比视口：`rect.right > window.innerWidth + 0.5`。而 `markdown.js` 把宽表格放进
+`.table-scroll` 是**设计**（与 Codex 面板同一取舍：横向滚动，不把列挤成细条）。
+读者能滚到的东西不是缺陷。
+
+新判据：元素在内容偏移 `L`、宽 `W`、容器宽 `C`、最大滚动 `M` 时，
+右边缘可见 ⟺ `L + W - C <= M`；左边缘可见 ⟺ `L >= 0`（它本来就在那儿）。
+
+**公式不算数，逐档对过浏览器**：`.tmp-run/probe-overflow-reachability.js` 六档、两向都有，
+`agreementCount: 6`、`predictedTrue: 5`、`predictedFalse: 1`。
+
+**★ 上一版判据错在方向上**：它问「滚到最右时元素露出多少」，而那只对贴近右边缘的元素成立——
+左边的块会被滚出左视野，于是「轻松可达」的块被报成 0（`probe-overflow-boundary.js` 的 `roomy` 读数）。
+
+**★ 我自己的用例错了两次**：
+1. 第一版把三个用例的块宽都设成 300 而容器只有 120，`W <= C` 当场不成立，边界根本没被测到；
+2. 第二版想造「有横滚祖先但滚不到」的元素，实测**造不出来**——`scrollWidth` 会把溢出的内容算进去，
+   `maximum` 恰好等于让右边缘可见所需的量，两者永远相等。
+
+### 二、遮挡：从「有 role」改为「读者能否解除」
+
+原判据只排除「可滚走的遮挡」（`scrollable`），而三个菜单场景的滚动容器内容不溢出（559 = 559），
+所以读者自己打开的菜单落进了「永久遮挡」。
+
+**★ 而且绑在 role 上会自相矛盾**：模型菜单在「目录不可用」态**故意**设 `role="none"`
+（`sidepanel.js` 的 `error` 分支——menu 的唯一子节点是一句话时，读屏会播报一份不存在的选项列表，v76 的判据），
+于是同一个浮层在一个状态报红、在另一个状态报绿。
+
+最终按**三种机制**认领，每一种都对应代码里的一条真实关闭路径：
+| 机制 | 代码 | 覆盖 |
+| --- | --- | --- |
+| 控件上报展开状态 | `#model` 的 `aria-expanded="true"` | `modelMenu` / `noCatalogMenu` |
+| 输入内容驱动 | `syncMention` 在 `mentionAt` 找不到时 `closeMention()` | `mentionMenu` |
+| 点击别处 / Escape | `document` click 与 keydown 处理器 | 两者 |
+
+**★ 中途我按 id 特判过 `#at-menu`，那是错的**——本仓库反复记录「按属性枚举，不按元素 id」，
+已改成通用判据（任何输入框里存在未结束的 `@`）。
+
+**★ 第一次尝试问「浮层与控件是否同父」，永远匹配不上**：
+实测 `#model-menu` 的父亲是 `footer`、`#model` 的父亲是 `div`，它们不是兄弟
+（`.tmp-run/probe-menu-owner.js`）。改成按 id 约定配对才生效。
+
+### 三、小字：符号不是文字
+
+`#send` 在运行态显示 `■`（`0.625rem` = 10px），空闲态显示 `↑`（`0.875rem` = 14px），
+两种状态盒子都是 **28×28**，符号带 `aria-label`。一个实心方块与箭头在同样字号下视觉重量不同，
+缩它是常规的光学修正。
+
+**读者不读它，是认出它**——而 tinyText 判据的理由（面板大部分是 12–14px 正文，
+「看起来有点轻」与「不易读」在那里是同一件事）只对**要读的字**成立。
+
+判据：极短（≤2 字符）、**任何文字系统的字母都不含**（`\p{L}`）、且有可访问名——三条同时成立才算符号。
+一个词过不了前两条，仍会被报出来。
+
+**★ 分类判据没有被文字侧驱动**（`probe-small-text-kinds.js` 在所有场景报 `textCount: 0`）：
+面板全站最小的文字是 `--text-xs` = 12px（46 处使用），恰好在阈值上。所以 10px 是**唯一的例外**，
+而它是个图标。这一点如实记下——它意味着这条豁免的「文字侧」目前是空的。
+
+### 四、证明判据还会报红（两向都被驱动）
+
+`.tmp-run/probe-judge-inject.js` 注入四档，由**审计器自己**判（`--audit` 在 `--probe` 之后跑）：
+| 注入 | 期望 | 实测 |
+| --- | --- | --- |
+| 超视口、**无**横滚祖先 | 报红 | **报红** ✓ |
+| 超视口、**有**横滚祖先（唯一差别） | 报绿 | **未报** ✓ |
+| 10px 的**词** | 报红 | **报红** ✓ |
+| 10px 的**符号** + `aria-label` | 报绿 | **未报** ✓ |
+
+### 五、变异 7/7，其中一条暴露了真实的断言缺口
+
+`tools/mutate.mjs`：`overflow-back-to-viewport-only`、`overflow-reachability-always-true`、
+`overflow-drops-the-negative-clamp`、`occlusion-ignores-who-opened-it`、
+`occlusion-ignores-the-typed-picker`、`tiny-text-counts-glyphs-as-words`、`tiny-text-checks-nothing`。
+
+**★ 第一轮 6/7**：`overflow-back-to-viewport-only` 把**调用**注释掉而留下定义，套件保持绿。
+我的断言只查了「规则存在」，没查「规则被用」——**断言一个名字而不是断言工作**，
+与本仓库记录过的 `entry.test.js` 那次同类。补上调用断言后 7/7。
+
+### 六、顺带修正一条既有测试的错误前提
+
+`screenshots.test.js` 原有 `every floating surface can be opened and dismissed` 断言
+「可关闭 = 有 role」——而 `noCatalogMenu` 态故意去掉 role，所以那条规则在真实数据上不成立。
+已改为断言**四条真实的关闭路径**（`setMenu(false)` 的 click 与 Escape、`closeMention()`、
+`syncMention` 里的 `mentionAt` → `closeMention`），并加一条反向断言：
+**`#earlier` 不许获得 role**——它不是读者打开的浮层，给它 role 正是让审计把永久遮挡当成可关闭的方式。
+
+### 验证读数
+
+- `npm test` → **750 passed, 0 failed, 0 skipped**（749 → 750）
+- `npm run check:extension` → exit 0
+- `node tools/audit.mjs` → **88 scenarios, 0 findings, 0 broken**（原 78 处）
+- 变异 **7/7 符合声明**，`restoredExactly` 通过
+- 未动 `extension/`，画廊无需重渲
+
+### 新增探针（`.tmp-run/`，被 gitignore）
+
+`probe-overflow-reachability.js`（判据本体，六档对浏览器）、`probe-overflow-facts.js`（两种算法并排）、
+`probe-overflow-inject2.js`、`probe-judge-inject.js`（四档注入，两向驱动）、
+`probe-menu-owner.js`（DOM 归属事实）、`probe-small-text-kinds.js`、`probe-stop-glyph.js`、
+`mutate-audit-judges.mjs`。
 ## v126：审计器跑的是二十一轮之前的预览工具
 
 这一轮从「审计的覆盖范围早已过时」开始，最后挖出一条更深的：**审计器根本没有在测产品**。

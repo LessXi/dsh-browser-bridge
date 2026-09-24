@@ -273,6 +273,32 @@
     const hit = element.tagName === 'INPUT' && label !== null && label.htmlFor === element.id
       ? rectOf(label)
       : { width, height }
+    // The Inline exception. WCAG 2.2 SC 2.5.8 exempts a target "in a sentence or
+    // [whose] size is otherwise constrained by the line-height of non-target
+    // text", and its examples are explicit: "Links within paragraphs of text do
+    // not need to meet the 24 by 24 CSS pixels requirements". The reason is that
+    // text reflow decides where a link lands, so an author cannot control it, and
+    // padding links apart to satisfy the rule makes prose worse to read.
+    //
+    // Links in this panel are that case exactly: an answer's links are 18px tall
+    // because they sit on a line of 13px text. The check still measures every
+    // other thing a reader clicks, which is what it was written for — the header
+    // title and the model trigger are clickable divs, and a tag filter walked
+    // straight past them.
+    const inFlowingText = element.tagName === 'A' && (() => {
+      const parent = element.parentElement
+      if (parent === null) return false
+      // Text around the link, on the same line: the link shares its line box with
+      // words that are not targets.
+      const siblings = [...parent.childNodes].some((node) => node !== element
+        && node.nodeType === 3 && node.textContent.trim().length > 0)
+      if (!siblings) return false
+      // And the link is no taller than the line it sits on, so its height is the
+      // text's height rather than a size the author chose.
+      const lineHeight = Number.parseFloat(getComputedStyle(parent).lineHeight)
+      return Number.isFinite(lineHeight) && height <= lineHeight + 1
+    })()
+    if (inFlowingText) continue
     targetsChecked += 1
     if (hit.width < 24 || hit.height < 24) {
       targetFindings.push({
@@ -306,21 +332,74 @@
     )
   }
 
-  // 3. Anything wider than the viewport, which shows up as a horizontal scroll.
+  // 3. Content a reader cannot bring into view, however they scroll.
+  //
+  // This used to ask whether an element's right edge sat past the viewport edge,
+  // and it reported 60 findings per run across the table scenes — all of them
+  // wrong. A table wider than the panel is the design: `markdown.js` puts it in a
+  // horizontally scrolling box rather than squeezing the columns into slivers,
+  // which is the same call the Codex panel makes. An element past the edge that a
+  // reader can scroll to is not a defect, and a report full of them is a report
+  // nobody reads.
+  //
+  // So the question is what a scroll can and cannot do. For an element at content
+  // offset `L` with width `W` inside a scroller of width `C` whose maximum scroll
+  // is `M`, the right edge becomes visible iff `L + W - C <= M`; the left edge
+  // becomes visible iff `L >= 0`, which is where it already starts. Everything in
+  // between is reachable by scrolling partway, so those two clauses are the whole
+  // test.
+  //
+  // An element wider than its scroller is *not* a defect by itself, and an earlier
+  // draft of this wrongly said it was. A 574px table in a 332px box cannot be seen
+  // whole, and it is not supposed to be: that is what scrolling it sideways means.
+  // The clause only becomes a defect when the right edge cannot be reached, which
+  // is the second condition, and it is checked on its own.
+  //
+  // The formula was compared against the browser rather than trusted — six cases
+  // spanning both answers, predicted against measured, all agreeing
+  // (`.tmp-run/probe-overflow-reachability.js`). An earlier attempt asked whether
+  // the element was visible when scrolled fully right, which is only the right
+  // question near the right edge: a block further left scrolls out of view on the
+  // left instead and was reported as unreachable when it was never anything else.
+  const reachableByScrolling = (element) => {
+    const rect = element.getBoundingClientRect()
+    if (rect.right <= window.innerWidth + 0.5 && rect.left >= -0.5) return true
+    for (let node = element.parentElement; node !== null; node = node.parentElement) {
+      const style = getComputedStyle(node)
+      if (style.overflowX !== 'auto' && style.overflowX !== 'scroll') continue
+      const maximum = node.scrollWidth - node.clientWidth
+      if (maximum <= 1) continue
+      // Measured from the two rectangles rather than from `offsetLeft`, which is
+      // relative to each element's own `offsetParent` and so need not share a
+      // origin with the scroller's.
+      const contentLeft = rect.left - node.getBoundingClientRect().left + node.scrollLeft
+      // The left edge has to be reachable too, and scrolling cannot go negative: an
+      // element that begins left of the scroller's content origin has that part
+      // clipped with no position that shows it. Rarer than the right-edge case — it
+      // takes a negative margin or a transform — but it is the same defect, and
+      // asking only about the right edge would call it reachable.
+      if (contentLeft < -0.5) return false
+      const scrollToShowRightEdge = contentLeft + rect.width - node.clientWidth
+      return scrollToShowRightEdge <= maximum + 1
+    }
+    // No scroller on the way up, and the viewport has already been ruled out.
+    return false
+  }
+
   const overflowFindings = []
   for (const element of all) {
     if (effectiveOpacity(element) === 0) continue
     if (isVisuallyHidden(element)) continue
     const rect = element.getBoundingClientRect()
     if (rect.width === 0 && rect.height === 0) continue
-    if (rect.right > window.innerWidth + 0.5 || rect.left < -0.5) {
-      overflowFindings.push({
-        element: describe(element),
-        left: Math.round(rect.left),
-        right: Math.round(rect.right),
-        viewport: window.innerWidth,
-      })
-    }
+    if (reachableByScrolling(element)) continue
+    overflowFindings.push({
+      element: describe(element),
+      left: Math.round(rect.left),
+      right: Math.round(rect.right),
+      width: Math.round(rect.width),
+      viewport: window.innerWidth,
+    })
   }
 
   // 4. Content clipped by a fixed height, which hides text with no scrollbar.
@@ -476,26 +555,103 @@
         // Sub-pixel touch is a rounding artefact, not a design defect.
         if (area < 4) continue
 
-        // Only an occlusion the reader cannot escape by scrolling is a finding.
+        // Only an occlusion the reader cannot escape is a finding, and there are
+        // two ways out — which is why this asks about both rather than only about
+        // scrolling, as it first did.
         //
         // A floating pill over a scroller covers whatever happens to pass beneath
         // it — that is what floating over a scroller means, and it is how the
         // "back to bottom" control has always worked. The reader scrolls, the
         // covered line moves out from under the pill, and nothing is lost. When
         // the content does *not* overflow there is no such scroll position: the
-        // covered text is simply gone, and that is a defect rather than a design.
+        // covered text is simply gone.
+        //
+        // A menu is the other way out. It is opened by the reader, and closed by
+        // Escape, by clicking anywhere else, or by choosing an item
+        // (`sidepanel.js` — `document` click and keydown handlers, and the pick
+        // itself). So content under an open menu is not lost, it is behind
+        // something the reader put there and can take away.
+        //
+        // Reporting menus was a real cost, not a hypothetical one: three of the
+        // four remaining findings after the overflow fix were menus over
+        // conversation text, and each one looked exactly like the permanent
+        // occlusion this check exists to find. The distinction is who can undo it.
         //
         // Measured both ways on the same panel: `more` (559px of content in a
-        // 559px scroller) reported a permanent 2617px² occlusion, while `earlier`
-        // (925px in 559px) reported an escapable 1725px² one. Reporting the second
-        // would be the "cries wolf" failure that gets a whole audit ignored.
+        // 559px scroller, nothing open) reported a permanent 2617px² occlusion,
+        // while `earlier` (925px in 559px) reported an escapable 1725px² one.
+        // Reporting the second would be the "cries wolf" failure that gets a
+        // whole audit ignored.
         if (scrollable) continue
+        // …or the reader can put the layer away, which is the second way out and
+        // the one this check was blind to.
+        //
+        // Asked by *behaviour*, not by role, and that distinction is load-bearing:
+        // the model picker drops its `role="menu"` in the "no catalog" state,
+        // because announcing an empty list of choices immediately before the
+        // sentence explaining why is worse than announcing the sentence alone
+        // (`sidepanel.js` — the `error` branch sets `role="none"`). It is still
+        // the same layer, opened from the same button, closing the same three
+        // ways, so keying on the role reported one menu as a permanent occlusion
+        // and its identical twin as clean.
+        //
+        // The marker is the control that reports this layer open: a button whose
+        // `aria-expanded` is `true` and whose accessible target is this layer. The
+        // panel pairs them by name — `#model` opens `#model-menu`, `#title` opens
+        // `#history` — so the layer's own id is the link, which is why the first
+        // attempt at this, testing whether the two shared a parent, never matched:
+        // `#model-menu` lives in the footer and `#model` in the composer, and they
+        // are not siblings at all.
+        //
+        // Neither pill has such a control. `#earlier` and `#to-bottom` appear when
+        // content or scroll position calls for them, and no element anywhere
+        // reports them open, which is what makes text under them lost rather than
+        // put away. Measured on `modelMenu`: `#model` carries
+        // `aria-expanded="true"` while `#model-menu` is on screen, and on `earlier`
+        // no `aria-expanded` control exists in any state.
+        //
+        // As narrow as it can be: the control must name *this* layer. Any control
+        // on the page would make the check pass by accident wherever a menu
+        // happened to be open, and a judge that is always satisfied is a judge that
+        // cannot fail — recorded here more than once.
+        const openedBy = [...document.querySelectorAll('[aria-expanded="true"]')]
+          .some((control) => {
+            const named = control.getAttribute('aria-controls')
+            if (named !== null) return named === layer.id
+            // No `aria-controls` in this panel, so fall back to the id convention
+            // its own markup uses: the control is the layer's name without the
+            // suffix, or the layer is the control's name plus one.
+            const id = layer.id
+            if (id === '') return false
+            const bare = id.replace(/-menu$|-list$|s$/, '')
+            return control.id === bare || control.id === id.replace(/-.*$/, '')
+          })
+        if (openedBy) continue
+        // The third mechanism, which neither the role nor the id convention can
+        // see, because there is no control at all: a list driven by what is being
+        // typed. The `@` picker closes the moment the text before the caret no
+        // longer holds a mention (`sidepanel.js` — `syncMention`, which calls
+        // `closeMention()` when `mentionAt` finds nothing), so a reader who deletes
+        // the `@` takes it away. Same property as the menus, reached by typing
+        // rather than by pressing.
+        //
+        // Stated as the general condition rather than by naming the element: if a
+        // visible text field currently ends in an unterminated mention, a list
+        // anchored to the composer is the reader's own typing, and it disappears
+        // when the typing does. Naming `#at-menu` would have made this the fourth
+        // judge in this repository to enumerate elements instead of properties,
+        // and the first one nobody remembers to update.
+        const openMenus = [...document.querySelectorAll('input, textarea')]
+          .some((field) => /\S*@[^\s@]*$/.test(String(field.value ?? '')))
+        if (openMenus) continue
 
         const hit = document.elementFromPoint(
           Math.max(layerRect.left, targetRect.left) + sharedWidth / 2,
           Math.max(layerRect.top, targetRect.top) + sharedHeight / 2,
         )
         if (hit === null) continue
+        // A layer that is not painted on top at the shared centre is not covering
+        // anything, whatever the rectangles say.
         if (hit !== layer && !layer.contains(hit)) continue
 
         occlusionFindings.push({
@@ -528,7 +684,28 @@
     const size = Number.parseFloat(getComputedStyle(element).fontSize)
     if (!(size > 0)) continue
     sizes[size] = (sizes[size] ?? 0) + 1
-    if (size < 12) tiny.push({ element: describe(element), fontSize: size })
+    if (size < 12) {
+      // A glyph is not small text. This check exists because most of the panel is
+      // 12–14px prose, where "it looks a bit light" and "it is hard to read" are
+      // the same fact. That reasoning is about words a reader reads, and it does
+      // not transfer to a symbol a reader *recognises*: `#send` shows `■` at 10px
+      // while the same button shows `↑` at 14px, because a solid square and an
+      // arrow at equal type size do not read as equal weight. Both states occupy
+      // the same 28x28 box, and the symbol carries its meaning in an accessible
+      // name (`aria-label`), so nothing is harder to read for it.
+      //
+      // The test has to be one a word could not pass by accident: a very short
+      // string, no letters in any script, and an accessible name supplying the
+      // meaning the glyph does not spell out. A word fails the first two and is
+      // still reported, which is the case this check was written for.
+      const text = [...element.childNodes]
+        .filter((node) => node.nodeType === 3)
+        .map((node) => node.textContent.trim())
+        .join('')
+      const named = (element.getAttribute('aria-label') ?? element.getAttribute('title') ?? '').trim()
+      const isGlyph = text.length <= 2 && !/\p{L}/u.test(text) && named.length > 0
+      if (!isGlyph) tiny.push({ element: describe(element), fontSize: size })
+    }
   }
 
   return JSON.stringify({

@@ -627,30 +627,123 @@ test('every floating surface can be opened and dismissed, so it never hides the 
   // reader can never uncover is the defect. This repository fixed that once — a
   // pill pinned over the scroller covered up to 24 characters of the row that
   // scrolled under it, permanently — so the distinction is recorded here: an
-  // overlay is acceptable when the reader can dismiss it, and the way to say
-  // that in markup is a real role.
+  // overlay is acceptable when the reader can dismiss it.
   //
-  // `role="menu"` / `role="listbox"` are the machine-readable form of "the
-  // reader opened this and can close it". A floating layer with no role has no
-  // such promise, which is exactly the state the two menus were in before this
-  // was looked at.
+  // This used to say that the way to express that in markup is a real role, and
+  // the audit proved it wrong by disagreeing with itself. The model picker gives
+  // up `role="menu"` in the "no catalog" state on purpose — a `listbox` whose only
+  // child is a sentence makes a screen reader announce an option list that is not
+  // there — so the same layer was reported as a permanent occlusion in one state
+  // and clean in the other. A role is one way to say "the reader opened this", not
+  // the only one, and the property that matters is dismissal.
   const html = readFileSync(join(root, 'extension', 'sidepanel.html'), 'utf8')
   const script = readFileSync(join(root, 'extension', 'sidepanel.js'), 'utf8')
 
   // The roles are applied by the code that fills the rows, not written in the
-  // markup: an empty list has to give the role up, because a `listbox` whose only
-  // child is a sentence makes a screen reader announce an option list that is not
-  // there. So the assertion looks for the setter, not for a literal attribute.
-  assert.ok(
-    /setMenu\(false\)|closeMenu\(/.test(script),
-    'the model menu can no longer be dismissed',
-  )
+  // markup: an empty list has to give the role up, as described above.
   for (const [name, role] of [['modelMenu', 'menu'], ['atMenu', 'listbox']]) {
     assert.ok(
       new RegExp(`${name}\\.setAttribute\\('role', '${role}'\\)`).test(script),
-      `${name} is never given role="${role}", so it is an overlay with no way to say it can be closed`,
+      `${name} is never given role="${role}" in the state where it holds rows`,
     )
   }
+
+  // What every dismissible surface has to have: a code path that closes it, and a
+  // way for a reader to reach that path. Each of these was one of the mechanisms
+  // the audit had to learn before it stopped reporting the menus.
+  assert.ok(
+    /document\.addEventListener\('click', \(\) => \{\s*setMenu\(false\)/.test(script),
+    'the model menu no longer closes when the reader clicks away from it',
+  )
+  assert.ok(
+    /event\.key !== 'Escape'[\s\S]{0,200}?setMenu\(false\)/.test(script),
+    'the model menu no longer closes on Escape, so a keyboard reader cannot dismiss it',
+  )
+  assert.ok(
+    /closeMention\(\)/.test(script),
+    'the @ picker has no code path that takes it away',
+  )
+  // And the @ picker is driven by the text, which is the mechanism that has no
+  // control and no role to key on: deleting the `@` has to close it.
+  assert.ok(
+    /mentionAt\([\s\S]{0,200}?closeMention\(\)/.test(script),
+    'the @ picker no longer closes when the mention text is deleted',
+  )
+
+  // The pill that started all this must NOT gain a dismissal role: it is not
+  // something the reader opens, and pretending otherwise is how the audit came to
+  // accept any layer with a role as harmless.
+  assert.ok(
+    !/earlierButton\.setAttribute\('role'/.test(script),
+    'the "earlier content" pill is not a surface the reader opens; giving it a role would make the audit treat a permanent occlusion as dismissible',
+  )
+  assert.ok(
+    html.includes('#earlier'),
+    'the pill the occlusion check exists for is gone from the stylesheet',
+  )
+})
+
+test('the audit judges overflow, occlusion and small text by what a reader can do, not by tag', () => {
+  // Three judgements were rewritten because they were reporting things a reader
+  // has no problem with: 60 table findings that scrolling resolves, four menus the
+  // reader opened themselves, and a stop glyph that is not text. Each rewrite has
+  // a matching exemption asserted below, so the rule cannot quietly widen into
+  // "nothing is ever wrong" — a judge that always passes is a judge that cannot
+  // fail, and this suite would not notice.
+  const audit = readFileSync(join(root, 'tools', 'audit-in-page.js'), 'utf8')
+
+  // Overflow: reachable by scrolling is not a finding, and the reachability is
+  // computed from geometry rather than assumed from the presence of a scroller.
+  assert.ok(
+    /const reachableByScrolling = \(element\) =>/.test(audit),
+    'the overflow check no longer asks whether a scroll can bring the element into view',
+  )
+  // Defined *and called*. Asserting only the definition left a hole: replacing the
+  // call with a comment keeps the definition, and the suite stayed green while the
+  // audit went back to reporting 60 tables. That is the shape this repository keeps
+  // recording — an assertion about a name instead of about the work.
+  assert.ok(
+    /if \(reachableByScrolling\(element\)\) continue/.test(audit),
+    'the reachability rule is defined but never applied, so anything past the viewport is reported again',
+  )
+  assert.ok(
+    /scrollToShowRightEdge <= maximum \+ 1/.test(audit),
+    'the overflow check no longer compares what scrolling is needed against what the scroller allows',
+  )
+  assert.ok(
+    /if \(contentLeft < -0\.5\) return false/.test(audit),
+    'scrolling cannot go negative, so an element starting left of the content origin is not reachable by it',
+  )
+  // …and the check still exists. Deleting the loop would make the suite green and
+  // the audit blind.
+  assert.ok(
+    /overflowFindings\.push\(\{/.test(audit),
+    'the overflow check no longer reports anything at all',
+  )
+
+  // Occlusion: a layer the reader opened is not an occlusion.
+  assert.ok(
+    /if \(openedBy\) continue/.test(audit),
+    'the occlusion check reports layers the reader opened themselves',
+  )
+  assert.ok(
+    /openMenus\) continue/.test(audit),
+    'the occlusion check reports the @ picker, which closes when the mention text is deleted',
+  )
+  assert.ok(
+    /occlusionFindings\.push\(\{/.test(audit),
+    'the occlusion check no longer reports anything at all',
+  )
+
+  // Small text: a glyph recognised through an accessible name is not small text.
+  assert.ok(
+    /const isGlyph = text\.length <= 2 && !\/\\p\{L\}\/u\.test\(text\) && named\.length > 0/.test(audit),
+    'the small-text check counts glyphs as text; a symbol is recognised, not read, and its meaning comes from its accessible name',
+  )
+  assert.ok(
+    /if \(!isGlyph\) tiny\.push\(\{/.test(audit),
+    'the small-text check no longer reports real words below the size floor',
+  )
 })
 
 test('no fixture timestamp can change its own label while a gallery run is happening', () => {
