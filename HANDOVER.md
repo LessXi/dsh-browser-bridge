@@ -1,6 +1,6 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v123 已交付并入库。** 下一节就是最新的一轮改动；下面标 v108/v107/v106/v105/v104/v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> **当前状态：v124 已交付并入库。** 下一节就是最新的一轮改动；下面标 v108/v107/v106/v105/v104/v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
 > 只想知道「现在能做什么、下一步做什么」，读到 v120 那一段为止即可。
 >
 > **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（713 条）与
@@ -19,6 +19,115 @@
 > **已入库**：v3→v119 的全部改动已提交并推送到 `origin/main`。工作区干净。
 > （v118 是 `f245e21`，v117 是 `1df4842`，v108 是 `0bfdf20`，v107 是 `afc1ac1`，v105 是 `4b1f0aa`，v103 是 `91fa7dd`，v102 是 `77b75e3`，v101 是 `cc33dd9`，v99 是 `bff292d`，v92 是 `e3ad6ba`，v91 是 `3d96bf1`，v90 是 `767e4cd`，v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
 
+## v124：相对路径的链接，读者点下去到达的不是作者写的那个站点
+
+### 缺陷
+
+`isSafeHref` 用**带基址**的构造读协议：
+
+```js
+return SAFE_SCHEMES.has(new URL(href, 'https://example.invalid/').protocol)
+```
+
+而对相对路径来说，**解析正是让它看起来绝对的那个动作**：`/docs/extensions/reference/api/tabs`
+因此拿到 `https:` 并通过检查。随后 `renderInline` 写 `node.href = href`，浏览器拿**文档自己的基址**
+再解析一次——在侧栏里那是 `chrome-extension://<id>/`。读者点下去到达的是扩展自己目录里的一个路径。
+
+★ 这个函数的调用点上方，注释**已经写明了正确的意图**：
+「An unsafe or relative target stays visible as text: the words matter, the click does not」。
+实现与它自己的注释相反，活了很久。
+
+### 真实数据的规模
+
+`.tmp-run/probe-real-links.mjs` 扫 26565 条真实消息：**3507 个 markdown 链接**，3454 个安全、53 个留作文字。
+而安全的那批里**最大的一组就是站内相对路径**——`/docs/extensions/reference/api` 出现 **258 次**。
+这不是边缘情况，是真实回答里第二大的链接群。
+
+### 官方实现给出的判据（决定性）
+
+`@deepseek-ai/dsh-client-ui-primitives` 的 `sanitizeUrl`（`lib/index.js` L10550）用的是**单参**构造：
+
+```js
+function sanitizeUrl(url) {
+  try {
+    switch (new URL(url).protocol) {
+      case "http:": case "https:": case "mailto:": return url;
+      default: return "";
+    }
+  } catch { return ""; }
+}
+```
+
+没有基址，相对路径直接抛错落进 `catch`。它的注释还写明两件事：**`mailto:` 在允许列表里**，
+以及「Fragment-anchor URLs fail the allowlist, so footnote references render as plain text」——**有意为之**。
+本仓库的 `SAFE_SCHEMES` 因此补上 `mailto:`。
+
+### 修法
+
+先判协议再构造，与官方同一判据：
+
+```js
+const target = href.trim()
+if (!/^[a-z][a-z0-9+.-]*:/i.test(target)) return false
+try { return SAFE_SCHEMES.has(new URL(target).protocol) } catch { return false }
+```
+
+第二处：被拒绝的目标原来渲染成**原始 markdown 语法**（`[tabs 参考](/docs/…)`），
+读者看到的是「渲染器放弃了」而不是「这个链接被拒绝了」。官方 `renderSafeLink` 对不安全目标返回
+**children（标签文字）**。本仓库改为**标签 + 灰色地址**，两者都留着：
+
+```js
+fragment.append(document.createTextNode(label.length > 0 ? label : href))
+if (label.length > 0) { /* span.href-raw，内容 ' (' + href + ')' */ }
+```
+
+### 实测（真实 Chromium，新场景 `links`）
+
+| 读数 | 修复前 | 修复后 |
+| --- | --- | --- |
+| 渲染出的链接数 | 3 | **2** |
+| `misdirectedCount` | **1** | **0** |
+| 相对路径那条解析成 | `http://127.0.0.1:8788/docs/…/tabs`（面板自己的源） | 保持为文字 |
+
+### ★ 一条阴性结论，避免了一次没有依据的改动
+
+我原本怀疑 `target="_blank"` 在侧栏里不工作——因为同一份代码里**图片缩略图**走的是显式路径
+`chrome.tabs.create({ url })`（`extension/sidepanel.js` 的 L1828）。两条路不同，所以总有一条是多余的。
+
+`.tmp-run/probe-link-click.js` 量下来：`defaultPrevented: false`、`openedViaApi: false`，**两条链接都把点击完全交给浏览器**。
+这正是 `target="_blank"` 要的结果，所以**那条路径不该改**。引入 `chrome.tabs` 依赖会让 `markdown.js`
+失去纯函数性质（它零导入），这正是它可测的原因。
+
+★ 这个探针第一版报 `defaultPrevented: null`——**在捕获阶段**装监听器，跑在面板的处理函数**之前**，
+读到的是派发中途的状态。改为冒泡阶段 + 一个宏任务之后才读，读数才是真的。
+
+### ★ 测试 stub 的两处真实缺口
+
+`packages/dsh-browser-bridge/test/markdown.test.js` 有**自己的**最小 stub（不是 `dom-shim.js`），它缺两样：
+
+1. **`createTextNode` 不存在** —— 渲染器在这里抛错、在浏览器里通过，**正好是测试该抓的那类失败的反面**。
+2. **`getAttribute` 只读 `attributes`**，而渲染器是用赋值写的（`node.target = '_blank'`）。
+   于是浏览器会把属性**反射**出来、stub 不会，任何测试都分不出「要开新标签」与「不要开」。
+   已改为属性优先（与 `dom-shim.js` 同一条规矩）。
+
+### 变异检查（`tools/mutate.mjs`）5/5 符合声明
+
+四个真坏法全部变红：`back-to-resolving-against-a-placeholder`（缺陷本身）、
+`raw-markdown-printed-instead-of-the-label`、`mailto-dropped-from-the-allowlist`、
+`every-scheme-asks-for-a-new-tab`。
+
+一条等价变异保持绿：`scheme-check-kept-but-base-restored`——协议守卫已经排除了所有没有协议的目标，
+所以基址永远用不上。
+
+### 验证读数
+
+- `npm test` → **744 passed, 0 failed, 0 skipped**（742 → 744）
+- `npm run check:extension` → exit 0
+- 变异 5/5；画廊 20 张重渲**只有指纹变，图片逐字节未变**（`links` 场景不在画廊里）
+
+### 新增文件（`.tmp-run/`，被 gitignore）
+
+`probe-real-links.mjs`、`probe-relative-links.js`、`probe-link-click.js`、`mutate-link-target.mjs`。
 ## v123：宿主拒绝描述模型目录时，菜单不再在冒号处断掉
 
 v122 修的是一处 `status === 0` 当作唯一失败的判据。这一轮做的是**按属性枚举同一个模式**，

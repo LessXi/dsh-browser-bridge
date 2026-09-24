@@ -43,6 +43,14 @@ function makeDocument() {
       this.attributes[name] = String(value)
     },
     getAttribute(name) {
+      // A property set by assignment is reflected into an attribute in a browser,
+      // and the renderer relies on that: it writes `node.target` and `node.rel`
+      // rather than calling `setAttribute`. A stub that only read `attributes`
+      // reported `null` for both, so no test could tell a link that asks for a new
+      // tab from one that does not.
+      if (name === 'class') return this.className ?? this.attributes.class ?? null
+      const direct = this[name]
+      if (direct !== undefined && direct !== null && typeof direct !== 'object') return String(direct)
       return this.attributes[name] ?? null
     },
     append(...kids) {
@@ -50,6 +58,11 @@ function makeDocument() {
         if (typeof kid === 'string') {
           this.children.push(kid)
           this.textContent += kid
+          continue
+        }
+        if (kid.tagName === '#TEXT') {
+          this.children.push(kid)
+          this.textContent += kid.textContent
           continue
         }
         if (kid.tagName === '#FRAGMENT') {
@@ -60,10 +73,16 @@ function makeDocument() {
         this.textContent += kid.textContent
       }
     },
+    addEventListener() {},
   })
   return {
     createElement: make,
     createDocumentFragment: () => make('#fragment'),
+    // The renderer builds the words of a declined link as a text node rather than
+    // as a string, because a string cannot carry a class and the address that
+    // follows the label is styled differently. Without this the renderer threw
+    // here and passed in the browser — the reverse of the failure a test is for.
+    createTextNode: (data) => ({ tagName: '#TEXT', textContent: String(data), children: [] }),
   }
 }
 
@@ -138,9 +157,62 @@ test('a safe link becomes an anchor and an unsafe one stays text', () => {
   assert.equal(anchor.href, 'https://example.com/')
   assert.equal(anchor.rel, 'noreferrer noopener')
 
-  const unsafe = renderMarkdown(document, '[click](javascript:alert(1))')
+  const unsafe = renderMarkdown(document, '[click](javascript:void)')
   assert.equal(flatten(unsafe).filter((entry) => entry.startsWith('a:')).length, 0, 'no anchor for an unsafe scheme')
-  assert.equal(unsafe.textContent, '[click](javascript:alert(1))', 'the words stay visible as text')
+  assert.equal(unsafe.textContent, 'click (javascript:void)', 'the words stay visible, beside the address that was declined')
+})
+
+test('a link that does not name its own site is not drawn as one', () => {
+  // The check resolved a relative path against a placeholder origin to read its
+  // scheme, which is the one thing that makes a relative path look absolute:
+  // `/docs/extensions/reference/api/tabs` came back `https:` and passed. The
+  // browser then resolved it a second time — against the document, which in a
+  // side panel is the extension's own origin — so the reader who clicked it
+  // landed inside the extension rather than on the documentation.
+  //
+  // Measured across this machine's sessions: 258 links of exactly that shape
+  // against 3454 that name their site. So this is not a corner case; it is the
+  // second-largest group of links a real answer carries.
+  for (const relative of ['/docs/extensions/reference/api/tabs', './guide.md', '../a/b', '#section', '//example.com/x']) {
+    assert.equal(
+      isSafeHref(relative),
+      false,
+      `${relative} names no scheme, so nothing can say which site it belongs to`,
+    )
+  }
+  // The harness's own renderer draws the line here too. Its `sanitizeUrl` calls
+  // `new URL(url)` with no base and lets a relative path throw, and its comment
+  // records that fragment-only targets are deliberately shown as plain text.
+  assert.equal(isSafeHref('mailto:someone@example.com'), true, 'an address is a target that names its scheme')
+
+  const document = makeDocument()
+  const rendered = renderMarkdown(document, 'see [the tabs docs](/docs/extensions/reference/api/tabs)')
+  assert.equal(
+    flatten(rendered).filter((entry) => entry.startsWith('a:')).length,
+    0,
+    'a relative path must not become a link: the reader would arrive somewhere the author never named',
+  )
+  // The label and the address both stay readable. Printing the source instead —
+  // `[the tabs docs](/docs/…)` — reads as a renderer that gave up rather than as
+  // a target that was declined.
+  assert.equal(rendered.textContent, 'see the tabs docs (/docs/extensions/reference/api/tabs)')
+  assert.ok(
+    !rendered.textContent.includes(']('),
+    `the raw markdown syntax is on screen: ${JSON.stringify(rendered.textContent)}`,
+  )
+})
+
+test('only a web address asks for a new tab', () => {
+  // `mailto:` is handed to the browser as it is; a tab is not what an email
+  // address means. The harness's renderer sets `target` for http(s) alone.
+  const document = makeDocument()
+  const web = renderMarkdown(document, '[a](https://example.com/)').children[0].children[0]
+  assert.equal(web.getAttribute('target'), '_blank')
+  const local = renderMarkdown(document, '[b](http://127.0.0.1:3080/)').children[0].children[0]
+  assert.equal(local.getAttribute('target'), '_blank', 'a local http address is still a page in a tab')
+  const mail = renderMarkdown(document, '[c](mailto:someone@example.com)').children[0].children[0]
+  assert.equal(mail.tagName, 'A', 'a mailto address is a link')
+  assert.equal(mail.getAttribute('target'), null, 'and it must not be asked to open a tab')
 })
 
 test('inline code, bold and italics render as their own elements', () => {

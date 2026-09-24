@@ -629,6 +629,10 @@
       }
       .answer hr { border: 0; border-top: 1px solid var(--line-soft); }
       .answer a { color: var(--accent); }
+      /* The address a link named but could not become. Quieter than the label it
+         follows, because it is there to say which target was declined, not to be
+         read as part of the sentence. */
+      .answer .href-raw { color: var(--faint); }
       pre {
         background: color-mix(in oklab, CanvasText 6%, transparent);
         border-radius: var(--radius-lg);

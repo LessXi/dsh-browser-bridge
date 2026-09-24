@@ -742,6 +742,36 @@ const DEFAULT_MESSAGES = [
 ]
 
 /**
+ * A reply carrying the three kinds of link a real one does.
+ *
+ * Measured across 26565 real messages: 3507 markdown links, of which 53 stay as
+ * text, and the largest group of the rest are site-relative paths like
+ * `/docs/extensions/reference/api/tabs` — 258 of them. Relative targets are the
+ * ones worth a fixture, because they are the shape an absolute-only safety check
+ * waves through while the browser resolves them against whatever document they
+ * were rendered in.
+ *
+ * Kept out of `DEFAULT_MESSAGES` on purpose: that fixture is what every
+ * screenshot and poster is drawn from, and a link is not what those pictures are
+ * about.
+ */
+const LINK_MESSAGES = [
+  { kind: 'user', text: '这几个文档哪个是对的？' },
+  {
+    kind: 'assistant',
+    text: [
+      '官方文档在这里：',
+      '',
+      '- 绝对地址：[Chrome 扩展 API](https://developer.chrome.com/docs/extensions/reference/api)',
+      '- 站内相对地址：[tabs 参考](/docs/extensions/reference/api/tabs)',
+      '- 另一处绝对地址：[W3C 无障碍](https://www.w3.org/TR/WCAG22/)',
+      '',
+      '本地文件不走链接：[compatibility.json](C:/Users/hj/.dsh/profiles/web/compatibility.json)',
+    ].join('\n'),
+  },
+]
+
+/**
  * A comparison table four columns wide, which is what a real answer carries.
  *
  * The width is not decoration. Measured across the 436 tables in this machine's
@@ -1406,6 +1436,9 @@ const SCENARIOS = {
 
   /** A four-column comparison table, the widest thing the panel ever shows. */
   table: { messages: TABLE_MESSAGES },
+
+  /** Three links, one of which is a site-relative path. */
+  links: { messages: LINK_MESSAGES },
 
   /**
    * The host answers "no" to a send.

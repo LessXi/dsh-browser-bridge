@@ -23,7 +23,7 @@
 const INLINE_PATTERN = /(`[^`\n]+`|\*\*[^*\n]+\*\*|__[^_\n]+__|\*[^*\n]+\*|_[^_\n]+_|\[[^\]\n]*\]\([^()\s]+\))/g
 
 /** Schemes a message is allowed to turn into a clickable link. */
-const SAFE_SCHEMES = new Set(['http:', 'https:'])
+const SAFE_SCHEMES = new Set(['http:', 'https:', 'mailto:'])
 
 /**
  * Read a fenced code block's opening line.
@@ -205,12 +205,35 @@ export function parseMarkdown(text) {
 
 /**
  * Whether a link target may become a clickable href.
+ *
+ * The target has to name its own scheme. `renderInline` already said what to do
+ * with one that does not — 「An unsafe or relative target stays visible as text:
+ * the words matter, the click does not」 — and this function did the opposite for
+ * relative paths, by resolving them against a placeholder origin to read their
+ * scheme. Resolving is the one thing that makes a relative path look absolute:
+ * `/docs/extensions/reference/api/tabs` came back `https:`, passed, and was then
+ * written into `href`, where the browser resolved it a second time — against the
+ * document, which in a side panel is the extension's own origin.
+ *
+ * Measured across this machine's sessions: 258 links of exactly that shape, and
+ * clicking one lands on a path inside the extension rather than on a site.
+ *
  * @param {string} href - The raw target from the message.
- * @returns {boolean} True when the scheme is safe.
+ * @returns {boolean} True when the scheme is safe and the target is absolute.
  */
 export function isSafeHref(href) {
+  const target = href.trim()
+  // Scheme first, so the URL constructor is only asked about targets that carry
+  // their own origin. Without this, `//example.com/x` and `/x` are both resolved
+  // — or rejected — for reasons that have nothing to do with the target.
+  //
+  // The harness's own renderer answers it the same way: its `sanitizeUrl` calls
+  // `new URL(url)` with no base and lets a relative path throw, and its comment
+  // records that fragment-only targets are meant to fail the allowlist and render
+  // as plain text. `mailto:` is on its list as well as the two web schemes.
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(target)) return false
   try {
-    return SAFE_SCHEMES.has(new URL(href, 'https://example.invalid/').protocol)
+    return SAFE_SCHEMES.has(new URL(target).protocol)
   } catch {
     return false
   }
@@ -247,14 +270,26 @@ export function renderInline(document, text) {
       const split = token.indexOf('](')
       const label = token.slice(1, split)
       const href = token.slice(split + 2, -1)
-      // An unsafe or relative target stays visible as text: the words matter,
-      // the click does not.
+      // The words matter even when the click cannot happen, so a target that may
+      // not become an href is shown as its label followed by the address it
+      // named. Printing the source instead — `[tabs 参考](/docs/…/tabs)` — reads
+      // as a renderer that gave up rather than as a link that was declined.
       if (!isSafeHref(href)) {
-        fragment.append(token)
+        fragment.append(document.createTextNode(label.length > 0 ? label : href))
+        if (label.length > 0) {
+          const address = document.createElement('span')
+          address.className = 'href-raw'
+          address.textContent = ` (${href})`
+          fragment.append(address)
+        }
       } else {
         const node = document.createElement('a')
         node.href = href
-        node.target = '_blank'
+        // A new tab is what an http(s) target means. `mailto:` is handed to the
+        // browser as it is — and the harness's own renderer draws the same line,
+        // setting `target` and intercepting the click for the web schemes alone.
+        const external = /^https?:/i.test(href)
+        if (external) node.target = '_blank'
         node.rel = 'noreferrer noopener'
         node.textContent = label.length > 0 ? label : href
         fragment.append(node)
