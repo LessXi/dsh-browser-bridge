@@ -166,6 +166,12 @@ const earlierButton = document.getElementById('earlier')
 const toast = document.getElementById('toast')
 const announcer = document.getElementById('announcer')
 const surface = document.getElementById('blocked')
+// The stage and the four things sitting beside it. `renderOffline` makes
+// everything behind the blocking surface `inert`, and it needs the set to build
+// that from the structure rather than from a list of ids.
+const stage = document.getElementById('stage')
+const headerBar = document.querySelector('header')
+const footer = document.querySelector('footer')
 const blockedTitle = document.getElementById('blocked-title')
 const blockedBody = document.getElementById('blocked-body')
 const blockedAction = document.getElementById('blocked-action')
@@ -751,6 +757,44 @@ function renderOffline() {
   const noSessions = !hostDown && !hostStaleNow && groups.length === 0
   const shown = hostDown || hostStaleNow || noSessions
   surface.hidden = !shown
+
+  // Whatever the surface covers is not merely painted over: it is unreachable, so
+  // it must not be reachable by the keyboard either.
+  //
+  // The surface is `inset: 0` and opaque, but an overlay only covers the *pixels*
+  // of what is behind it. The elements behind it stayed in the tab order, so Tab
+  // moved focus onto them, the focus ring was painted beneath an opaque surface,
+  // and their keys went nowhere — measured with the surface showing: eight
+  // focusable elements behind it, including the session list and its rows, and
+  // pressing Enter on one sent no request and changed nothing on screen. A reader
+  // navigating by keyboard was told nothing about where they were.
+  //
+  // The list is also the reason this cannot be solved by uncovering it: its rows
+  // come from the host, so with the host gone they belong to nothing and clicking
+  // one does nothing at all (measured). Leaving dead controls visible would trade
+  // one lie for another.
+  //
+  // `inert` is the platform's answer to exactly this: it takes a subtree out of
+  // the tab order, away from the pointer, and out of the accessibility tree in one
+  // attribute — rather than a pile of `tabindex="-1"` and `aria-hidden`
+  // bookkeeping that has to be undone in the right order.
+  //
+  // The set is built from the structure, not from a list of ids: the three things
+  // that sit beside the stage on screen — the header, the find bar and the footer
+  // — and inside the stage, everything but the surface itself. Naming the elements
+  // to disable is how several of this panel's bugs went wrong: its own rule, that
+  // a rule naming elements misses the next one added, applies to the elements it
+  // disables as much as to the ones it styles.
+  //
+  // The stage itself is deliberately not in this list. `#blocked` is its child, so
+  // making the stage inert would take the surface — and the one button on it that
+  // gets the reader out — out of the tab order along with everything else.
+  for (const element of [headerBar, findBar, footer]) {
+    if (element !== null) element.inert = shown
+  }
+  for (const element of stage.children) {
+    if (element !== surface) element.inert = shown
+  }
   // Announced only when the surface appears, because this runs on every poll and
   // the host can stay away for minutes: a reader told "cannot reach dsh web" once
   // per three seconds would turn the announcement off along with the panel. The

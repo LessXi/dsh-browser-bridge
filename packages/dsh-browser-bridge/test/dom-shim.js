@@ -598,6 +598,28 @@ const TAGS = new Map([
 ])
 
 /**
+ * The panel's structural relationships, as far as any code under test reads them.
+ *
+ * `byId` mints every element as a parentless root, which is enough for a panel
+ * that only ever fetches nodes by id. It stopped being enough when `renderOffline`
+ * began walking `stage.children` to make what the blocking surface covers inert:
+ * with no parents that loop body never ran, so `#transcript` was never made inert
+ * and the behaviour was untestable — the assertion read `undefined` rather than a
+ * wrong `false`, which is the shim telling on itself.
+ *
+ * This is not a HTML parser (see the note above `TAGS`) and it does not try to be
+ * one. It records the two facts the panel depends on: the stage contains the
+ * conversation, the session list and the blocking surface among its children, and
+ * the stage itself is a child of the body — because the header and the footer are
+ * its siblings, and `renderOffline` disables those too.
+ *
+ * A parent that is not listed here is a root, exactly as before.
+ */
+const CHILDREN = new Map([
+  ['stage', ['transcript', 'history', 'earlier', 'to-bottom', 'blocked', 'contexts', 'composer']],
+])
+
+/**
  * Build a document whose `getElementById` mints one stable stub per id.
  *
  * The panel fetches its nodes once, at module load, so identity is all that
@@ -623,6 +645,14 @@ function makeDocument() {
       // capture a value that does not exist yet.
       Object.defineProperty(element, 'documentRef', { get: () => document })
       registry.set(id, element)
+      // Attach the children this element is declared to hold. Done here, as each
+      // one is first asked for, so the tree fills in on demand without the shim
+      // needing to know the whole markup up front.
+      for (const childId of CHILDREN.get(id) ?? []) {
+        const child = byId(childId)
+        if (child.parentNode === null || child.parentNode === undefined) child.parentNode = element
+        element.append(child)
+      }
     }
     return registry.get(id)
   }
@@ -664,8 +694,8 @@ function makeDocument() {
     createElement: (tagName) => new Element(tagName),
     createTextNode: (data) => new TextNode(data),
     createDocumentFragment: () => new Fragment(),
-    querySelector: () => null,
-    querySelectorAll: () => [],
+    querySelector: (selector) => document.body.querySelector(selector),
+    querySelectorAll: (selector) => document.body.querySelectorAll(selector),
     /**
      * Document-level listeners, kept so they can be fired.
      *

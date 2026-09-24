@@ -932,6 +932,35 @@ test('the blocked surface clears itself the moment the host answers', async () =
   await settle()
   assert.equal(registry.get('blocked').hidden, false)
 
+  // What the surface covers is unreachable, so the keyboard must not be able to
+  // reach it either. An overlay only covers pixels: the elements behind it stayed
+  // in the tab order, so Tab moved focus onto them, the ring was painted beneath an
+  // opaque surface, and their keys went nowhere. Measured on the real panel with
+  // the surface showing: eight focusable elements behind it, and pressing Enter on
+  // one sent no request and changed nothing.
+  assert.equal(
+    registry.get('transcript').inert,
+    true,
+    'the conversation is still in the tab order behind the blocking surface',
+  )
+  // The conversation is only one of the two groups the surface disables, and the
+  // two are wired separately: the stage's own children, and the things beside the
+  // stage (`headerBar`, the find bar, `footer`). Asserting on one of them left the
+  // other free to stop working — measured, a mutation that dropped the second
+  // group entirely was not caught by the assertion above.
+  assert.equal(
+    registry.get('find').inert,
+    true,
+    'the find bar is beside the stage, and it is still reachable behind the blocking surface',
+  )
+  // The surface itself must stay reachable: its retry button is the reader's only
+  // way out, and a fix that also disabled the way out would be worse than the bug.
+  assert.notEqual(
+    registry.get('blocked').inert,
+    true,
+    'the blocking surface disabled itself, taking the retry button out of the tab order with it',
+  )
+
   // Retry, with the host back up.
   host.down = false
   host.requests.length = 0
@@ -942,6 +971,14 @@ test('the blocked surface clears itself the moment the host answers', async () =
   assert.ok(
     host.requests.some((request) => request.url.includes('/browser-bridge/chat')),
     'the retry never asked the host anything',
+  )
+  // And the panel comes back. `inert` that is set and never cleared would leave a
+  // panel that looks normal, cannot be clicked, and cannot be tabbed into — a fix
+  // that trades one unusable state for another.
+  assert.equal(
+    registry.get('transcript').inert,
+    false,
+    'the panel never became usable again: everything is still inert after the host answered',
   )
 })
 

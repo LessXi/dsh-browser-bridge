@@ -200,6 +200,8 @@ function probeVersion(port) {
  * without a live DSH, and it is the reason a screenshot can be taken at all.
  */
 function makeHost(scenario, state) {
+  // Whether the `hostDiedAfterLoad` scenario has already served its one answer.
+  let hostAnsweredOnce = false
   return createServer((request, response) => {
     const url = new URL(request.url, 'http://127.0.0.1')
     let body = ''
@@ -220,6 +222,17 @@ function makeHost(scenario, state) {
         // Nothing listens: the panel's own fetch fails, which is the point.
         response.destroy()
         return
+      }
+
+      // A host that answered once and then went away. The first request is served
+      // so the session list lands on screen, and everything after it is dropped
+      // the way `hostDown` drops them. See the `hostDiedAfterLoad` scenario.
+      if (scenario.hostDownAfterFirst === true) {
+        if (hostAnsweredOnce === false) hostAnsweredOnce = true
+        else {
+          response.destroy()
+          return
+        }
       }
 
       if (url.pathname === '/browser-bridge/health') {
@@ -959,6 +972,21 @@ const SCENARIOS = {
   },
   /** Extension installed, host never started. The state that was invisible for 33 rounds. */
   hostDown: { hostDown: true },
+  /**
+   * A host that answered once and then went away, with the session list already
+   * on screen.
+   *
+   * This is how a reader actually reaches it, and it is not the same state as
+   * `hostDown`: there the list is empty because nothing ever arrived, so the
+   * question "can the reader still reach a session under the 'cannot connect'
+   * surface" cannot even be asked. Here the list was read, the host died, and the
+   * rows are still on screen behind that surface.
+   *
+   * Modelled the way it happens: the first request is answered, and every one
+   * after it is destroyed.
+   */
+  hostDiedAfterLoad: { hostDownAfterFirst: true, click: '#title' },
+
   /**
    * A host running code from before this panel existed: it answers, but its body
    * has no session list. Measured on a real one, `newSession` gets a bare 400 and

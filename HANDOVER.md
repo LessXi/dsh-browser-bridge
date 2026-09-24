@@ -1,7 +1,7 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v106 已交付并入库。** 下一节就是最新的一轮改动；下面标 v105/v104/v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v106 那一段为止即可。
+> **当前状态：v107 已交付并入库。** 下一节就是最新的一轮改动；下面标 v106/v105/v104/v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v107 那一段为止即可。
 >
 > **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（711 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
@@ -16,8 +16,51 @@
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
 >
-> **已入库**：v3→v106 的全部改动已提交并推送到 `origin/main`。工作区干净。
+> **已入库**：v3→v107 的全部改动已提交并推送到 `origin/main`。工作区干净。
 > （v105 是 `4b1f0aa`，v103 是 `91fa7dd`，v102 是 `77b75e3`，v101 是 `cc33dd9`，v99 是 `bff292d`，v92 是 `e3ad6ba`，v91 是 `3d96bf1`，v90 是 `767e4cd`，v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
+
+> ## v107：浮层只盖住了像素，没盖住键盘
+
+**症状**：宿主连不上时，面板中央出现「连不上 dsh web」的浮层。它是不透明的，盖住整个内容区。但**它只盖住了像素**——浮层之下的元素仍然留在 Tab 顺序里：Tab 把焦点移到它们上面，焦点环画在不透明浮层**下面**（读者看不见焦点在哪），而它们的按键**去不了任何地方**。
+
+**实测**（`.tmp-run/probe-tab-under-blocked.js`，新场景 `hostDiedAfterLoad`）：
+```
+invisibleStops: [ '#history (380x666)', 'button.session (368x34)' ×4,
+                  'button.row-button (356x34)' ×3 ]
+hitsInvisibleTargets: true
+```
+**8 个可聚焦元素**在浮层下面。另一个探针（`.tmp-run/probe-blocked-keyboard.js`）分两层量：① 功能上按 Enter **什么都没发生**（`sessionChanged: false`、`requests: []`、标题未变）；② 视觉上 `focusRingVisible: false`、`topAtFocus: "#blocked"`。
+
+**为什么之前没发现**：三次探针迭代都错在**判据**上——① 选择器猜错（会话行是 `button.session`，`.session-row` 不存在，报 `rowsInList: 0`）；② 判据跑在空场景上（`hostDown` 场景的列表永远是空的，因为每个请求都 `response.destroy()`，于是「浮层下的会话能不能点」在那里问不出来）；③ 判据读了我猜的状态字段（`state.currentSessionId` 是 `null`，「会话是否换了」不可观察）。**第三点最要紧：判据要读可观察量——列表里 `aria-current="true"` 的行、`#title-text` 的文本、`state.requests.length`。**
+
+**修法**（`extension/sidepanel.js` 的 `renderOffline`）：给浮层遮住的一切设 `inert`。
+```js
+for (const element of [headerBar, findBar, footer]) {
+  if (element !== null) element.inert = shown
+}
+for (const element of stage.children) {
+  if (element !== surface) element.inert = shown
+}
+```
+三个设计判断：
+
+1. **`inert` 而不是 `tabindex="-1"` + `aria-hidden` 组合**：一个属性同时把它移出 Tab 顺序、移开指针、移出可访问性树，而且**撤销时不会留下需要按正确顺序回滚的账**。
+2. **按结构枚举，不按 id**：面板自己的规则是「点名元素的规则必然漏掉下一个新增的元素」——这条规则对**被禁用的**元素同样成立。两组（stage 的孩子、stage 的兄弟）各一个循环。
+3. **`#stage` 自己不在名单里**：`#blocked` 是它的孩子，把 stage 设成 inert 会连**浮层上的重试按钮**一起关掉——那是读者唯一的出路。**把出路也关掉的修法比缺陷更糟。**
+
+**修复后读数**：`invisibleStops: []`、`hitsInvisibleTargets: false`；`inertRoots` 正确列出 `header`、`#find`、`#transcript` 等；可达元素恰好 **1 个**（重试按钮）；15 张截图逐像素**完全未变**（修复只在宿主不可达时生效）。
+
+**★ 一条被实测否掉的方向**：我原本要「让浮层不盖住列表，把列表还给读者」。实测否决——把浮层藏起来后那一行**仍然 0 请求、什么都不做**（`.tmp-run/probe-row-without-overlay.js`）：列表数据来自宿主 HTTP（`refreshGroups` 的 `groups = understood ? payload.groups : []`），宿主死了它就属于空集。**把四个死按钮露出来只是用一个谎换另一个谎。** 这个探针的设计是这轮的关键：先用程序化点击把「浮层拦住了」与「行本身没用」分开，否则会把前者误读成后者。
+
+**变异**（`.tmp-run/mutate-inert.mjs`）**3/3 命中**、`restoredExactly: true`：`no-inert-at-all`（回到原缺陷）、`inert-set-but-never-cleared`（**新引入的风险**：宿主恢复后面板永久瘫痪）、`surface-disables-itself`（把重试按钮也关掉）。
+
+**★ 第一轮只有 2/3，漏的正是最要紧的那条**：`no-inert-at-all` 只破坏了第一个循环（header/find/footer），而我的断言只读 `#transcript`（由第二个循环管），于是照旧通过。**漏网的是测试覆盖不足，不是脚本问题**——补一条 `#find` 的断言即 3/3。
+
+**★ 测试基建的真实缺口**（不修就写不出这个测试）：`packages/dsh-browser-bridge/test/dom-shim.js` 的 `byId` 把每个 id **现场造成无父节点的根**（其注释原本就写着 "Root stubs … which have no parent"），于是 `stage.children` 是**空数组**，循环体一次都不执行——断言读到 `undefined` 而不是错误的 `false`。**那是 shim 在告自己的状。** 修法是新增 `CHILDREN` 映射记录面板真正依赖的结构关系（`stage` 含 `transcript`/`history`/`earlier`/`to-bottom`/`blocked`/`contexts`/`composer`），`byId` 在首次取用时把子节点挂上。**这不是 HTML 解析器**（shim 明确拒绝写第二个 HTML 实现），只记录被读取的那两条事实。
+
+**测试**（扩了既有测试 `the blocked surface clears itself the moment the host answers`，未新增文件）：四条断言覆盖**两个方向**——不可达时 `#transcript` 与 `#find` 必须 inert、`#blocked` **不** inert、恢复后 `#transcript` 的 inert 必须被撤掉。最后一条是防「设了不撤」的，那条路径只在宿主机恢复时才走到。
+
+**验证读数**：`npm test` **711 passed, 0 failed, 0 skipped**（连续干净）；`npm run check:extension` exit 0。
 
 > ## v106：输入框坐在会话列表底下，改的是你看不见的那个会话
 
