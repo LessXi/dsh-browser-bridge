@@ -1560,6 +1560,30 @@
       /* The trigger names itself once through `aria-label` and then shows only
          its value. The original's `_ComposerDropdownLabelCategory` ships
          `display:none`, so "model" is a caption it never renders either. */
+      #occupancy {
+        /* A reading beside the composer. Same type size and colour family as the
+           model button it sits next to, so it reads as one status line rather
+           than as a second control: it is not a button and must not look like
+           one. `flex: none` because it is short and a squeezed number is worse
+           than a truncated model name — the model name ellipsises on purpose,
+           this must not wrap or shrink. */
+        flex: none;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 0 2px;
+        font-size: var(--text-xs);
+        color: var(--faint);
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+      }
+      #occupancy[hidden] { display: none; }
+      /* Past the point where the harness normally compacts, the reading stops
+         being background information. Measured, this is rare rather than routine
+         — no request in the real logs passed 70% — so when it does happen it is
+         worth a colour that is not the faint one. */
+      #occupancy[data-level="high"] { color: var(--bad); }
+
       #model {
         display: inline-flex;
         align-items: center;
@@ -1841,6 +1865,23 @@
             <span id="model-text"></span>
             <span class="caret" aria-hidden="true">⌄</span>
           </button>
+          <!--
+            How much of the context window this conversation is occupying.
+
+            A reading, not a warning, and the distinction is measured rather than
+            chosen: across the 16541 requests in this machine's real sessions the
+            highest occupancy ever reached is 46.1%, and none exceeded 70%. The
+            harness compacts on its own well before the window is full — 206
+            compactions in those same logs — so a panel that shouted "context
+            almost full" would be raising an alarm at a threshold the product
+            never actually reaches.
+
+            What the reader cannot see today is the number at all: the panel had
+            no token accounting of any kind. `aria-live` is deliberately absent —
+            this changes on every settled turn, and a live region would read the
+            whole conversation's cost aloud over whatever the reader was doing.
+          -->
+          <span id="occupancy" hidden></span>
           <span class="grow"></span>
           <button id="send" type="button"></button>
         </div>

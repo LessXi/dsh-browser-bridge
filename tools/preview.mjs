@@ -359,6 +359,13 @@ function makeHost(scenario, state) {
             // about arithmetic.
             more: scenario.more ?? start > 0,
             total: rows.length,
+            // What the real host reports, and what it reports when it cannot.
+            // `occupancy` is absent unless a scenario asks for it, because a mock
+            // that always answers would hide the state the panel has to handle:
+            // the real `request/context` event only appears in 77 of this
+            // machine's logs, so "no window recorded" is a state a reader can
+            // genuinely be in and the fixture has to be able to produce it.
+            ...(scenario.occupancy === undefined ? {} : { occupancy: scenario.occupancy }),
           })
         }
         if (parsed.action === 'search') {
@@ -435,6 +442,13 @@ const DEFAULT_GROUPS = [
       {
         id: 'session-a',
         title: '打造类似codex的dsh网页插件',
+        // Ages are placed in the middle of their band, never on an edge:
+        // `relativeTime` rounds, so an age that is a whole number of minutes flips
+        // its label the moment the clock moves, and the screenshot stops being
+        // reproducible. Measured on this tier: 90s reads `2 分钟前` and holds for
+        // 60s, which is the most a minute-band can offer, while 89s is one second
+        // from changing. See the note in `SPREAD` below for the run that made this
+        // a rule.
         updatedAt: Date.now() - 90_000,
         running: false,
         blank: false,
@@ -443,7 +457,10 @@ const DEFAULT_GROUPS = [
       {
         id: 'session-b',
         title: 'Fix the snapshot pipeline',
-        updatedAt: Date.now() - 8 * 60_000,
+        // Half-past the minute, because `relativeTime` rounds: `8 * 60_000` reads
+        // `8 分钟前` and flips 30 seconds later, while `8.5 * 60_000` holds for a
+        // full minute. See the note in `SPREAD` below.
+        updatedAt: Date.now() - 8.5 * 60_000,
         running: true,
         blank: false,
         model: { provider: 'deepseek', model: 'deepseek-v4.1-flash', reasoningEffort: 'low' },
@@ -537,10 +554,26 @@ const FULL_GROUPS = (() => {
       const age = nextAge()
       // Spread across every tier the label knows: minutes, hours, days, and past
       // a year, so the generated list exercises all of them at once.
-      const ago = age < 0.15 ? age * 60 * 60_000
+      const raw = age < 0.15 ? age * 60 * 60_000
         : age < 0.4 ? age * day
-        : age < 0.85 ? age * 30 * day
-        : age * 500 * day
+          : age < 0.85 ? age * 30 * day
+            : age * 500 * day
+      // Half a unit past a whole one, because every tier of `relativeTime` is a
+      // `Math.round` and the edges of a band are where the label flips. An age of
+      // exactly seven hours rounds to `hours: 7` only until the clock adds half
+      // an hour; seven and a half hours is the furthest point from either edge and
+      // gives the label half a unit of slack.
+      //
+      // The raw values sat wherever the generator put them, edges included. That
+      // is not hypothetical — the quickest row changed its label two seconds after
+      // the page was built, so `sessions.png` grew a diff on its own between two
+      // runs of the same code (measured: 187 pixels at CSS 345,214, a session's age
+      // label). Half a unit of slack is what makes the picture the same across a
+      // gallery run; it is not permanence, and the minutes tier holds for half a
+      // minute either way, which is the most that tier can ever give.
+      const unitMs = raw < 60 * 60_000 ? 60_000 : raw < day ? 60 * 60_000 : day
+      const whole = Math.max(1, Math.round(raw / unitMs))
+      const ago = whole * unitMs + unitMs / 2
       return {
         id: `session-${groupIndex + 1}-${index}`,
         // The first rows reuse the shared titles above, because that is what
@@ -1273,6 +1306,23 @@ const SCENARIOS = {
 
   /** A four-column comparison table, the widest thing the panel ever shows. */
   table: { messages: TABLE_MESSAGES },
+
+  /**
+   * The context reading beside the composer, in both shapes the log produces.
+   *
+   * `occupancyWindow` is the ordinary case: the numbers are this machine's real
+   * ones, a 1M window and 461k used — the highest occupancy any real request on
+   * this machine ever reached (46.1% of 1000000). That it is the observed maximum
+   * is the point: the fixture is at the top of the real range, so nothing here is
+   * more dramatic than what happens.
+   *
+   * `occupancyNoWindow` is the state the panel must not lie about. Only 77 of
+   * this machine's logs carry a `request/context` event, so a session with usage
+   * and no recorded window is a real state, and the reading has to degrade to the
+   * count alone rather than divide by a number nobody stated.
+   */
+  occupancyWindow: { messages: DEFAULT_MESSAGES, occupancy: { usedTokens: 461234, contextWindow: 1000000, model: 'deepseek-v4.1-flash' } },
+  occupancyNoWindow: { messages: DEFAULT_MESSAGES, occupancy: { usedTokens: 461234, contextWindow: null, model: '' } },
 
   /**
    * A two-column table narrow enough to fit the panel without scrolling.

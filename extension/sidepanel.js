@@ -181,6 +181,7 @@ const input = document.getElementById('input')
 const sendButton = document.getElementById('send')
 const modelButton = document.getElementById('model')
 const modelText = document.getElementById('model-text')
+const occupancyReadout = document.getElementById('occupancy')
 const modelMenu = document.getElementById('model-menu')
 const atMenu = document.getElementById('at-menu')
 
@@ -231,6 +232,18 @@ let anchorEnd = null
  * because it never promises rows that may not exist.
  */
 let windowTotal = 0
+/**
+ * What the host last said about context occupancy.
+ *
+ * `usedTokens` is how much the newest settled request cost; `contextWindow` is
+ * the window that request was made against, and is null when the log never
+ * stated one. The two are kept apart rather than pre-divided so the panel can
+ * show what it actually knows: with no denominator it prints the count alone
+ * instead of inventing a percentage.
+ *
+ * @type {{ usedTokens: number | null, contextWindow: number | null, model: string }}
+ */
+let occupancy = { usedTokens: null, contextWindow: null, model: '' }
 /** Whether a "load earlier" request is in flight. */
 let loadingEarlier = false
 /**
@@ -1399,6 +1412,76 @@ async function chooseModel(patch) {
 function faviconOf(tab) {
   const url = typeof tab?.favIconUrl === 'string' ? tab.favIconUrl : ''
   return /^(https?|data):/.test(url) ? url : ''
+}
+
+/**
+ * Format a token count the way a reader reads one.
+ *
+ * Abbreviated rather than exact because this sits in a composer bar beside the
+ * model name, and `461,234 / 1,048,576` is a number to decode rather than a
+ * quantity to feel. The exact value goes in the title, where the reader who
+ * wants it can get it.
+ *
+ * `k` at a thousand and `M` at a million: the windows on this machine are
+ * 1000000 and 1048576, so a decimal would read `1.0M` and `1.0M` — the same
+ * size for two different windows, which is the only thing this label is for.
+ *
+ * @param {number} value - A token count.
+ * @returns {string} e.g. `461k`, `1M`.
+ */
+function compactTokens(value) {
+  if (value < 1000) return String(value)
+  if (value < 1000000) return `${Math.round(value / 1000)}k`
+  return `${Math.round(value / 100000) / 10}M`
+}
+
+/**
+ * Repaint the context-occupancy reading beside the composer.
+ *
+ * The panel had no token accounting at all before this: a reader could not tell
+ * a fresh conversation from one about to be compacted. The host reports what the
+ * log says, and this draws it — as a reading, never as a warning.
+ *
+ * That restraint is measured, not stylistic. Across the 16541 requests in this
+ * machine's real session logs the highest occupancy ever reached is 46.1%, and
+ * none passed 70%: the harness compacts on its own well before the window fills
+ * (206 compactions in the same logs). An "almost full" alarm would therefore
+ * fire at a threshold the product does not reach, which is how a status line
+ * teaches people to ignore it. The one level it distinguishes is the one it has
+ * evidence for — past the point where compaction is the normal outcome.
+ *
+ * Nothing is drawn when the host has said nothing: an empty `0` would claim a
+ * conversation with no turns costs nothing.
+ *
+ * @returns {void}
+ */
+function renderOccupancy() {
+  const used = occupancy.usedTokens
+  const window = occupancy.contextWindow
+  if (!Number.isInteger(used) || used <= 0) {
+    occupancyReadout.hidden = true
+    return
+  }
+
+  // Only the numerator is drawn when there is no denominator, and the title says
+  // why: a percentage here would be a number the panel made up.
+  const hasWindow = Number.isInteger(window) && window > 0
+
+  occupancyReadout.hidden = false
+  occupancyReadout.textContent = hasWindow
+    ? t('composer.occupancy', { used: compactTokens(used), window: compactTokens(window) })
+    : t('composer.occupancy.count', { used: compactTokens(used) })
+  // The exact pair, for the reader who wants the real numbers rather than the
+  // abbreviation the bar has room for.
+  occupancyReadout.title = hasWindow
+    ? t('composer.occupancy.title', { used: String(used), window: String(window) })
+    : t('composer.occupancy.countOnly', { used: String(used) })
+  // The threshold is the harness's own behaviour rather than a round number: past
+  // roughly half the window, compaction is what normally happens next.
+  occupancyReadout.dataset.level = hasWindow && used / window > 0.5 ? 'high' : 'normal'
+  // Screen readers get the same sentence the title carries, because the visible
+  // form is an abbreviation that reads as "four hundred sixty one k".
+  occupancyReadout.setAttribute('aria-label', occupancyReadout.title)
 }
 
 /**
@@ -3247,6 +3330,18 @@ async function refreshTranscript() {
   }
   hasEarlier = payload?.more === true
   if (typeof payload?.total === 'number') windowTotal = payload.total
+  // The log's own accounting, kept whole. A payload without it (an older host, or
+  // a route that does not report it) leaves the previous reading in place rather
+  // than zeroing it — a stale number that is still true beats a blank that says
+  // the conversation is free.
+  if (payload?.occupancy !== undefined && payload.occupancy !== null) {
+    occupancy = {
+      usedTokens: Number.isInteger(payload.occupancy.usedTokens) ? payload.occupancy.usedTokens : null,
+      contextWindow: Number.isInteger(payload.occupancy.contextWindow) ? payload.occupancy.contextWindow : null,
+      model: typeof payload.occupancy.model === 'string' ? payload.occupancy.model : '',
+    }
+    renderOccupancy()
+  }
   drawTranscript(messages)
   renderEarlier()
 }

@@ -200,6 +200,13 @@ const SHOTS = [
     why: 'Pictures the reader sent, drawn in the conversation. The bare one — no caption — used to produce no row at all, so the reply below it read as an answer to nothing.',
   },
   {
+    file: 'occupancy.png',
+    scenario: 'occupancyWindow',
+    scheme: 'dark',
+    locale: 'zh-CN',
+    why: 'How full the context is, beside the composer. The panel had no token accounting at all, so a reader could not tell a fresh conversation from one about to be compacted — 30 of this machine’s 156 sessions have been compacted. The numbers are this machine’s real ones: 461k of a 1M window, which is the highest occupancy any real request here ever reached. It is a reading rather than a warning because of that measurement: none of 16541 real requests passed 70%, and the harness compacts at around half.',
+  },
+  {
     file: 'host-down.png',
     scenario: 'hostDown',
     scheme: 'dark',

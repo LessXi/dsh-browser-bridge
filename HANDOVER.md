@@ -1,7 +1,7 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v117 已交付并入库。** 下一节就是最新的一轮改动；下面标 v108/v107/v106/v105/v104/v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v117 那一段为止即可。
+> **当前状态：v118 已交付并入库。** 下一节就是最新的一轮改动；下面标 v108/v107/v106/v105/v104/v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v118 那一段为止即可。
 >
 > **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（713 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
@@ -19,7 +19,94 @@
 > **已入库**：v3→v109 的全部改动已提交并推送到 `origin/main`。工作区干净。
 > （v108 是 `0bfdf20`，v107 是 `afc1ac1`，v105 是 `4b1f0aa`，v103 是 `91fa7dd`，v102 是 `77b75e3`，v101 是 `cc33dd9`，v99 是 `bff292d`，v92 是 `e3ad6ba`，v91 是 `3d96bf1`，v90 是 `767e4cd`，v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
 
-> ## v117：把变异检查从「每轮重写一遍」变成仓库里的一件工具
+> ## v118：上下文用量的读数，以及它为什么不该是警告
+
+### 缺口
+
+面板**完全没有 token 记账**。读者分不出一个刚开的会话和一个马上要被压缩的会话——
+而压缩在本机是常态：156 个会话里 30 个被压缩过，其中一个被压缩了 77 次。
+
+数据一直在流里，只是没人读：`assistant/message` 事件带 `data.usage`（本机日志里 15910 次），
+字段是 `inputTokens`/`outputTokens`/`cacheReadTokens`/`totalTokens`。宿主的
+`describeEvents` 只从同一个事件里读 `content`，把 `usage` 丢掉了。
+
+### ★ 分母不在模型目录里，在事件里
+
+先查了模型目录——**没有窗口大小**。`buildModelCatalog`（`dsh-api-session-controller/lib/types/catalog.js`）
+只投影 `id`/`name`/`description`/`reasoning` 四个字段，尽管 `dsh-llm` 的注册表里确实有
+`contextWindow`（`dsh-llm/lib/index.js` L1922 会带上它）。**所以从目录算百分比就是编的。**
+
+真正的分母在 `request/context` 事件上：`data.contextWindow`。官方 UI 的上下文压力读的正是这一对
+（`dsh-token-meter/lib/index.js` 的 `contextPressureProjectionDefinition`：
+`request/context` 给分母、`usage` 给分子）。真实日志实测：**77 个 `request/context` 事件**，
+窗口是 `1048576` 或 `1000000`；**66 个会话同时有两半**，共 16509 次配对。
+
+### ★★ 实测推翻了我原本的设计：不能做警告
+
+我原本打算做「上下文快满了」的提醒。量完之后放弃了：
+
+| 读数 | 值 |
+| --- | --- |
+| 16541 次请求的占用率 p50 / p90 / p99 | 16.7% / 25.4% / 40.7% |
+| **最高占用率** | **46.1%** |
+| 超过 70% 的请求 | **0** |
+| 超过 90% 的请求 | **0** |
+| 同期发生的压缩 | **206 次** |
+
+压缩在约 46% 就介入了，**警告阈值永远不会触发**。一条永远不响的警报只会教人忽略状态行。
+所以交付的是**中性读数**，只保留一个档位：越过半个窗口——那是「接下来正常会发生压缩」的位置。
+
+### 形态
+
+- 宿主：`describeEvents(events, api, out)` 新增可选第三参（不传则行为不变），
+  在 `assistant/message` 分支读 `data.usage.totalTokens`（**在 `appended` 守卫之前**——
+  一次没有 append 的尝试同样报了这次请求花了多少），在新增的 `request/context` 分支读
+  `data.contextWindow` 与 `data.model`。两者都是**最新值**而非累计：占用是水位，不是总量，
+  把回合相加会让两轮之后的会话报出超过窗口的数字。
+- `readMessages` 每次返回 `occupancy: { usedTokens, contextWindow, model }`，
+  字段为 `null` 表示日志没说。**总是带这个键**（不是省略），因为 `null` 才是真实形态。
+- 路由 `index.js` 的 `messages` 分支转发它。
+- 面板：`#occupancy` 在 composer 栏里、模型名右边，`aria-live` **刻意不加**——
+  它每个回合都变，live region 会把整段对话的开销念出来盖住读者正在做的事。
+  `compactTokens()` 做缩写（`461k` / `1M`），精确数字进 `title` 与 `aria-label`。
+
+### ★ 一个真实缺陷：诚实降级渲染出了悬空的斜杠
+
+没有窗口时我最初传 `t('composer.occupancy', { window: '' })`——
+实测渲染成 **`461k /`**，一条读起来像「标签没写完」的东西。
+改为**另一个词条** `composer.occupancy.count`（`{used} tokens`）：
+空串代入模板不是降级，是缺一半。
+
+### ★ 变异检查指出我自己的两处错
+
+`.tmp-run/mutate-occupancy.mjs` 第一轮只有 3/5，两个失败的原因**不同**：
+
+1. `blank-when-host-stops-reporting` 保持绿 → **测试缺口**。我的测试发的是 `occupancy: undefined`
+   （省略键），而**真实宿主总是返回带 `null` 字段的对象**。省略与 null 走不同分支，
+   所以我测的是一个产品进不去的状态。改测 `null` 之后，那条断言本身也改了——
+   真实的风险不是「清空」，而是**跨会话泄漏**：新会话沿用上一个会话的读数，
+   那是一个关于另一段对话的数字。
+2. `title-loses-exact-numbers` 报红而我认为它等价 → **我的论证错了**。它确实丢掉了 title 里的
+   精确数字，而测试恰好断言了这一点。不是等价变异，是真坏法。已改标 `expect: 'red'`。
+
+改完 **5/5 命中**，`restoredExactly: true`。
+
+### 验证读数
+
+- `npm test` → **724 passed, 0 failed, 0 skipped**
+- `npm run check:extension` → exit 0
+- 宿主侧真实日志：**0 崩溃**，66 个会话报出两半（`.tmp-run/probe-occupancy-host.mjs`）
+- 真实浏览器：有窗口 → `461k / 1M` + aria 完整句；无窗口 → `461k tokens`，**无斜杠**；
+  非控件、不可聚焦、输入框宽度 340 未受影响
+- 画廊 17 张重渲；`search.png` 出现**已记录的焦点环抖动**（1 像素，CSS `(7, 56.5)`），已还原
+
+### 新增文件（`.tmp-run/`，被 gitignore）
+
+`probe-usage-reality.mjs`（事件里有没有 usage）、`probe-catalog-window.mjs`（目录里有没有窗口）、
+`probe-pressure-reality.mjs`（`request/context` 真的存在吗）、`probe-occupancy-host.mjs`（宿主真的报了吗）、
+`probe-occupancy-spread.mjs`（★ 16541 次请求的真实分布，这一份否掉了警告设计）、
+`probe-occupancy-panel.js`（面板侧：可见文字、aria、是否控件）、`mutate-occupancy.mjs`。
+## v117：把变异检查从「每轮重写一遍」变成仓库里的一件工具
 
 这一轮的出发点是我自己的失败：**四个判据里三个报出了不存在的缺陷。**
 

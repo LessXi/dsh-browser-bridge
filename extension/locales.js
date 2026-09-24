@@ -82,6 +82,17 @@ export const zh = Object.freeze({
   // And the one for a host that is not answering. Creating a session cannot work
   // either in that state, so the field must not send the reader to do it.
   'composer.needsHost': 'dsh web 没在运行…',
+  // How full the context is, beside the composer. Two forms because the log does
+  // not always state a window size: with one, the pair; without it, the count
+  // alone, which is a smaller truth rather than a made-up percentage.
+  'composer.occupancy': '{used} / {window}',
+  // The same reading with no denominator — a *different* string rather than the
+  // pair template with an empty second half. Substituting `''` into `{used} / {window}`
+  // leaves a trailing slash: measured on screen as `461k /`, which reads as a
+  // label that failed to finish rather than as a count.
+  'composer.occupancy.count': '{used} tokens',
+  'composer.occupancy.title': '本轮上下文 {used} / {window} tokens',
+  'composer.occupancy.countOnly': '本轮上下文 {used} tokens，无窗口记录',
   // The way back into a conversation longer than one window. A long session is
   // not unusual — one of the author's own is 6969 rows, of which the panel used
   // to show the last 60 with no indication that anything was missing.
@@ -307,6 +318,12 @@ export const en = Object.freeze({
   'composer.placeholder': 'Ask anything…',
   'composer.needsSession': 'Create a chat first…',
   'composer.needsHost': 'dsh web is not running…',
+  'composer.occupancy': '{used} / {window}',
+  'composer.occupancy.count': '{used} tokens',
+  // Titles, so they are held to the same short-string rule as every other entry:
+  // the exact numbers are the point, and a sentence in a tooltip is read once.
+  'composer.occupancy.title': '{used} of {window} tokens',
+  'composer.occupancy.countOnly': '{used} tokens, no window recorded',
   'transcript.earlier': 'Earlier messages',
   'transcript.loading': 'Loading…',
   'find.placeholder': 'Find…',

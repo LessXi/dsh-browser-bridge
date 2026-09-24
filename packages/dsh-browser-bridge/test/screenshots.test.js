@@ -620,6 +620,63 @@ test('every floating surface can be opened and dismissed, so it never hides the 
   }
 })
 
+test('no fixture timestamp can change its own label while a gallery run is happening', () => {
+  // `relativeTime` rounds, so a timestamp sitting on a band edge renders one label
+  // and then another as the clock moves. The gallery is supposed to be
+  // reproducible, and a fixture age on an edge makes that false: `sessions.png`
+  // grew 187 differing pixels on its own between two runs of the same code,
+  // measured at CSS 345,214 — a session's age label. `historyFull` had already
+  // been fixed for exactly this at the week boundary; the generator that feeds the
+  // session list was never checked and six of its rows sat half a minute from
+  // flipping.
+  //
+  // The question is not "will this label ever change" — every relative label will,
+  // that is what relative means. It is whether it changes *inside one run*, so the
+  // assertion is a budget of slack rather than permanence.
+  const preview = readFileSync(join(root, 'tools', 'preview.mjs'), 'utf8')
+
+  const unitLine = /const unitMs = (.+)\n/.exec(preview)
+  const agoLine = /const ago = (.+)\n/.exec(preview)
+  assert.ok(unitLine !== null, 'the age generator no longer states a unit; this test cannot judge its slack')
+  assert.ok(agoLine !== null, 'the age generator no longer computes `ago`; this test cannot judge its slack')
+  // The fixture has to place ages away from a band edge, which is what the extra
+  // half unit does. Asserted on the expression rather than on the rendered result,
+  // because the rendered result is only wrong for part of every minute.
+  assert.match(
+    agoLine[1],
+    /unitMs \/ 2|\+ *unitMs *\/ *2/,
+    `the fixture places ages on a rounding boundary (${agoLine[1].trim()}); every tier of relativeTime rounds, so such a row labels itself differently as the clock moves and the gallery diff stops being reproducible`,
+  )
+
+  // And the hand-written ages, which have to keep the same rule. The arithmetic is
+  // stated here rather than checked by reading the clock, because the failure is
+  // intermittent by nature: an age on a band edge renders correctly and then stops
+  // rendering correctly a few seconds later.
+  //
+  // `relativeTime`'s bands, measured: a whole number of minutes sits *on* the edge
+  // (`8 * 60_000` holds its label for 30 seconds), while half past a minute sits in
+  // the middle (`8.5 * 60_000` holds for 60). So a fixture age in the minutes tier
+  // must be half-past a minute, and an age in the `now` tier must not be an exact
+  // whole number of minutes either.
+  const boundaryAges = [...preview.matchAll(/Date\.now\(\) - ([0-9_.* ]+)/g)].map((match) => match[1].trim())
+  assert.ok(boundaryAges.length > 0, 'the preview tool has no timestamped fixtures; this test proves nothing')
+  for (const expression of boundaryAges) {
+    // Only the ages small enough to land in the rounding tiers matter; the day and
+    // year ones are stable for hours either side of their band.
+    const minutes = /^([\d.]+) \* 60_000$/.exec(expression)
+    const raw = /^([\d_]+)$/.exec(expression)
+    const asMinutes = minutes !== null ? Number.parseFloat(minutes[1])
+      : raw !== null ? Number.parseInt(raw[1].replace(/_/g, ''), 10) / 60_000
+        : null
+    if (asMinutes === null || asMinutes >= 60) continue
+    assert.notEqual(
+      Number.isInteger(asMinutes),
+      true,
+      `a fixture age of ${expression} is a whole number of minutes, which is a band edge for relativeTime: the label flips after 30 seconds and the screenshot stops being reproducible`,
+    )
+  }
+})
+
 test('the mutation tool refuses to read an unchanged file as a caught mutation', async () => {
   // Mutation checking is how every round argues that its test would notice the
   // bug it is about. It was re-implemented from scratch each round in a scratch

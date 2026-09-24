@@ -915,7 +915,16 @@ test('a read returns an empty transcript rather than throwing', async () => {
       },
     },
   })
-  assert.deepEqual(await chat.readMessages('session-a'), { title: '', messages: [], more: false, total: 0 })
+  assert.deepEqual(await chat.readMessages('session-a'), {
+    title: '',
+    messages: [],
+    more: false,
+    total: 0,
+    // A session whose log cannot be read states nothing about occupancy, and null
+    // is how the panel is told "no denominator" — it then prints the used count
+    // alone rather than inventing a percentage from a window nobody reported.
+    occupancy: { usedTokens: null, contextWindow: null, model: '' },
+  })
 })
 
 // ---------------------------------------------------------------------------

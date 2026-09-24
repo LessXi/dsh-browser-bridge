@@ -450,9 +450,10 @@ export function selectionOf(item) {
  *
  * @param {unknown[]} events - The session's events, oldest first.
  * @param {{ isAppendSurfaceEvent: (event: unknown) => boolean } | null} api - The surface API, when it loaded.
+ * @param {{ contextWindow?: number | null, contextModel?: string, usedTokens?: number | null }} [out] - Filled with what the log says about context occupancy. Optional so a caller that only wants rows is unchanged.
  * @returns {object[]} The rows, newest last.
  */
-export function describeEvents(events, api) {
+export function describeEvents(events, api, out) {
   const rows = []
   /** @type {Map<string, object>} */
   const toolRows = new Map()
@@ -494,6 +495,22 @@ export function describeEvents(events, api) {
    * @type {Set<number>}
    */
   const labelledTurns = new Set()
+
+  /**
+   * The context window the newest request was made against, or null if the log
+   * never said. Only `request/context` states it, and it states it per request.
+   */
+  let contextWindow = null
+  /** The model that window belongs to, when the event names one. */
+  let contextModel = ''
+  /**
+   * How many tokens the newest settled request cost, or null before one settles.
+   *
+   * A level, not a running total: this is what the conversation currently
+   * occupies, and the panel divides it by the window to show how close the next
+   * turn is to not fitting.
+   */
+  let usedTokens = null
 
   /**
    * Whether this event belongs on the current surface.
@@ -630,6 +647,19 @@ export function describeEvents(events, api) {
       }
 
       case 'assistant/message': {
+        // The numerator for context occupancy rides this event, so it is read
+        // before the append guard: an attempt that settles without appending still
+        // reports what the request cost, and that is the honest newest level.
+        //
+        // `totalTokens` counts the whole request — prompt plus reply — which is
+        // what occupies the window. Kept as the newest sample rather than a
+        // running sum: occupancy is a level, not a total, and adding turns
+        // together would report a conversation as exceeding its window the moment
+        // it had two turns.
+        const usage = data?.usage
+        if (Number.isInteger(usage?.totalTokens) && usage.totalTokens >= 0) {
+          usedTokens = usage.totalTokens
+        }
         if (!appended(event)) break
         const content = data?.message?.content
         if (!Array.isArray(content)) break
@@ -655,6 +685,27 @@ export function describeEvents(events, api) {
         // number the log itself uses, so the failure at the end of the turn
         // finds the same one.
         openTurn = turnOf(event)
+        break
+      }
+
+      case 'request/context': {
+        // The denominator for context occupancy, and the only place it appears.
+        //
+        // The model catalog does not carry a window size — `buildModelCatalog`
+        // projects `id`, `name`, `description` and `reasoning`, and stops there —
+        // so a percentage worked out from the catalog would be invented. This
+        // event is where the harness actually states it, and it states it per
+        // request: measured over this machine's logs, 77 of them, carrying
+        // 1048576 or 1000000.
+        //
+        // Read as "the newest window seen", the same last-wins rule the token
+        // meter uses, because a session can change model partway through and the
+        // window belongs to the model that answered, not to the session.
+        const window = data?.contextWindow
+        if (Number.isInteger(window) && window > 0) {
+          contextWindow = window
+          contextModel = typeof data?.model === 'string' ? data.model : ''
+        }
         break
       }
 
@@ -763,6 +814,11 @@ export function describeEvents(events, api) {
     }
   }
 
+  if (out !== undefined) {
+    out.contextWindow = contextWindow
+    out.contextModel = contextModel
+    out.usedTokens = usedTokens
+  }
   return rows
 }
 
@@ -928,7 +984,7 @@ export function createChat(ports) {
   /**
    * Replay one session and cache the result when it cannot change underneath us.
    * @param {string} sessionId - The session.
-   * @returns {Promise<{ messages: object[], title: string }>} Its rows and title.
+   * @returns {Promise<{ messages: object[], title: string, occupancy: object }>} Its rows, title, and context occupancy.
    */
   const readThrough = async (sessionId) => {
     const cached = coldCache.get(sessionId)
@@ -936,10 +992,11 @@ export function createChat(ports) {
     const pending = (async () => {
       const state = await inspectState(sessionId)
       const events = Array.isArray(state?.events) ? state.events : []
-      const messages = describeEvents(events, await surfaceApi())
+      const occupancy = {}
+      const messages = describeEvents(events, await surfaceApi(), occupancy)
       const meta = state?.meta ?? state?.header
       const title = asText(meta?.title)
-      return { messages: collapseToolRuns(messages), title }
+      return { messages: collapseToolRuns(messages), title, occupancy }
     })()
     if (!isLive(sessionId)) coldCache.set(sessionId, pending)
     return pending
@@ -1049,6 +1106,19 @@ export function createChat(ports) {
       // what it was already given, which is the window it is trying to move away
       // from.
       total: size,
+      // What the log says about how full the context is. Reported with every
+      // window rather than only the newest one, because the panel draws it beside
+      // the composer and a reader who scrolled back to read is still about to send
+      // into the same conversation.
+      //
+      // `contextWindow` is null when the log never stated one, and the panel shows
+      // the used count alone in that case: a denominator it does not have is one
+      // it must not invent.
+      occupancy: {
+        usedTokens: Number.isInteger(replay.occupancy?.usedTokens) ? replay.occupancy.usedTokens : null,
+        contextWindow: Number.isInteger(replay.occupancy?.contextWindow) ? replay.occupancy.contextWindow : null,
+        model: typeof replay.occupancy?.contextModel === 'string' ? replay.occupancy.contextModel : '',
+      },
     }
   }
 

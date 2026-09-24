@@ -80,6 +80,11 @@ const host = {
   down: false,
   /** Every `POST {action:'messages'}` body, in order. */
   reads: [],
+  /**
+   * What the host answers about context occupancy, or undefined for "the log
+   * never said". Mutated per test that cares.
+   */
+  occupancy: undefined,
   /** Every `POST {action:'search'}` body, in order. */
   searches: [],
   /**
@@ -381,6 +386,12 @@ globalThis.fetch = async (url, options = {}) => {
         title: host.title,
         more: host.more === true || start > 0,
         total: all.length,
+        // Absent unless a test asks for it, because that is what the real host
+        // does: only 77 of this machine's logs carry a `request/context` event,
+        // so "the log never stated a window" is a state a reader can genuinely be
+        // in. A stub that always answered would make the panel's honest fallback
+        // unreachable from the suite.
+        ...(host.occupancy === undefined ? {} : { occupancy: host.occupancy }),
       })
     }
     if (body.action === 'search') {
@@ -5557,6 +5568,60 @@ test('a panel pinned to the bottom stays at the bottom when it is resized', asyn
     transcript.scrollTop,
     transcript.scrollHeight,
     'a reader at the bottom must be sent back to the bottom, not left where the offset was',
+  )
+})
+
+test('the context reading shows the whole truth or a smaller one, never a made-up one', async () => {
+  // The panel had no token accounting at all before this, so a reader could not
+  // tell a fresh conversation from one about to be compacted. The host now
+  // reports what the log says, and the panel draws it.
+  //
+  // The assertion that matters is the *second* one. The window comes from a
+  // `request/context` event, and only 77 of this machine's logs carry one — so a
+  // session with usage and no recorded window is a real state. Dividing by a
+  // window nobody stated would put a number on screen that no evidence supports,
+  // which is the failure this test exists to prevent: the reading must degrade to
+  // the count alone rather than invent a denominator.
+  const readout = registry.get('occupancy')
+
+  await settleToIdle()
+  host.messages = [{ kind: 'user', text: 'hi' }, { kind: 'assistant', text: 'hello' }]
+  await settle()
+
+  // With a window, both halves.
+  host.occupancy = { usedTokens: 461234, contextWindow: 1000000, model: 'deepseek-v4.1-flash' }
+  await readTranscript()
+  assert.equal(readout.hidden, false, 'the reading has to be on screen when the host reports it')
+  assert.equal(readout.textContent, '461k / 1M', 'both halves, abbreviated to what the bar has room for')
+  // The exact numbers have to survive somewhere: the visible form is an
+  // abbreviation, and "461k" read aloud is not a number anyone can use.
+  assert.match(readout.title, /461234/, 'the title must carry the exact used count, not the abbreviation')
+  assert.match(readout.title, /1000000/, 'the title must carry the exact window, not the abbreviation')
+
+  // Without one, the count alone — and specifically no trailing separator. The
+  // pair template substituted with an empty second half renders `461k /`, which
+  // on screen reads as a label that failed to finish.
+  host.occupancy = { usedTokens: 461234, contextWindow: null, model: '' }
+  await readTranscript()
+  assert.equal(readout.hidden, false, 'a count with no window is still worth showing')
+  assert.equal(
+    readout.textContent.includes('/'),
+    false,
+    `the reading shows a separator with nothing after it: "${readout.textContent}"`,
+  )
+  assert.match(readout.textContent, /461k/, 'the count itself must still be there')
+
+  // A session with no usage at all must clear it, not inherit the last one. This
+  // is the defect class this panel has hit before — remembered state keyed by
+  // nothing, so it describes whatever was on screen a moment ago. A reading that
+  // said 461k while the reader looked at a brand-new conversation would be a
+  // number about a different conversation.
+  host.occupancy = { usedTokens: null, contextWindow: null, model: '' }
+  await readTranscript()
+  assert.equal(
+    readout.hidden,
+    true,
+    'the reading must clear when the session in front of the reader has no usage of its own',
   )
 })
 
