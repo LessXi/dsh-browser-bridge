@@ -1,7 +1,7 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v115 已交付并入库。** 下一节就是最新的一轮改动；下面标 v108/v107/v106/v105/v104/v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v115 那一段为止即可。
+> **当前状态：v116 已交付并入库。** 下一节就是最新的一轮改动；下面标 v108/v107/v106/v105/v104/v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v116 那一段为止即可。
 >
 > **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（713 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
@@ -19,7 +19,111 @@
 > **已入库**：v3→v109 的全部改动已提交并推送到 `origin/main`。工作区干净。
 > （v108 是 `0bfdf20`，v107 是 `afc1ac1`，v105 是 `4b1f0aa`，v103 是 `91fa7dd`，v102 是 `77b75e3`，v101 是 `cc33dd9`，v99 是 `bff292d`，v92 是 `e3ad6ba`，v91 是 `3d96bf1`，v90 是 `767e4cd`，v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
 
-> ## v115：让真实对话第一次进得了面板
+> ## v116：渐隐画在哪个元素上，和它读哪个 flag 一样要紧
+
+这一轮修的是一个**守卫缺口**，不是产品缺陷。产品是对的，测试漏了一半。
+
+### 缺口
+
+表格的边缘渐隐由两个 flag 驱动（`data-scrolled` / `data-at-end`），
+而这条链上有**两段独立的东西**：
+
+- `extension/sidepanel.js` 的 `markTableEdges(scroller)` **写**这两个属性
+- `extension/sidepanel.html` 的选择器**读**它们，并决定渐隐显不显示
+
+测试分两半各自守着：`panel-stream.test.js` L1570-1588 逐位置断言属性值正确；
+`panel-geometry.test.js` L1449-1478 断言 CSS 里存在读这些 flag 的选择器。
+**两半都对，但没有任何一条断言问：渐隐画在哪个元素上。**
+
+### 为什么这件事要紧
+
+`.table-scroll` 是 `overflow-x: auto`。**滚动容器的伪元素是它内容的一部分，
+会跟着内容一起滚走**——也就是在读者正需要它的时候，它从视口里出去了。
+
+而把渐隐从 `.table-box:has(.table-scroll[data-scrolled='yes'])::before`
+改成 `.table-scroll[data-scrolled='yes']::before` 之后，
+**两个 flag 的选择器仍然都写在 CSS 里**，属性也照样写对——
+所以两半文本断言全部通过。实测：`panel-geometry` **24 passed**、`panel-stream` 全绿。
+
+唯一注意到这件事的是 `screenshots.test.js` 的指纹守卫，而它报的是
+「你改了 `extension/` 却没重渲画廊」——**那不是关于渐隐的一句话。**
+
+### 修法
+
+在 `packages/dsh-browser-bridge/test/panel-geometry.test.js` 的
+`a wide table asks for the width it needs instead of crushing its columns`（L1385）里
+补三条断言：渐隐的选择器必须存在、**不得**挂在 `.table-scroll` 上、必须有一条挂在 `.table-box` 上。
+
+```js
+const hostOf = (selector) => selector.split(':has(')[0].trim()
+const shadeHosts = [...css.matchAll(/([^\s,{}]*)\s*::(?:before|after)\s*\{/g)]
+  .filter((match) => /table-box|table-scroll/.test(match[1]))
+  .map((match) => hostOf(match[1]))
+```
+
+### ★ 判据第一版误伤了正确实现
+
+第一版用 `/\\.table-scroll/` 匹配整个选择器。而**正确**的写法是
+`.table-box:has(.table-scroll[data-scrolled='yes'])::before`——它在 `:has()` 里
+**提到了** `.table-scroll`，于是正确实现被自己的判据拒掉（24 passed / 1 failed）。
+
+**判据必须问「伪元素挂在哪个元素上」，也就是选择器的最后一段复合选择器**，
+而不是「选择器提到了什么」。`hostOf()` 用 `split(':has(')[0]` 取宿主。
+修好后两个方向都对：正确实现 24 passed，坏法被抓住。
+
+### 真实浏览器证据
+
+`.tmp-run/probe-shade-host.js`（`table` 场景）：
+
+| 读数 | 值 |
+| --- | --- |
+| `maximum`（可滚动量） | 242 |
+| `shadeHost` | `.table-box` |
+| `boxAfterDisplay` / `boxAfterOpacity` | `block` / `1` |
+| verdict | `the trailing shade is drawn on the .table-box, which does not scroll: it stays at the edge` |
+
+### 这条轴上的其余读数（阴性，都已核实）
+
+`.tmp-run/probe-table-edges.js` 在三个滚动位置读**计算不透明度**（读者看到的），
+与属性值（面板的意图）分别核对：
+
+| 位置 | `data-scrolled` | `data-at-end` | 左渐隐 | 右渐隐 | 正确？ |
+| --- | --- | --- | --- | --- | --- |
+| 最左 | no | no | 0 | 1 | ✓ |
+| 中间 | yes | no | 1 | 1 | ✓ |
+| 最右 | yes | yes | 1 | 0 | ✓ |
+| 装得下（`tableFits`） | no | yes | 0 | 0 | ✓ |
+
+`failures: []`，verdict `the edges tell the truth at 3 scroll position(s)`。
+最后一行覆盖的是 v113 修的「假提示」——装得下时两侧都不提示。
+
+### ★ 这一轮我自己的两次判据错误（都造出不存在的缺陷）
+
+1. **只查 `content` 不查 `background`**：渐隐是 `background: linear-gradient(...)` 画的，
+   它的 `content` 恒为 `''` 或 `none`，所以第一版判据报 `hasHint: false`、
+   `unannouncedCount: 1`——一个不存在的缺陷。判据要问「**画出东西了吗**」。
+2. **量错了元素**：渐隐挂在 `.table-box` 上，而滚动的是它的子元素 `.table-scroll`。
+   只查滚动条自己的伪元素必然漏掉提示。
+
+两次都是同一个形状：**判据在错误的对象上提问。**
+
+### 验证读数
+
+- `npm test` → **721 passed, 0 failed, 0 skipped**（未新增测试，是加强了既有断言）
+- `npm run check:extension` → exit 0
+- 变异 `.tmp-run/mutate-shade-link.mjs`（2 种「改 flag 名」的坏法）→ **2/2 命中**、`restoredExactly: true`
+- 变异 `.tmp-run/mutate-shade-element.mjs`（把渐隐挂到滚动容器上）→ 修前**只有指纹守卫发现**，
+  修后 `panelGeometry: true`（**正是新断言**）
+- 画廊 17 张重渲后只有 `SOURCES.json` 指纹变；`search.png` 出现本仓库已记录的焦点环抖动
+  （1 像素，CSS `(7, 56.5)`），已 `git checkout` 还原
+
+### 新增探针（`.tmp-run/`，被 gitignore）
+
+`probe-table-discoverability.js`（横向溢出的表格有没有可见提示）、
+`probe-table-edges.js`（三个滚动位置的状态机，判据用计算不透明度）、
+`probe-shade-host.js`（渐隐挂在哪个元素上）、`probe-real-tables.mjs`（436 个真实表格的宽度分布）、
+`mutate-shade-link.mjs`、`mutate-shade-element.mjs`。
+## v115：让真实对话第一次进得了面板
 
 这一轮问的是：**此前的每一张截图、每一次探针，跑的都是自造的夹具。** 而作者真实会话有 6969 行、
 436 个表格。夹具里的东西是**写夹具的人想得到的东西**——也就是已经被证明能工作的那些形状。

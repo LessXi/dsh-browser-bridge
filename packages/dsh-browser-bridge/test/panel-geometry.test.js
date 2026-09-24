@@ -1477,6 +1477,44 @@ test('a wide table asks for the width it needs instead of crushing its columns',
     'the trailing shade must go once there is nothing left to the right',
   )
 
+  // The shades have to be drawn on the box *around* the scroller, and this is a
+  // separate question from which flag they key off.
+  //
+  // `.table-scroll` is `overflow-x: auto`. A pseudo-element of a scroll container
+  // scrolls with its content, so a shade drawn there travels out of view exactly
+  // when it is needed, and both flag selectors can still read correctly while the
+  // reader sees nothing. Measured: moving the leading shade onto
+  // `.table-scroll[data-scrolled='yes']::before` left every other assertion in
+  // this file and the whole of `panel-stream` green — the only thing that noticed
+  // was the screenshot fingerprint complaining that the images were stale, which
+  // is not a statement about the shade at all.
+  //
+  // This is the recurring failure in this repository under another name: state
+  // made visible through something the layout is free to take away.
+  // The host is the selector's *last* compound, not anything it mentions. The
+  // correct form is `.table-box:has(.table-scroll[data-scrolled='yes'])::before` —
+  // it names `.table-scroll` inside `:has()`, so a test that greps the whole
+  // selector for `.table-scroll` fails on the implementation it is meant to
+  // protect.
+  const hostOf = (selector) => selector.split(':has(')[0].trim()
+  const shadeHosts = [...css.matchAll(/([^\s,{}]*)\s*::(?:before|after)\s*\{/g)]
+    .filter((match) => /table-box|table-scroll/.test(match[1]))
+    .map((match) => hostOf(match[1]))
+  assert.ok(
+    shadeHosts.length > 0,
+    'the table shades are gone entirely; nothing tells the reader the table continues sideways',
+  )
+  const onTheScroller = shadeHosts.filter((selector) => /\.table-scroll/.test(selector))
+  assert.deepEqual(
+    onTheScroller,
+    [],
+    `the shade is drawn on the scroller (${onTheScroller.join(', ')}); a pseudo-element of an overflow container scrolls away with the content, so the hint disappears exactly when it is needed. Draw it on the .table-box around the scroller instead`,
+  )
+  assert.ok(
+    shadeHosts.some((selector) => /\.table-box/.test(selector)),
+    'the shades must be drawn on the .table-box, which is positioned and does not scroll',
+  )
+
   // High Contrast repaints every background to `Canvas`, which erases the fade and
   // leaves the edge drawn as a flat block. That mode draws a border instead — the
   // same correction the panel already makes for the compaction rule and the
