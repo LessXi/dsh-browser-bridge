@@ -446,7 +446,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 715 条
+npm test                          # 全部 717 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -536,7 +536,7 @@ Chrome for Testing 都装进带版本号的目录，写死路径会在一台机�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 715 条
+npm test                 # 717 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -567,7 +567,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面五层测试，715 条。包括真实 Chrome 驱动的快照、点击、输入、截图，
+**已自动化验证**：上面五层测试，717 条。包括真实 Chrome 驱动的快照、点击、输入、截图，
 以及**载入真实扩展的真实 Chromium** 走完整协议并核对页面真的被点到了。扩展的首次连接也已
 在真实 Chrome 里端到端验证过：清空 storage 后，扩展自己读了 health、取了令牌、带着正确令牌
 发起升级（`.tmp-run/probe-enrol-real-browser.js`）。
@@ -695,6 +695,11 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 | ★★ 假宿主少一个分支，面板就会为一次成功的操作报错（v110） | 读者点「只允许一次」，面板弹出 **「没能作答：HTTP 200」**——请求成功了，面板却在指责它。根因：真宿主有 8 个 action 分支，preview 假宿主只有 7 个，**`approval` 是缺的那个**，于是回答落到兜底 `send(200, {})`；而面板写的是 `if (payload?.answered !== true) say(...)`——**只有 `{answered: true}` 才算成功**，`{}` 自然不算。面板是对的，**错的只有量它的仪器**。与上一行同一个文件、同一类错误，所以这次的断言不再是「再补一个分支」，而是**两个宿主的 action 集合必须相等**（多一个也报，否则探针会在量一个不存在的宿主） |
 | ★ 探针读错了那一份记录，会把「已经发生」读成「什么都没发生」（v110） | 面板**确实发出了** `{"action":"approval","id":"q1","outcome":"allowed-once","scope":"once"}`（Node 侧打印得清清楚楚），而我的第一版探针报 `sentAnAnswer: false`。原因是 `tools/preview.mjs` 里有**两个 `state`**：Node 侧那个（L1372，权威，记录面板经 HTTP 发来的每个请求）与页面内 `window.__previewState`（L1197，另一份）。**同一个名字下两份记录，读数就只能靠猜。** 判据最终改为读**屏幕上的告警**——那是读者会看到的东西，也是唯一不需要我判断哪份记录为真的量 |
 | ★ 判据在过渡瞬间采样，会把正常的中间态读成缺陷（v111） | 宿主重启后第一版探针报 `rowsAfter: 0`——「恢复之后对话是空的」，看起来是个缺陷。再等 8 秒读到 `transcriptRows: 4`：那是列表正在被重新取回的**过渡帧**。同一个道理的另一面是「判据在空场景上通过」：两者都是**采样时机**决定的结论，不是产品决定的 |
+| ★ 判据的执行时机错了，会把「工具没看到」读成「产品没做到」（v112） | 我用 `--probe` 读「按键之后 `scrollLeft` 变了吗」，读到 `scrollsOnKey: false`，差点据此断言「键盘滚不动表格」。而工具的顺序是 `scenario.click` → 截图 → `--probe` → `--keys`——**那个读数一次按键都没看到**。补上 `READ_STATE` 的 `activeScrollLeft` 之后，真实按键与滚动位置终于在同一份读数里对上（0 → 23 → 70 → 107 → 149）。判据不仅要问对问题，还要在**对的时刻**问 |
+| ★ 用 `background` 画的遮罩永远在内容之下（v112） | 表格的右侧渐隐用 `background` 的 `linear-gradient` 做了两轮，声明全对、`getComputedStyle` 报出 12 层背景，而**逐像素读出来右边缘全是页面底色**。CSS 把背景画在元素内容**之下**，而表格填满自己的内边距，所以那条渐变永远被盖住。改挂到外层 `.table-box` 的伪元素上才对 |
+| ★ 在文字像素上取样会把字形灰读成渐变（v112） | 沿表格数据行横向读像素，读到 `#898989` 就以为看到了背景渐变——那是**字形的抗锯齿灰**。必须在行间空白取样，读数才有意义 |
+| ★ 一个会破坏布局的提示比没有提示更糟（v112） | 把渐隐做成滚动容器自己的 `::before`/`::after` + `sticky` 之后，两个伪元素在流内、`height: 100%` 在 auto 高度下解析为 0，用来叠合的 `margin: -100%` 把外层拉成 0：实测 `scrollerHeight: 0` 而里面的 `table` 仍是 125px，外层 `div.answer` 塌到 92px。**提示把被提示的内容藏起来了** |
+| ★ 断言「某处有某个值」挡不住「另一处没了」（v112） | 变异只删掉 `border-left` 而 `border-right` 仍在，我的正则照样匹配、测试照样绿。改成两侧各查一次、并把「存在」改成「计数」之后 8/8 命中。**会被变异漏掉的断言不是断言** |
 
 最后一步在探针上报错 `llm-deepseek: no API key for provider route "deepseek-official"`——
 **这是探针进程拿不到凭据，不是插件缺陷**。已核对 `$DSH_HOME/.credentials.yaml`：里面只有一条

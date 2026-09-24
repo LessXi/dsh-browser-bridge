@@ -1761,7 +1761,12 @@ function renderRow(row) {
     wrapper.dataset.kind = 'assistant'
     const answer = document.createElement('div')
     answer.className = 'answer'
-    answer.append(renderMarkdown(document, row.text, { copy: t('action.copy') }))
+    answer.append(renderMarkdown(document, row.text, {
+      copy: t('action.copy'),
+      // The table scroller is a keyboard stop, and a stop that announces nothing
+      // tells the reader only "group". This names what they landed in.
+      tableRegion: t('table.region'),
+    }))
     wrapper.append(answer)
     // Copying the whole answer lives here rather than in the header: it acts on
     // one row, and the row is where the reader is looking. It stays invisible
@@ -4480,6 +4485,54 @@ transcript.addEventListener('scroll', () => {
   rememberReadingPlace()
   updateToBottom()
 })
+
+/**
+ * Record which way a scrolling table still has content, so its edges can say so.
+ *
+ * CSS cannot read `scrollLeft`, so the shade that marks a continuing edge has
+ * nothing to key off by itself. The scroller carries two attributes and the
+ * stylesheet reads those. Without them the shade would either sit on the first
+ * column claiming there is more table to the left of it, or stay lit at the far
+ * end after the reader has read everything.
+ *
+ * Both are set from the element's own numbers rather than from a running total of
+ * scroll events, so a resize, a zoom, or a table that was re-rendered all leave
+ * them correct.
+ *
+ * @param {Element} scroller - A `.table-scroll` element.
+ * @returns {void}
+ */
+function markTableEdges(scroller) {
+  const maximum = scroller.scrollWidth - scroller.clientWidth
+  // A table that fits has neither edge: leave it saying so rather than marking an
+  // edge that does not exist.
+  if (maximum <= 1) {
+    scroller.setAttribute('data-scrolled', 'no')
+    scroller.setAttribute('data-at-end', 'yes')
+    return
+  }
+  // The tolerance absorbs the sub-pixel remainder at either end: a scroll to 574
+  // of a 574 maximum can land at 573.5, and "the reader has reached the end" must
+  // not depend on rounding.
+  scroller.setAttribute('data-scrolled', scroller.scrollLeft > 1 ? 'yes' : 'no')
+  scroller.setAttribute('data-at-end', scroller.scrollLeft >= maximum - 1 ? 'yes' : 'no')
+}
+
+// Scroll events do not bubble in the capture sense the panel otherwise uses, but
+// they do reach an ancestor that is listening — which is why this one listener
+// covers every table in the transcript, including ones drawn later.
+//
+// The test is on the class list rather than `instanceof Element`: the panel runs
+// in a real browser, where either would do, but the suite's DOM stand-in has no
+// global `Element` constructor, and reaching for one there throws inside a scroll
+// handler — which is how this line broke three unrelated tests the first time.
+transcript.addEventListener('scroll', (event) => {
+  const target = event.target
+  if (target !== null && target !== undefined && typeof target.classList?.contains === 'function'
+    && target.classList.contains('table-scroll')) {
+    markTableEdges(target)
+  }
+}, true)
 
 /**
  * Keep the reader's place when the sidebar is resized.

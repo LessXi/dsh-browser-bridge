@@ -178,6 +178,12 @@
         outline: 2px solid Highlight;
         outline-offset: -2px;
       }
+      /* The table scroller is focusable for the same reason, so it draws the
+         same ring rather than a second kind of "you are here". */
+      .table-scroll:focus-visible {
+        outline: 2px solid Highlight;
+        outline-offset: -2px;
+      }
       /* The editor is the one box in the panel with no radius of its own — a
          bare text box inside a 16px rounded card — so a ring drawn on it is a
          square accent rectangle inside a round one. Measured, `#input` was the
@@ -685,14 +691,111 @@
 
       /* A wide table scrolls sideways instead of squeezing its columns into
          slivers — the call the Codex panel makes too (`_TableScroller` is
-         `overflow-x: auto` with a thin scrollbar). */
+         `overflow-x: auto` with a thin scrollbar).
+
+         That `overflow-x` was correct and never once ran. A table defaults to
+         `table-layout: auto`, which resolves the conflict by shrinking columns
+         rather than by asking for room, so the table rendered at exactly the
+         container's width and the scroller had nothing to scroll. Measured on a
+         four-column fixture: the table was 332px, its five columns were 62, 53,
+         53, 72 and 92px, and every cell wrapped mid-phrase — 「崩溃可接受」 broke
+         across two lines as 「崩溃可接」/「受」. Told to size itself
+         (`width: max-content`) the same table asked for 574px, and the scroller
+         scrolled. So the columns were being crushed, which is the exact outcome
+         the comment above promised to avoid.
+
+         This is not an edge case. Across the 437 tables in this machine's real
+         sessions, the median needs 269px of sideways travel and the ninetieth
+         percentile 692px; 86% fit within three swipes.
+
+         `max-content` alone is not enough: 45% of those tables have a single
+         column wider than the panel, so one runaway cell would stretch the table
+         into a ribbon nobody can follow. The cells cap at 40ch and wrap within
+         that, which keeps the columns comparable while still letting the table
+         ask for more width than the panel has. */
+      /* A table that scrolls has to say so. Measured, the panel held 242px of a
+         table off to the right with nothing on screen to suggest it was there —
+         the reader saw a table that appeared to end mid-column.
+
+         The wrapper is the scroller, and the shade that marks a continuing edge is
+         a sticky box at each inline end. Three earlier attempts are worth
+         recording, because each looked correct and each failed for a different
+         reason:
+
+         A `background` gradient on the scroller never appears at all. CSS paints
+         an element's background *below* its content, and a table fills its own
+         padding, so the gradient is covered everywhere it could have shown.
+         Measured off the pixels rather than the stylesheet: the right edge of a
+         scrolling table was `#121212` end to end, the page background, with no
+         gradient in it anywhere.
+
+         Putting `sticky` pseudo-elements *inside* the scroller flattened it. Both
+         boxes are in flow, `height: 100%` resolves against an auto height, and the
+         `-100%` margins used to collapse them pulled the wrapper's own height to
+         zero — the table kept its 125px but `.table-scroll` measured 0 and the
+         answer above it collapsed to 92px. A hint that hides the content it is
+         hinting about is worse than no hint.
+
+         So the wrapper stays a plain scroller and the shades sit in a positioned
+         parent beside it, where `inset` gives them the height of the box without
+         asking for anything. They are always painted; each one is moved off its
+         own edge by a negative offset, so it is visible while there is more table
+         in that direction and gone once there is not. `pointer-events: none` keeps
+         them from swallowing a drag-selection of the cells underneath. */
       .answer .table-scroll { overflow-x: auto; scrollbar-width: thin; }
+      .answer .table-box { position: relative; }
+      .answer .table-box::before,
+      .answer .table-box::after {
+        content: '';
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        width: 28px;
+        z-index: 1;
+        pointer-events: none;
+      }
+      .answer .table-box::before {
+        left: 0;
+        background: linear-gradient(to right, Canvas, transparent);
+        /* Hidden at the start of the table; see `:has` below. */
+        opacity: 0;
+      }
+      .answer .table-box::after {
+        right: 0;
+        background: linear-gradient(to left, Canvas, transparent);
+      }
+      /* The leading shade appears only once the reader has moved off the start —
+         `scrollLeft` is not readable from CSS, so the wrapper reports it as a
+         attribute and this is what reads it. Without this the left edge would
+         claim there was more table to the left of the first column. */
+      .answer .table-box:has(.table-scroll[data-scrolled='yes'])::before { opacity: 1; }
+      /* At the far end there is nothing to the right, so the shade goes. */
+      .answer .table-box:has(.table-scroll[data-at-end='yes'])::after { display: none; }
+      /* High Contrast repaints every background to `Canvas`, which erases both
+         shades and leaves the edges flat — the third time this mechanism has needed
+         the same correction, after the compaction rule and the trigger label. */
+      @media (forced-colors: active) {
+        .answer .table-box::before,
+        .answer .table-box::after { background: none; }
+        .answer .table-scroll {
+          border-left: 1px solid CanvasText;
+          border-right: 1px solid CanvasText;
+        }
+      }
       .answer table {
         border-collapse: collapse;
         font-size: var(--text-xs);
         line-height: 1.5;
+        /* Ask for the width the content needs. Without this the columns are
+           squeezed to fit and the scroller above never engages. */
+        width: max-content;
+        min-width: 100%;
+        table-layout: auto;
       }
       .answer th, .answer td {
+        /* A reading measure per cell, so one long value cannot become a ribbon. */
+        max-width: 40ch;
+        overflow-wrap: break-word;
         border: 1px solid var(--line-soft);
         padding: calc(var(--spacing) * 1.5) calc(var(--spacing) * 2.5);
         text-align: left;

@@ -151,6 +151,20 @@ const SHOTS = [
     why: 'A failed tool call with its reason revealed: a failure that says what happened without becoming a stack trace.',
   },
   {
+    file: 'table.png',
+    scenario: 'table',
+    scheme: 'dark',
+    locale: 'zh-CN',
+    why: 'A comparison table wider than the panel, which is the widest thing it ever has to show: 85.8% of the tables in this machine\'s real sessions exceed 380px, and this rendering path had no screenshot at all until now.',
+  },
+  {
+    file: 'table-light.png',
+    scenario: 'table',
+    scheme: 'light',
+    locale: 'zh-CN',
+    why: 'The same table on a light backdrop, where the fade that says the table continues is painted in the opposite direction.',
+  },
+  {
     file: 'working.png',
     scenario: 'working',
     scheme: 'dark',

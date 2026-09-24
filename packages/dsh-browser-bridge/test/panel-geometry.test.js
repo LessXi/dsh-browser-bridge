@@ -1382,6 +1382,125 @@ test('the composer states its ceiling once, in the stylesheet', () => {
   )
 })
 
+test('a wide table asks for the width it needs instead of crushing its columns', () => {
+  // `overflow-x: auto` on the wrapper was correct and never once ran. A table
+  // defaults to `table-layout: auto`, which settles the conflict by shrinking
+  // columns rather than by asking for room — so the table rendered at exactly the
+  // container's width and the scroller had nothing to scroll.
+  //
+  // Measured on a four-column fixture: the table was 332px, its columns were 62,
+  // 53, 53, 72 and 92px, and every cell wrapped mid-phrase — 「崩溃可接受」 broke
+  // across two lines as 「崩溃可接」/「受」. Told to size itself the same table
+  // asked for 574px and the scroller scrolled. This is worth a test because the
+  // symptom is silent: nothing overflows, nothing is clipped, and the screenshot
+  // looks like a table that is merely a bit cramped.
+  //
+  // Not an edge case: across the 437 tables in this machine's real sessions, the
+  // median needs 269px of sideways travel.
+  const rule = /\.answer table\s*\{([^}]*)\}/.exec(css)
+  assert.ok(rule !== null, 'the `.answer table` rule is gone; a wide table has nothing telling it to size itself')
+
+  assert.ok(
+    /width:\s*max-content/.test(rule[1]),
+    'the table must ask for its content width; without it the columns are crushed to fit and the scroller never engages',
+  )
+  // `min-width: 100%` keeps a narrow table filling the column, so the borders do
+  // not stop short of the prose above it.
+  assert.ok(
+    /min-width:\s*100%/.test(rule[1]),
+    'a narrow table must still fill the reading column',
+  )
+
+  // And the per-cell cap: 45% of real tables have a single column wider than the
+  // panel, so one runaway cell would otherwise stretch the table into a ribbon.
+  const cell = /\.answer th,\s*\.answer td\s*\{([^}]*)\}/.exec(css)
+  assert.ok(cell !== null, 'the cell rule is gone')
+  assert.ok(
+    /max-width:\s*\d+ch/.test(cell[1]),
+    'each cell needs a reading measure in `ch`; a single long value must not become a ribbon',
+  )
+
+  // The scroller itself keeps the horizontal affordance, and says so visibly —
+  // a table that continues off-screen with no sign of it reads as a table that
+  // ends mid-column.
+  // The scroller is declared in two rules — the scroll behaviour in one, the fade
+  // in another — so every match has to be considered. Matching only the first and
+  // asserting the fade is there fails on a file where the fade is present, which
+  // is a test bug that reads like a product bug.
+  const scrollers = [...css.matchAll(/\.answer \.table-scroll\s*\{([^}]*)\}/g)].map((match) => match[1])
+  assert.ok(scrollers.length > 0, 'the table scroller rule is gone')
+  const scrollerCss = scrollers.join(' ')
+  assert.ok(/overflow-x:\s*auto/.test(scrollerCss), 'the scroller must still scroll')
+
+  // The edge shades must live on a positioned parent, not inside the scroll
+  // container. Two failed attempts stand behind this. A `background` gradient on
+  // the scroller is painted below the cells, so a table that fills its own padding
+  // covers it completely — read off the pixels, the right edge was `#121212` end to
+  // end with no gradient anywhere in it. Sticky pseudo-elements *inside* the
+  // scroller then flattened it: both are in flow, and the margins needed to
+  // collapse them onto each other pulled the wrapper's height to zero, so the table
+  // kept its 125px while `.table-scroll` reported 0 and the answer above collapsed
+  // to 92px. A hint that hides the content it annotates is worse than no hint.
+  // The two shades share one rule for their common geometry and split for their
+  // gradients, so the declaration of `position` and `pointer-events` may appear
+  // once for the pair. What must hold is that both selectors are covered by rules
+  // that carry them — counting only the split rules would fail on a file where the
+  // shades are correct.
+  const shadeSelectors = [...css.matchAll(/\.answer \.table-box::(before|after)\b/g)].map((match) => match[1])
+  assert.ok(
+    shadeSelectors.includes('before') && shadeSelectors.includes('after'),
+    'both edges need a shade: with only one, the reader is told the table continues in one direction and not the other',
+  )
+  assert.ok(
+    /\.answer \.table-box::before,\s*\n?\s*\.answer \.table-box::after\s*\{[^}]*position:\s*absolute/.test(css),
+    'a shade must be positioned against its parent rather than placed in flow inside the scroller',
+  )
+  assert.ok(
+    /\.answer \.table-box::before,\s*\n?\s*\.answer \.table-box::after\s*\{[^}]*pointer-events:\s*none/.test(css),
+    'a shade that takes pointer events swallows the drag-selection of the cells underneath it',
+  )
+  assert.ok(
+    /\.answer \.table-box\s*\{[^}]*position:\s*relative/.test(css),
+    'the shades are absolutely positioned, so their parent must establish the containing block',
+  )
+
+  // The shades key off where the reader has scrolled to, which CSS cannot read.
+  // Both directions matter: without the first, the leading shade would claim there
+  // is more table to the left of the first column; without the second, the trailing
+  // shade would stay lit after the reader reached the end — a hint that lies.
+  assert.ok(
+    /\.table-scroll\[data-scrolled='yes'\]/.test(css),
+    'the leading shade must appear only once the reader has moved off the start',
+  )
+  assert.ok(
+    /\.table-scroll\[data-at-end='yes'\]/.test(css),
+    'the trailing shade must go once there is nothing left to the right',
+  )
+
+  // High Contrast repaints every background to `Canvas`, which erases the fade and
+  // leaves the edge drawn as a flat block. That mode draws a border instead — the
+  // same correction the panel already makes for the compaction rule and the
+  // trigger label, and the third instance of this mechanism.
+  //
+  // Both edges are required, and named individually. Asserting "some border is
+  // 1px solid CanvasText in that block" passes while the other edge is missing,
+  // because the surviving one satisfies the pattern — measured: dropping
+  // `border-left` alone kept the test green. An assertion that a mutation cannot
+  // break is not an assertion.
+  const forcedColors = mediaBlock('forced-colors: active')
+  const tableInHighContrast = /\.answer \.table-scroll\s*\{([^}]*)\}/.exec(forcedColors)
+  assert.ok(
+    tableInHighContrast !== null,
+    'the fade disappears in High Contrast; the scroller needs a border there so a table that continues still says so',
+  )
+  for (const side of ['border-left', 'border-right']) {
+    assert.ok(
+      new RegExp(`${side}:\\s*1px solid CanvasText`).test(tableInHighContrast[1]),
+      `High Contrast needs ${side} on the table scroller: the fade is repainted away there, and a table that continues must still say so`,
+    )
+  }
+})
+
 test('reduced motion stops the motion, not the fades, and not by naming elements', (t) => {
   const block = mediaBlock('prefers-reduced-motion: reduce')
   assert.ok(

@@ -642,6 +642,37 @@ const DEFAULT_MESSAGES = [
 ]
 
 /**
+ * A comparison table four columns wide, which is what a real answer carries.
+ *
+ * The width is not decoration. Measured across the 436 tables in this machine's
+ * real sessions, the median is 615px against a 380px panel and 85.8% of them are
+ * wider than it — so the table is the widest thing the panel ever has to show,
+ * and until this fixture existed the rendering path had no visual coverage at
+ * all: `markdown.test.js` checks that a table parses and that a scroller is
+ * created, but nothing ever looked at one on screen.
+ *
+ * The header words are the lengths a real comparison has, so a regression that
+ * squeezes columns into slivers instead of scrolling has something to squeeze.
+ */
+const TABLE_MESSAGES = [
+  { kind: 'user', text: '把这几个方案并排比一下' },
+  {
+    kind: 'assistant',
+    text: [
+      '三条路都试过了，差别主要在写入成本和读回延迟上：',
+      '',
+      '| 方案 | 写入成本 | 读回延迟 | 适用场景 | 备注 |',
+      '| --- | ---: | ---: | --- | --- |',
+      '| 直接写会话文件 | 一次 fsync | 立刻可读 | 单进程、崩溃可接受 | 最简单，但并发写会互相覆盖 |',
+      '| 追加日志再折叠 | 追加即返回 | 需折叠一次 | 多进程、要可重放 | 折叠逻辑本身要测 |',
+      '| 内存队列加落盘 | 最快 | 取决于批次 | 高频写入 | 进程被杀会丢最后一批 |',
+      '',
+      '如果只看正确性，第二种最稳；追求延迟就第三种，但要接受丢最后一批。',
+    ].join('\n'),
+  },
+]
+
+/**
  * A short conversation around one failed tool call that carries a reason.
  *
  * Kept apart from `DEFAULT_MESSAGES` so the failure is on screen without a long
@@ -1195,6 +1226,27 @@ const SCENARIOS = {
    * would.
    */
   toolFailure: { click: '.tool.has-reason', messages: TOOL_FAILURE_MESSAGES },
+
+  /** A four-column comparison table, the widest thing the panel ever shows. */
+  table: { messages: TABLE_MESSAGES },
+
+  /**
+   * The same table with the scroller focused, so a real key press can be judged.
+   *
+   * The panel puts the caret in the composer when it opens, and a textarea eats
+   * Tab — so reaching the table by Tab from there lands nowhere and the keyboard
+   * question cannot be asked.
+   *
+   * `focus`, not `click`: a programmatic `el.click()` does not move focus, so the
+   * first version of this scenario left the caret in the composer and every arrow
+   * key went there. The reading said "arrow keys do nothing", which was true of
+   * the fixture and false of the panel.
+   */
+  tableFocused: {
+    messages: TABLE_MESSAGES,
+    focus: '.table-scroll',
+    click: '.table-scroll',
+  },
   /**
    * The turn is running and nothing has arrived yet.
    *
@@ -1607,6 +1659,31 @@ async function main() {
       }
       await new Promise((r) => setTimeout(r, 400))
     }
+
+    // `scenario.focus` puts the caret on a named element, which `scenario.click`
+    // cannot do: `el.click()` fires the handlers without moving focus, so a
+    // scenario that only clicks something leaves the caret where the panel put it.
+    // That mattered for the table scroller — the panel aims the caret at the
+    // composer when it opens, so arrow keys went to the composer and the keyboard
+    // question was answered about the fixture instead of about the panel.
+    //
+    // Runs after `click`, so a scenario can open something and then land on it.
+    if (typeof scenario.focus === 'string') {
+      const focused = await cdp.send('Runtime.evaluate', {
+        expression: `(() => {
+          const el = document.querySelector(${JSON.stringify(scenario.focus)});
+          if (el === null) return 'missing';
+          el.focus({ preventScroll: true });
+          return document.activeElement === el ? 'focused' : 'refused';
+        })()`,
+        returnByValue: true,
+      }, sessionId)
+      if (focused.result?.value !== 'focused') {
+        emit(`  WARNING scenario.focus ${JSON.stringify(scenario.focus)} -> ${focused.result?.value}\n`)
+        exitCode = 1
+      }
+      await new Promise((r) => setTimeout(r, 120))
+    }
     if (typeof scenario.type === 'string') {
       await cdp.send('Runtime.evaluate', {
         expression: `(() => {
@@ -1847,6 +1924,11 @@ let outAfterProbe = undefined
           scrollTop: scroller === null || scroller === undefined ? null : Math.round(scroller.scrollTop),
           scrollHeight: scroller === null || scroller === undefined ? null : scroller.scrollHeight,
           clientHeight: scroller === null || scroller === undefined ? null : scroller.clientHeight,
+          activeScrollLeft: active === null || typeof active.scrollLeft !== 'number'
+            ? null
+            : Math.round(active.scrollLeft),
+          activeScrollWidth: active === null ? null : active.scrollWidth,
+          activeClientWidth: active === null ? null : active.clientWidth,
           findOpen: document.getElementById('find-open')?.getAttribute('aria-expanded') ?? null,
         }
       })())`

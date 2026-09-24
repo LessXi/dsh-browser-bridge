@@ -1,7 +1,7 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v111 已交付并入库。** 下一节就是最新的一轮改动；下面标 v108/v107/v106/v105/v104/v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v111 那一段为止即可。
+> **当前状态：v112 已交付并入库。** 下一节就是最新的一轮改动；下面标 v108/v107/v106/v105/v104/v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v112 那一段为止即可。
 >
 > **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（713 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
@@ -19,7 +19,161 @@
 > **已入库**：v3→v109 的全部改动已提交并推送到 `origin/main`。工作区干净。
 > （v108 是 `0bfdf20`，v107 是 `afc1ac1`，v105 是 `4b1f0aa`，v103 是 `91fa7dd`，v102 是 `77b75e3`，v101 是 `cc33dd9`，v99 是 `bff292d`，v92 是 `e3ad6ba`，v91 是 `3d96bf1`，v90 是 `767e4cd`，v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
 
-> ## v111：宿主重启之后，面板能不能自己走回来
+> ## v112：表格 —— 一条从未有过视觉覆盖的渲染路径
+
+### 起因：真实数据说这不是边缘情况
+
+用户会话里的表格数量与宽度此前没有人量过。`.tmp-run/probe-real-tables.mjs` 扫全部真实日志：
+
+| 读数 | 值 |
+| --- | --- |
+| 真实表格总数 | **436（`probe-table-travel.mjs` 口径 437）** |
+| 估算宽度 p50 / p75 / p90 / p99 / max | **615 / 782 / 1033 / 2014 / 4077px** |
+| 比 380px 面板宽 | **374（85.8%）** |
+| 列数范围 | 1–7 |
+
+而画廊 17 张图里**此前没有任何表格**，`markdown.test.js` 那条「a table renders as a table inside a
+scroll container」只断言容器存在。**一条被 436 个真实表格反复走的路径，从来没有被看一眼。**
+
+### 缺陷一：滚动容器形同虚设，列被挤碎
+
+`extension/sidepanel.html` 原来只有一条表格规则：
+
+```css
+.answer .table-scroll { overflow-x: auto; scrollbar-width: thin; }
+```
+
+而注释写着「scrolling sideways instead of squeezing its columns into slivers」——**与实测量相反**。
+
+机制：`<table>` 默认 `table-layout: auto`，浏览器**优先压缩列宽以适应容器，从不要求更多宽度**。
+所以表格渲染成正好等于容器的宽度，`overflow-x: auto` 从未触发过。实测（`.tmp-run/probe-table-mechanism.js`，
+新场景 `table`）：
+
+| 读数 | 修复前 | 修复后 |
+| --- | --- | --- |
+| `clientWidth` / `scrollWidth` | 332 / **332** | 332 / **574** |
+| 各列宽度 | 62 / 53 / 53 / 72 / 92px | 105 / 81 / 81 / 129 / 177px |
+| 每格折行数 | **3 / 2 / 2 / 3 / 3** | **1 / 1 / 1 / 1 / 1** |
+| `squeezedCount` | **5** | **0** |
+| `didOverflowWhenAsked` | true | true |
+
+单元格被**从词组中间切断**：「崩溃可接受」断成「崩溃可接」/「受」。截图 `.tmp-run/r53-table.png`。
+
+**修法**（`extension/sidepanel.html`）：`.answer table { width: max-content; min-width: 100%; }`，
+并给单元格 `max-width: 40ch; overflow-wrap: break-word;`。
+
+`max-content` 单独用不够：**45% 的真实表格有单列宽于面板**（`probe-table-travel.mjs` 的
+`widestColumnOverflows: 195`），一个失控的单元格会把表格拉成无法阅读的长条。所以单元格在 40ch 处封顶并在其中折行。
+
+### 缺陷二：键盘读者到不了那 242px
+
+`.table-scroll` 是普通 `div`，不在 Tab 顺序里。实测 `probe-table-reach.js`：`hiddenWidth: 242`、
+`focusable: false`、`scrollerInTabOrder: false`。**那不是「不好用」，是那条内容对一部分人不存在。**
+
+这与 v80 在 `#transcript` 与 `#history` 上做的判断是同一条：面板自己已经写过「a scrollable region that
+cannot be focused is a region a keyboard cannot scroll」。表格是**第三个滚动区**，当时漏了。
+
+**修法**（`extension/markdown.js`）：`scroller.tabIndex = 0` + `role="region"` + `aria-label`（由
+`options.tableRegion` 传入，面板给 `t('table.region')`）。`tabindex` 单独用会在 Tab 顺序里留一个**什么都不播报**
+的停靠点——读者落上去只听到「group」。
+
+真实按键验证（`--keys` 走 CDP `Input.dispatchKeyEvent`）：焦点落在表格上时，`ArrowRight` 把 `scrollLeft`
+从 **0 → 23 → 70 → 107 → 149**。
+
+### 缺陷三：读者看不出右边还有内容
+
+`hiddenWidth: 242` 而 `hints: []`——**右侧藏了 242px（占容器 73%），屏幕上没有任何迹象**。读者看到的是一张
+「在列中间断掉」的表格。
+
+**这一处我改错了两次，两次都靠像素读数发现。**
+
+**第一次**：用 `background` 上的 `linear-gradient` + `background-attachment: local`。声明看着完全正确，
+而 `getComputedStyle` 报出 12 层背景、伪元素 `content` 正常。**但逐像素读出来右边缘全是 `#121212`**
+（页面底色），一条渐变都没有。
+
+根因是**绘制顺序**：CSS 把元素背景画在它自己内容**之下**，而表格填满了自己的内边距，所以那条渐变永远被盖住。
+**用 `background` 做的遮罩在原理上就不可能显示在内容之上。**
+
+**第二次**：改用滚动容器自身的 `::before` / `::after` + `position: sticky`。这回渐隐能盖住内容了，
+但**把容器高度拉塌了**：两个伪元素都在流内，`height: 100%` 在 auto 高度下解析为 0，用来让两者叠在一起的
+`margin: -100%` 进一步把外层拉成 0。实测 `scrollerHeight: 0`，而里面的 `table` 仍是 125px，`div.answer`
+塌到 92px。**一个把内容藏起来的提示，比没有提示更糟。**
+
+**最终形态**：滚动区保持普通 scroller，阴影挂在它**外层**一个 `position: relative` 的 `.table-box` 上，
+用 `inset` 取得高度而不要求任何东西。CSS 读不到 `scrollLeft`，所以滚动区带两个属性
+（`data-scrolled` / `data-at-end`），由 `markdown.js` 初始化、由 `sidepanel.js` 新增的 `markTableEdges(scroller)`
+在滚动时维护——两个属性都由元素**自己的数字**算出（`maximum = scrollWidth - clientWidth`），所以resize、
+缩放、重绘之后都仍然正确。
+
+**修复后的像素证据**（`read-pixels.mjs`，设备像素 2x，穿过表格数据行）：
+
+| 设备 x | CSS x | 颜色 |
+| --- | --- | --- |
+| 600 | 300 | `#1e1e1e`（表格单元格底色） |
+| 640 | 320 | `#8a8a8a` |
+| 660 | 330 | `#757575` |
+| 674 | 337 | `#141414` |
+| 684 | 342 | `#121212`（页面底色） |
+
+五档不同值 = **连续渐变**，不是硬边。浅色模式同样（`docs/screenshots/table-light.png`）。
+
+高对比度用 `border-left/right: 1px solid CanvasText`——这是**同一机制第三次**需要这条修正
+（前两次是压缩分隔线与触发器标签）：该模式把每个 `background` 重绘为 `Canvas`，会把渐变抹平。
+
+### ★ 本轮我自己犯的判据错误（三次）
+
+**① `--probe` 在 `--keys` 之前求值。** 我用 `--probe` 读「按键之后 `scrollLeft` 是否变化」，
+读到 `scrollsOnKey: false` 并准备据此断言「键盘不能滚它」。而工具的执行顺序是
+`scenario.click`(L1632) → 截图(L1750) → `--probe`(L1770) → `--keys`(L1904)——**那个读数一次按键都没看到**。
+补上 `READ_STATE` 的 `activeScrollLeft` 之后（工具此前没有这个字段，这是真实缺口），
+真实按键与滚动位置终于能在同一份读数里对上。
+
+**② 探针按我想到的手段查，而不是按属性查。** `probe-table-reach.js` 的 `hints` 只看伪元素、阴影与渐变，
+于是在高对比度下把 `border-left/right` 读成「没有提示」，**报了一个不存在的缺陷**。改成按属性枚举之后两档都通过。
+
+**③ 在文字像素上取样。** 我沿表格行读横向像素，读到 `#898989` 就以为看到了渐变——那是**字形灰**，
+不是背景渐变。必须在**行间空白**取样。
+
+教训与 v93 一致：**判据错会造出缺陷，也会读没缺陷。**
+
+### ★ 我自己引入并修掉的三处回归
+
+1. `scenario.focus` 的加入（为 `tableFocused` 场景）：`scenario.click` 用 `el.click()`，
+   **程序化点击不移动焦点**，所以第一版 `tableFocused` 的焦点始终在输入框，方向键全去了那里。
+   新增 `scenario.focus` 之后，`activeClass` 全程是 `table-scroll`。
+2. 在 `READ_STATE` 的模板字符串里写 `//` 注释：注释成了注入 JS 的一部分，直接 `SyntaxError`。
+3. 滚动处理用 `target instanceof Element`：真实浏览器没问题，**而套件的 DOM 替身没有全局 `Element`**，
+   在滚动处理里抛错，连带弄红三条无关测试（`Element is not defined`）。改成查 `classList`。
+
+### 测试与变异
+
+- `packages/dsh-browser-bridge/test/markdown.test.js`：新增
+  `a table scroller can be reached and named by assistive technology`；既有
+  `a table renders as a table inside a scroll container` 补上 `.table-box` 结构断言（那个嵌套是承重的）。
+  该文件的本地 `makeDocument()` 补上 `setAttribute`/`getAttribute`——**不记录属性的替身会让测试通过而产品发出一个
+  读屏叫不出名字的表格**。
+- `packages/dsh-browser-bridge/test/panel-geometry.test.js`：新增
+  `a wide table asks for the width it needs instead of crushing its columns`。
+- 变异 `.tmp-run/mutate-table.mjs`：**8/8 命中**、`anchorProblems: []`、`restoredExactly: true`。
+  **★ 第一轮只有 4/6**，两个漏网都是**我的断言太弱**：
+  `fade-not-tied-to-content` 只删了 `border-left` 而 `border-right` 仍在，正则照样匹配；
+  补成「两侧各查一次 + 计数而非存在」后全中。
+
+### 验证读数（已绿，不必重跑）
+
+- `npm test` → **717 passed, 0 failed, 0 skipped**
+- `npm run check:extension` → exit 0
+- 画廊 17 张（新增 `table.png`、`table-light.png`）
+
+### 新增探针与场景（`.tmp-run/`，被 gitignore）
+
+`probe-real-tables.mjs`、`probe-table-travel.mjs`、`probe-table-mechanism.js`、`probe-table-reach.js`、
+`probe-table-real-keys.js`、`probe-table-tab-order.js`、`probe-table-can-scroll.js`、`probe-table-preconditions.js`、
+`probe-table-edges.js`、`probe-table-hint-painted.js`、`probe-fade-mechanism.js`、`probe-fade-box.js`、
+`probe-fade-sample-points.js`、`probe-scroller-height.js`、`mutate-table.mjs`。
+新场景 `table`、`tableFocused`；`tools/preview.mjs` 新增 `scenario.focus` 能力与 `READ_STATE` 的
+`activeScrollLeft` / `activeScrollWidth` / `activeClientWidth` 三个字段。
+## v111：宿主重启之后，面板能不能自己走回来
 
 这一轮的结论是**阴性**：能。所以交付的不是修复，而是**这条轴第一次有了仪器**。
 

@@ -342,10 +342,24 @@ export function renderBlocks(document, blocks, options = {}) {
     if (block.type === 'table') {
       // The scroller is the part that matters on a narrow side panel: a wide
       // table scrolls sideways instead of squeezing its columns into slivers.
-      // The Codex panel makes the same call (`_TableScroller` is `overflow-x:
-      // auto` with a thin scrollbar).
+      //
+      // Two things make that reachable, and neither is decoration. A scrollable
+      // region that cannot be focused is a region a keyboard cannot scroll — the
+      // panel already made this call for the conversation and the session list,
+      // and a table is the third scroller, which was missed. Measured on a
+      // four-column table before this: 242px of content sat to the right of the
+      // panel and the keyboard could reach none of it.
+      //
+      // And `tabindex` alone would put a stop in the tab order that announces
+      // nothing — the reader lands on it and is told only "group". A named
+      // region says which table they are in.
       const scroller = document.createElement('div')
       scroller.className = 'table-scroll'
+      scroller.tabIndex = 0
+      scroller.setAttribute('role', 'region')
+      if (typeof options.tableRegion === 'string' && options.tableRegion.length > 0) {
+        scroller.setAttribute('aria-label', options.tableRegion)
+      }
       const table = document.createElement('table')
       const head = document.createElement('thead')
       const headRow = document.createElement('tr')
@@ -374,7 +388,21 @@ export function renderBlocks(document, blocks, options = {}) {
         table.append(body)
       }
       scroller.append(table)
-      fragment.append(scroller)
+      // The shades that mark a continuing edge live on a positioned parent, not on
+      // the scroller: a pseudo-element inside a scroll container is in flow, and
+      // the pair of them (with the margins needed to collapse them onto each other)
+      // pulled the scroller's own height to zero, which hid the table they were
+      // meant to annotate.
+      //
+      // The two attributes are how the shades know where the reader is, because CSS
+      // cannot read `scrollLeft`. They are maintained by the panel's scroll
+      // handler; here they start in the position every table starts in.
+      const box = document.createElement('div')
+      box.className = 'table-box'
+      scroller.setAttribute('data-scrolled', 'no')
+      scroller.setAttribute('data-at-end', 'no')
+      box.append(scroller)
+      fragment.append(box)
       continue
     }
 

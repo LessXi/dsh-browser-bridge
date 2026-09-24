@@ -34,6 +34,17 @@ function makeDocument() {
     textContent: '',
     dataset: {},
     style: {},
+    // Attributes are recorded rather than ignored, because the renderer now sets
+    // two of them on a table's scroller — `role` and `aria-label` — and a stub
+    // that drops them would let the tests pass while the panel shipped a table a
+    // screen reader cannot name.
+    attributes: {},
+    setAttribute(name, value) {
+      this.attributes[name] = String(value)
+    },
+    getAttribute(name) {
+      return this.attributes[name] ?? null
+    },
     append(...kids) {
       for (const kid of kids) {
         if (typeof kid === 'string') {
@@ -240,7 +251,16 @@ test('a short row is padded to the header width', () => {
 
 test('a table renders as a table inside a scroll container', () => {
   const rendered = renderMarkdown(makeDocument(), '| a | b |\n|---|---|\n| 1 | 2 |')
-  const scroller = rendered.children[0]
+  // The scroller sits inside a positioned box, and that nesting is load-bearing:
+  // the shades that mark a continuing edge have to be positions on a parent, not
+  // pseudo-elements inside the scroll container. Put inside, they are in flow, and
+  // the pair of them pulled the scroller's own height to zero — measured, the
+  // table kept its 125px while `.table-scroll` reported 0, and the answer above it
+  // collapsed to 92px. So the shape is asserted, not just the class name.
+  const box = rendered.children[0]
+  assert.equal(box.className, 'table-box', 'the scroller needs a positioned parent for its edge shades')
+
+  const scroller = box.children[0]
   assert.equal(scroller.className, 'table-scroll', 'a wide table scrolls sideways rather than squeezing')
 
   const table = scroller.children[0]
@@ -258,9 +278,47 @@ test('a table renders as a table inside a scroll container', () => {
   )
 })
 
+test('a table scroller can be reached and named by assistive technology', () => {
+  // The scroller is the third scrollable region in the panel, after the
+  // conversation and the session list, and those two were given a `tabindex` and
+  // a name in an earlier round. This one was missed, and the cost was measured:
+  // a four-column table held 242px of content off to the right and the keyboard
+  // could reach none of it — 242px of a real answer that existed only for people
+  // using a mouse.
+  //
+  // The name is not a nicety either. A `tabindex` on a plain `div` puts a stop in
+  // the tab order that announces nothing; the reader lands on it and is told
+  // "group".
+  const rendered = renderMarkdown(
+    makeDocument(),
+    '| a | b |\n|---|---|\n| 1 | 2 |',
+    { tableRegion: 'Table, scrolls sideways' },
+  )
+  const box = rendered.children[0]
+  const scroller = box.children[0]
+  assert.equal(scroller.tabIndex, 0, 'the table scroller must be reachable by Tab, not skipped over')
+  assert.equal(scroller.getAttribute('role'), 'region', 'a focus stop that announces nothing is worse than no stop')
+  assert.equal(scroller.getAttribute('aria-label'), 'Table, scrolls sideways')
+
+  // The two attributes the edge shades read. CSS cannot see `scrollLeft`, so
+  // without them a shade would sit on the first column claiming there is more
+  // table to its left. They start in the position every table starts in.
+  assert.equal(scroller.getAttribute('data-scrolled'), 'no', 'a table starts at its left edge')
+  assert.equal(scroller.getAttribute('data-at-end'), 'no', 'and, being wider than the panel, it does not start at the end')
+
+  // Without the caller's string the element must not carry an empty label, which
+  // would be announced as nothing while looking deliberate in the markup.
+  const unnamed = renderMarkdown(makeDocument(), '| a | b |\n|---|---|\n| 1 | 2 |')
+  assert.equal(
+    unnamed.children[0].children[0].getAttribute('aria-label'),
+    null,
+    'an unnamed region must omit the attribute rather than set it empty',
+  )
+})
+
 test('alignment reaches the cell it belongs to', () => {
   const rendered = renderMarkdown(makeDocument(), '| l | c | r |\n|:--|:-:|--:|\n| 1 | 2 | 3 |')
-  const row = rendered.children[0].children[0].children[1].children[0]
+  const row = rendered.children[0].children[0].children[0].children[1].children[0]
   assert.deepEqual(
     row.children.map((cell) => cell.style.textAlign),
     ['left', 'center', 'right'],
@@ -269,7 +327,7 @@ test('alignment reaches the cell it belongs to', () => {
 
 test('inline spans still work inside a cell', () => {
   const rendered = renderMarkdown(makeDocument(), '| a |\n|---|\n| **bold** |')
-  const cell = rendered.children[0].children[0].children[1].children[0].children[0]
+  const cell = rendered.children[0].children[0].children[0].children[1].children[0].children[0]
   assert.deepEqual(
     cell.children.map((kid) => (typeof kid === 'string' ? kid : kid.tagName)),
     ['STRONG'],

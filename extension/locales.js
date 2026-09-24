@@ -48,6 +48,8 @@ export const zh = Object.freeze({
   'action.drop': '移除',
   'action.copy': '复制',
   'action.copied': '已复制',
+  // The table scroller is the third focusable region, so it needs a name too.
+  'table.region': '表格，可横向滚动',
   // The two scrolling regions, which are focusable and therefore need a name.
   'stage.transcript': '对话内容',
   'stage.history': '会话列表',
@@ -285,6 +287,7 @@ export const en = Object.freeze({
   'action.toBottom': 'Jump to latest',
   'action.drop': 'Remove',
   'action.copy': 'Copy',
+  'table.region': 'Table, scrolls sideways',
   'action.copied': 'Copied',
   'stage.transcript': 'Conversation',
   'stage.history': 'Chats',
