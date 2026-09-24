@@ -211,6 +211,9 @@ export const zh = Object.freeze({
   // Only ever shown when something failed.
   'error.generic': '出错了：{reason}',
   'error.notSent': '未发送：{reason}',
+  // Stays on screen until the reader acts, so it is a label rather than a
+  // sentence: the dictionary is capped at six words and has no full stops.
+  'send.failed': '没发出去（{reason}），文字还在',
   'error.notStopped': '没能停下：{reason}',
   'error.loadFailed': '读取失败：{error}',
   'error.startedFailed': '面板启动失败：{error}',
@@ -400,6 +403,7 @@ export const en = Object.freeze({
 
   'error.generic': 'Something went wrong: {reason}',
   'error.notSent': 'Not sent: {reason}',
+  'send.failed': 'Not sent ({reason}), text kept',
   'error.notStopped': 'Could not stop: {reason}',
   'error.loadFailed': 'Could not load: {error}',
   'error.startedFailed': 'Panel failed to start: {error}',

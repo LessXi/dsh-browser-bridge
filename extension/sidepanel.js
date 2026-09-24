@@ -164,6 +164,8 @@ const history = document.getElementById('history')
 const toBottom = document.getElementById('to-bottom')
 const earlierButton = document.getElementById('earlier')
 const toast = document.getElementById('toast')
+/** The persistent half of `toast`: what happened to the last send, until acted on. */
+const sendNote = document.getElementById('send-note')
 const announcer = document.getElementById('announcer')
 const surface = document.getElementById('blocked')
 // The stage and the four things sitting beside it. `renderOffline` makes
@@ -600,6 +602,48 @@ function say(text) {
   setTimeout(() => {
     if (toast.textContent === text) toast.textContent = ''
   }, 6000)
+}
+
+/**
+ * Report something about the reader's own message that they have to act on.
+ *
+ * `say` is for things that happened; this is for things that are still true. A
+ * refused send is the case that made the difference visible: the toast carried
+ * 「未发送：…」 for six seconds and then vanished, and afterwards the panel looked
+ * exactly like a message that had been typed and not yet sent. Measured, not
+ * assumed — with the toast expired, nothing the failure had added to the screen
+ * remained, while the text sat in the composer as though nothing had gone wrong.
+ *
+ * That is the same failure this panel has already recorded once, when an old host
+ * was reported only through the toast and the reader was left staring at a 「还没有会话」
+ * screen with a button that silently did nothing.
+ *
+ * The notice is also announced, because the toast's announcement expires with it
+ * and a reader who is not looking at the composer would otherwise never learn
+ * this. It is cleared by `clearSendNote`, which every path that actually does
+ * something about the message calls — a notice that outlives the problem is a
+ * standing lie.
+ *
+ * @param {string} text - What to say. An empty string means "nothing to report".
+ * @returns {void}
+ */
+function noteSendFailure(text) {
+  sendNote.textContent = text
+  sendNote.hidden = text.length === 0
+}
+
+/**
+ * Take the send notice down.
+ *
+ * Called when the reader's message actually leaves — a different send that
+ * succeeded, or a session change that discards the composer's contents. Not
+ * called on a keystroke: editing the text is working on the problem, not
+ * finishing with it, and the notice has to survive long enough to be read.
+ *
+ * @returns {void}
+ */
+function clearSendNote() {
+  noteSendFailure('')
 }
 
 /**
@@ -4196,6 +4240,9 @@ function growInput() {
 /** Put the selected session's draft back in the composer. */
 function restoreDraft() {
   input.value = drafts.get(currentSessionId) ?? ''
+  // The notice is about a message in a *different* composer. Leaving it up would
+  // attach 「没发出去」 to a session whose message never failed.
+  clearSendNote()
   growInput()
   drawSend()
 }
@@ -4429,6 +4476,7 @@ async function sendMessage() {
     body: { action: 'send', sessionId: currentSessionId, text, attachments: pendingAttachments() },
   })
   if (result.payload?.accepted === true) {
+    clearSendNote()
     input.value = ''
     input.style.height = 'auto'
     clearDraft(currentSessionId)
@@ -4472,6 +4520,9 @@ async function sendMessage() {
   } else {
     const reason = result.payload?.reason ?? result.payload?.error ?? `HTTP ${result.status}`
     say(t('error.notSent', { reason }))
+    // The toast above is the announcement; this is the record. Without it the
+    // panel goes back to looking like a message nobody has sent yet.
+    noteSendFailure(t('send.failed', { reason }))
   }
   sending = false
   drawSend()

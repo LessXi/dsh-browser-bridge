@@ -1517,6 +1517,23 @@
          empty element has no height, so dropping the padding is all it takes to
          keep this invisible while leaving it observable. */
       #toast:not(:empty) { padding: 0 12px 4px; }
+      /* The persistent half of the pair above. `#toast` announces and expires;
+         this stays until the reader acts on it, because a message that never left
+         the composer is a thing to do, not a thing that happened.
+
+         The edge is a `border`, not a background tint, and that is deliberate:
+         this panel has three recorded cases of a surface that separated itself
+         with a tint or a shadow and then vanished when Windows High Contrast
+         repainted every background to `Canvas`. A border is what that mode keeps. */
+      #send-note {
+        margin: 0 0 6px;
+        padding: 6px 8px;
+        border: 1px solid var(--bad);
+        border-radius: var(--radius-sm);
+        font-size: var(--text-xs);
+        color: var(--bad);
+        overflow-wrap: anywhere;
+      }
       /* Available to a screen reader, invisible on screen, and never
          `display:none` — a live region outside the accessibility tree announces
          nothing. Clipped to a single pixel rather than removed, which is the
@@ -1911,6 +1928,25 @@
     -->
     <p id="announcer" class="sr-only" role="status" aria-live="polite"></p>
     <footer>
+      <!--
+        What happened to the last thing the reader tried to send.
+
+        `#toast` already reports a refused send, but a toast is a moment, not a
+        record: it clears itself after six seconds. Measured on a send the host
+        refuses, everything the failure added to the screen was inside that toast,
+        so once it expired the panel looked exactly like a message that had been
+        typed and not yet sent — which is the one reading that is wrong.
+
+        That is the same mistake this panel has already made once, when an old host
+        was reported only through a toast and the reader was left with a 「还没有会话」
+        screen and a button that did nothing. A notice the reader has to act on
+        belongs in the layout, not in a timer.
+
+        It sits above the composer rather than in the transcript because the
+        message is still in the composer, unsent, and that is where the reader's
+        attention already is. It stays until they do something about it.
+      -->
+      <p id="send-note" hidden></p>
       <div id="contexts" hidden></div>
       <div id="composer">
         <textarea id="input" rows="1"></textarea>

@@ -412,6 +412,13 @@ function makeHost(scenario, state) {
           // runs inside the page and cannot read this process's variables. The
           // `send` response is the only channel the panel opens in both directions.
           const text = typeof parsed.text === 'string' ? parsed.text : ''
+          // A refused send is a real answer from a real host — the send route
+          // reports `accepted: false` with a reason — and until this switch there
+          // was no way to make one happen on screen. The panel's whole handling of
+          // it is a toast, so the path could not be looked at.
+          if (scenario.sendRefused === true) {
+            return send(200, { accepted: false, reason: 'the host refused the message' })
+          }
           if (text.length > 0) sentMessages.push({ kind: 'user', text })
           return send(200, { accepted: true, sentText: text })
         }
@@ -1378,6 +1385,15 @@ const SCENARIOS = {
 
   /** A four-column comparison table, the widest thing the panel ever shows. */
   table: { messages: TABLE_MESSAGES },
+
+  /**
+   * The host answers "no" to a send.
+   *
+   * No click is scripted: the panel's failure branch runs after the response, and
+   * `scenario.click` happens before the screenshot, so a probe needs to press send
+   * itself in order to watch the toast arrive and then expire.
+   */
+  sendRefused: { sendRefused: true },
 
   /**
    * The session list, narrowed by a phrase that appears in a conversation rather

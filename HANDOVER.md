@@ -1,6 +1,6 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v120 已交付并入库。** 下一节就是最新的一轮改动；下面标 v108/v107/v106/v105/v104/v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> **当前状态：v121 已交付并入库。** 下一节就是最新的一轮改动；下面标 v108/v107/v106/v105/v104/v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
 > 只想知道「现在能做什么、下一步做什么」，读到 v120 那一段为止即可。
 >
 > **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（713 条）与
@@ -19,6 +19,94 @@
 > **已入库**：v3→v119 的全部改动已提交并推送到 `origin/main`。工作区干净。
 > （v118 是 `f245e21`，v117 是 `1df4842`，v108 是 `0bfdf20`，v107 是 `afc1ac1`，v105 是 `4b1f0aa`，v103 是 `91fa7dd`，v102 是 `77b75e3`，v101 是 `cc33dd9`，v99 是 `bff292d`，v92 是 `e3ad6ba`，v91 是 `3d96bf1`，v90 是 `767e4cd`，v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
 
+## v121：发不出去的消息，不能只在屏幕上停六秒
+
+### 缺陷
+
+`sendMessage()` 的失败分支此前只做一件事：`say(t('error.notSent', { reason }))`，
+而 `say()` 写进 `#toast` 并在 **6000ms** 后清空。于是发送失败**只由 toast 承载**。
+
+实测（`.tmp-run/probe-send-failure-trace.js`，新场景 `sendRefused`）：
+
+| 读数 | 值 |
+| --- | --- |
+| 失败瞬间 toast | `未发送：the host refused the message` |
+| toast 过期后 | `[]` |
+| 草稿 | `draftSurvived: true`（现有正确行为） |
+| **失败新增的东西里仍留存的** | **0** |
+
+也就是说：提示一过期，屏幕上与「打好了字还没按发送」**完全一致**。而这正是唯一错误的读法——
+读者看到字在输入框里、没有报错，只会以为自己还没发。
+
+### 这是同一个陷阱的第二次
+
+v102 修过同一件事：`hostStale` 只用一次 toast 通知，读者回来时看到「还没有会话」和一个
+按了没反应的按钮。当时的结论写在那一轮的注释里——**读者必须据以行动的通知属于布局，不属于计时器**。
+而发送失败的注释（`sidepanel.js` 的失败行附近）还写着「屏幕上有重试，所以被拒的附件**才**会被报告」，
+那次修复用的正是 toast。
+
+### 修法：一条常驻通知，与 toast 并存
+
+`extension/sidepanel.html` 在 `<footer>` 里、`#contexts` **之前**新增 `<p id="send-note" hidden>`。
+位置是有理由的：消息还在 composer 里没发出去，读者的注意力本来就在那里。
+
+- `extension/sidepanel.js` 新增 `noteSendFailure(text)` 与 `clearSendNote()`，紧挨 `say()`。
+  两者都写 `hidden`，因此也进无障碍树。
+- 失败分支保留 toast（它是**播报**），另加常驻通知（它是**记录**）。
+- 清除点两处：`accepted === true` 的成功分支，以及 `restoreDraft()`——后者是因为那条通知讲的是
+  **另一个** composer 里的消息，留着会把「没发出去」挂到一个从未失败过的会话上。
+  按键盘**不清除**：改字是在处理问题，不是处理完了。
+
+### ★ 视觉：用描边而不是底色
+
+`#send-note` 用 `border: 1px solid var(--bad)` 分界，**不用背景染色**。理由是实测的：这个面板有
+**三次**记录在案的「靠浅色底或阴影分界、被 Windows 高对比度重绘成 `Canvas` 后消失」（v75、v96、v101）。
+实测该模式下 `edgeCount: 4`、`borderDiffersFromPage: true`、文字 `21:1`；普通深色下 `6.08:1`。
+
+### ★ 判据错了两次，都造出不存在的缺陷
+
+第一版探针把**所有可见文字**当「持久证据」，于是四条既有消息、标题、图标全被算进去，
+`evidenceCount` 恒为十几 —— **判据太宽 = 永远通过**。改成在失败前后各拍一次结构快照取**差集**，
+让页面自己说是哪一处变了。
+
+第二版把颜色**当字符串解析**，而 `--bad` 的计算值是 `oklab(0.677766 0.12268 0.0650538)`：
+正则抓出的数字里，第一个是**感知亮度**而不是 R 通道，于是报 `textContrast: 1.12`——
+把一眼就看得清的红字读成读不了。v101 在同一个公式上犯过同一个错（当时报 1.07）。
+改为把颜色画到 1×1 canvas 再读回像素：**浏览器已经知道怎么把 oklab 变成颜色**，
+只有交给它，读数才不依赖我自己的算术。修正后 6.08:1 与截图一致。
+
+### ★ 变异扫出我自己的测试缺口
+
+`.tmp-run/mutate-send-note.mjs`（用仓库自己的 `tools/mutate.mjs`）第一轮 **2/3**：
+`the-notice-follows-the-reader-between-sessions` 删掉 `restoreDraft` 里的 `clearSendNote()` 后
+**整个套件保持绿**——也就是说那条清除逻辑当时一行测试都没有。补测试后 **3/3**。
+
+### ★ 两处共享状态污染（测试基建的真实约束）
+
+`panel-stream` 共享同一个面板实例与同一个 `host` 假宿主：
+1. 我让宿主拒绝发送，**下一个测试的发送也被拒绝了**，报出与它无关的失败。修法：
+   `settleToIdle()` 恢复 `host.send`，而每个测试都会调它。
+2. 我的「切换会话」测试跑完停在**另一个会话**上，后续 6 条测试全红。修法：测试末尾切回去。
+   **测试要把它借走的状态还回来。**
+
+### 验证读数（已绿，不必重跑）
+
+- `npm test` → **740 passed, 0 failed, 0 skipped**（738 → 740）
+- `npm run check:extension` → exit 0
+- 变异 `.tmp-run/mutate-send-note.mjs`：**3/3 命中**、`restoredExactly: true`
+- 真实浏览器：toast 过期后 `survivedAfterToast: ["#send-note: 没发出去（the host refused the message），文字还在"]`
+- 普通深色 `textContrast: 6.08`（过 AA 4.5:1）；高对比度 `edgeCount: 4`、`21:1`
+- 画廊 20 张重渲后**只有指纹变，图片逐字节未变**（`sendRefused` 不在画廊里，既有场景完全守恒）
+
+### 新增工具能力
+
+`tools/preview.mjs`：`scenario.sendRefused` 开关（宿主答 `{ accepted: false, reason }`）与场景 `sendRefused`。
+不必写 `click`：面板的失败分支在响应之后才跑，而 `scenario.click` 发生在截图之前，所以探针自己按发送。
+
+### 新增探针（`.tmp-run/`，被 gitignore）
+
+`probe-send-failure-trace.js`（三次采样 + 差集判据）、`probe-send-note-contrast.js`（canvas 解析颜色）、
+`mutate-send-note.mjs`。
 ## v120：读者记得的是一句话，而不是标题
 
 面板的会话列表只能按**标题**过滤，而标题是从一段对话的**开头几个字**推出来的。

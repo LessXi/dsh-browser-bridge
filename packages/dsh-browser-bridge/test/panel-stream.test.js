@@ -60,6 +60,8 @@ const host = {
   requests: [],
   /** Every `POST {action:'send'}` body, in order. */
   sent: [],
+  /** The answer `send` gets, mutated per test that cares about a refusal. */
+  send: { status: 200, payload: { accepted: true } },
   /** Every `POST {action:'cancel'}` body, in order. */
   cancelled: [],
   /** The answer `cancel` gets, mutated per test. */
@@ -458,7 +460,10 @@ globalThis.fetch = async (url, options = {}) => {
     }
     if (body.action === 'send') {
       host.sent.push(body)
-      return respond({ accepted: true })
+      // A real host can answer "no" — `accepted: false` with a reason — and the
+      // panel has a whole branch for it. It could not be reached from the suite
+      // while this line hard-coded acceptance.
+      return respond(host.send.payload, host.send.status)
     }
     if (body.action === 'cancel') {
       host.cancelled.push(body)
@@ -1426,6 +1431,29 @@ async function onStoppedClock(body) {
   }
 }
 
+/**
+ * Run `body` with the panel's timers recorded instead of scheduled.
+ *
+ * The composer's toast clears itself after six seconds, and the assertion that
+ * matters is about what survives that clearing — so the expiry has to be
+ * reachable without waiting six seconds, and reachable *deliberately* rather than
+ * as a side effect of some other test's clock. Each callback is kept with the
+ * delay it was scheduled for, so a test can fire exactly the ones it means to.
+ */
+async function withRecordedTimers(body) {
+  const realSetTimeout = globalThis.setTimeout
+  const recorded = []
+  globalThis.setTimeout = (callback, delay) => {
+    recorded.push({ callback, delay })
+    return recorded.length
+  }
+  try {
+    await body(recorded)
+  } finally {
+    globalThis.setTimeout = realSetTimeout
+  }
+}
+
 /** Type into the composer the way a person does, redraw included. */
 function type(text) {
   input.value = text
@@ -1449,12 +1477,15 @@ async function press() {
  */
 async function settleToIdle() {
   type('')
+  // A test that made the host refuse a send must not leave that answer behind:
+  // the panel instance is shared, so the next test's send would be refused too
+  // and fail for a reason that has nothing to do with it.
+  host.send = { status: 200, payload: { accepted: true } }
   if (sendButton.dataset.mode !== 'stop') return
   host.running = false
   host.cancel = { status: 200, payload: { cancelled: true } }
   await press()
 }
-
 /**
  * Take down whatever question is on screen, and forget it on the host too.
  *
@@ -1705,6 +1736,98 @@ test('a refused stop says why and leaves stopping on the table', async () => {
     host.running = false
     host.cancel = { status: 200, payload: { cancelled: true } }
     await press()
+  })
+})
+
+test('a send the host refuses is still on screen after the toast expires', async () => {
+  // The failure used to be a toast and nothing else, and a toast is a moment
+  // rather than a record — it clears itself after six seconds. Measured on a
+  // refused send, everything the failure added to the screen was inside that
+  // toast, so once it expired the panel looked exactly like a message that had
+  // been typed and not yet sent. Text in the composer and no explanation reads as
+  // "you have not pressed send", which is the one reading that is wrong.
+  //
+  // The clock is recorded rather than waited on: the assertion is about what
+  // survives the toast's expiry, and sleeping six seconds to find out would make
+  // the suite slower without making the reading truer.
+  await withRecordedTimers(async (timers) => {
+    await settleToIdle()
+    toast.textContent = ''
+    host.send = { status: 200, payload: { accepted: false, reason: 'the host said no' } }
+    type('这一句发不出去')
+
+    await press()
+
+    assert.equal(host.sent.length > 0, true, 'the send never reached the host, so no refusal was exercised')
+    assert.ok(
+      toast.textContent.includes('the host said no'),
+      `the refusal was never announced: ${JSON.stringify(toast.textContent)}`,
+    )
+    const note = registry.get('send-note')
+    assert.equal(note.hidden, false, 'nothing persistent records the refusal')
+    assert.ok(
+      note.textContent.includes('the host said no'),
+      `the standing notice does not say why: ${JSON.stringify(note.textContent)}`,
+    )
+    assert.equal(input.value, '这一句发不出去', 'the message was taken out of the composer by a failed send')
+
+    // Let the toast expire exactly as its own timer would, and confirm the record
+    // is not on it. Firing the real callbacks is what makes this a fact about the
+    // toast rather than a restatement of the assertion above.
+    const expiries = timers.filter((entry) => entry.delay === 6000)
+    assert.ok(expiries.length > 0, 'the toast scheduled no expiry, so this proves nothing about what survives it')
+    for (const entry of expiries) entry.callback()
+    assert.equal(toast.textContent, '', 'the toast did not clear, so the next assertion is not about survival')
+    assert.equal(
+      registry.get('send-note').hidden,
+      false,
+      'the notice left with the toast, so a reader who looked away learns nothing',
+    )
+
+    // A send that works is what ends it. A notice that outlived the problem would
+    // be a standing lie about the message sitting in the composer.
+    host.send = { status: 200, payload: { accepted: true } }
+    await press()
+    assert.equal(
+      registry.get('send-note').hidden,
+      true,
+      'the notice is still there after a send that worked',
+    )
+
+    // Put the panel back where the next test expects it. The send above started a
+    // turn, and `settleToIdle` would have restored everything except the refusal
+    // answer this test replaced.
+    await settleToIdle()
+  })
+})
+
+test('a refusal notice does not follow the reader into another session', async () => {
+  // The notice names a failure that belongs to one composer. `restoreDraft` puts
+  // another session's text in that composer, so leaving the notice up would
+  // attach 「没发出去」 to a message that was never sent and never failed — the
+  // panel accusing itself of something that did not happen.
+  //
+  // Mutation-checked: dropping the clearing call from `restoreDraft` left the
+  // whole suite green until this test existed.
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    host.send = { status: 200, payload: { accepted: false, reason: 'the host said no' } }
+    type('这一句发不出去')
+    await press()
+    assert.equal(registry.get('send-note').hidden, false, 'no notice was raised, so nothing below is proved')
+
+    await switchTo(OTHER)
+
+    assert.equal(
+      registry.get('send-note').hidden,
+      true,
+      'the refusal notice is still on screen in a session whose message never failed',
+    )
+    host.send = { status: 200, payload: { accepted: true } }
+    // Leave the panel on the session the rest of the suite expects. The panel
+    // instance is shared, so a test that walks away mid-switch breaks whichever
+    // test runs next rather than the one that caused it.
+    await switchTo(SESSION)
   })
 })
 
