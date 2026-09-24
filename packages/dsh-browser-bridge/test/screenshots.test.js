@@ -469,6 +469,39 @@ test('the header shrinks to fit a narrow panel instead of pushing controls off i
   )
 })
 
+test('the preview host can serve a real conversation, not only a fixture', () => {
+  // Every fixture in the tool was written by whoever was fixing something at the
+  // time, so it holds the shapes that person thought of — and those are the shapes
+  // already known to work. One real segment measured here has 76 rows, 30 tool
+  // calls, 22 reasoning blocks, 114 fenced blocks, 10 tables and 2 failure rows.
+  // No fixture author invents that mixture, and it is exactly the mixture that
+  // breaks layout.
+  //
+  // The rows have to be handed to the HTTP host rather than to the page, and that
+  // is the part worth asserting: the in-page `chrome` stand-in never handles
+  // `messages` — the panel reaches a real Node HTTP server — so putting the
+  // conversation on a browser global reaches nobody. The first attempt at this did
+  // exactly that and rendered the old fixture with `rows: 4`, which looks like the
+  // flag being ignored rather than like a layer being wrong.
+  const preview = readFileSync(join(root, 'tools', 'preview.mjs'), 'utf8')
+
+  assert.ok(
+    /scenario\.messages = realConversationRows/.test(preview),
+    'the real conversation must reach the host through the scenario; a page global never gets to the HTTP server',
+  )
+  assert.ok(
+    /rest\.indexOf\('--real-conversation'\)/.test(preview),
+    'the flag that supplies a real conversation is gone',
+  )
+  // And the host must be able to answer a window narrower than the conversation:
+  // the reader's own history is 6969 rows, so a tool that can only show all of it
+  // or none of it cannot show the panel the reader actually sees.
+  assert.ok(
+    /const start = Math\.max\(0, stop - limit\)/.test(preview),
+    'the host no longer slices the window, so a real 76-row conversation cannot be shown as the panel would show it',
+  )
+})
+
 test('the preview tool can carry a real answer into the page, and does not invent one', () => {
   // A probe that asks "how long does the panel take to draw an answer" is only
   // answering a real question when the answer is one a person actually received.

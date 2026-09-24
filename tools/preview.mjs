@@ -219,6 +219,25 @@ function makeHost(scenario, state) {
     request.on('data', (chunk) => { body += chunk })
     request.on('end', () => {
       const send = (status, payload) => {
+        // Record what was answered, not only what was asked.
+        //
+        // The request log alone cannot tell "the host sent the wrong rows" apart
+        // from "the panel dropped the right ones", and that distinction is the
+        // whole question whenever a screen shows fewer rows than the fixture has.
+        // Only the summary is kept: a probe comparing counts does not need the
+        // conversation, and copying every answer would make the state object grow
+        // with the transcript.
+        const last = state.requests[state.requests.length - 1];
+        if (last !== undefined && last.answer === undefined) {
+          last.answer = {
+            status,
+            rows: Array.isArray(payload?.messages) ? payload.messages.length : null,
+            kinds: Array.isArray(payload?.messages) ? payload.messages.map((row) => row?.kind) : null,
+            total: payload?.total ?? null,
+            more: payload?.more ?? null,
+            matches: Array.isArray(payload?.matches) ? payload.matches.length : null,
+          };
+        }
         response.writeHead(status, {
           'content-type': 'application/json',
           'access-control-allow-origin': '*',
@@ -1601,6 +1620,28 @@ async function main() {
     const realIndex = rest.indexOf('--real-answers')
     if (realIndex !== -1 && typeof rest[realIndex + 1] === 'string') {
       realAnswers = readFileSync(resolve(rest[realIndex + 1]), 'utf8').trim()
+    }
+
+    // `--real-conversation <file.js>`: a script assigning the reader's own rows to
+    // `window.__realConversation`. It is read here, in Node, because the HTTP host
+    // is what answers the panel — the in-page `chrome` stub never handles
+    // `messages`. A file for the same reason `--real-answers` is one: it is a real
+    // conversation rather than this repository's fixture.
+    let realConversationRows = null
+    const conversationIndex = rest.indexOf('--real-conversation')
+    if (conversationIndex !== -1 && typeof rest[conversationIndex + 1] === 'string') {
+      const source = readFileSync(resolve(rest[conversationIndex + 1]), 'utf8').trim()
+      // The file assigns to `window.__realConversation`; there is no `window` in
+      // Node, so the object is taken out of the assignment and parsed.
+      const assigned = /=\s*(\[[\s\S]*\])\s*$/.exec(source)
+      if (assigned === null) {
+        throw new Error(`--real-conversation: ${rest[conversationIndex + 1]} is not an assignment to an array`)
+      }
+      realConversationRows = JSON.parse(assigned[1])
+      // Handed to the host the way every other row set is: as the scenario's
+      // messages. The host is a real Node HTTP server, so a page-side global is
+      // no use to it — which is what the first attempt at this got wrong.
+      scenario.messages = realConversationRows
     }
 
     // Errors in the panel are the single most useful thing a preview can report.

@@ -1,7 +1,7 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v114 已交付并入库。** 下一节就是最新的一轮改动；下面标 v108/v107/v106/v105/v104/v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v114 那一段为止即可。
+> **当前状态：v115 已交付并入库。** 下一节就是最新的一轮改动；下面标 v108/v107/v106/v105/v104/v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v115 那一段为止即可。
 >
 > **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（713 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
@@ -19,7 +19,99 @@
 > **已入库**：v3→v109 的全部改动已提交并推送到 `origin/main`。工作区干净。
 > （v108 是 `0bfdf20`，v107 是 `afc1ac1`，v105 是 `4b1f0aa`，v103 是 `91fa7dd`，v102 是 `77b75e3`，v101 是 `cc33dd9`，v99 是 `bff292d`，v92 是 `e3ad6ba`，v91 是 `3d96bf1`，v90 是 `767e4cd`，v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
 
-> ## v114：面板空白多久——一次阴性结论，和它需要的仪器
+> ## v115：让真实对话第一次进得了面板
+
+这一轮问的是：**此前的每一张截图、每一次探针，跑的都是自造的夹具。** 而作者真实会话有 6969 行、
+436 个表格。夹具里的东西是**写夹具的人想得到的东西**——也就是已经被证明能工作的那些形状。
+
+所以本轮做的不是修缺陷，而是**把真实数据接进来**，然后看它在 380px 里长什么样。
+
+### 交付：`--real-conversation <file.js>`
+
+从真实会话里取一段连续对话（用宿主自己的 `describeEvents` 算出行），喂给 preview 的宿主。
+本机选出的一段：**76 行、173307 字符、30 次工具调用、22 段推理、114 个代码块、10 个表格、2 条失败行**。
+
+渲染结果：`rows: 60`、`total: 76`、`more: true`——窗口机制在真实数据上正常工作。
+
+### ★ 三层接错了地方（这是本轮的主要工作）
+
+**① 接在了页面里，而宿主是 Node HTTP 服务。**
+第一版把真实行放进 `window.__realConversation`，然后让页面内的 `chrome` 替身去读。
+但 `messages` 分支**根本不在 `chromeStub` 里**——它在 `makeHost`，一个真正的 Node HTTP 服务。
+症状是「加了 flag 之后还是 4 行」，看起来像 flag 没被解析，实际是**层选错了**。
+正解是 `scenario.messages = realConversationRows`，走与其它行集完全相同的那条路。
+
+**② 我自己写了一版 `describeEvents`，读错了字段。**
+真实的 `tool/call` 事件只有 `{ turn, step, callId, name, arguments }`——`arguments` 是 JSON 字符串，
+**没有 `summary`、没有 `target`**。我按 `summary` 读，于是工具行只剩一个名字（`✓ read`），
+而宿主有真正的 `toolSummary(data)` 会把它变成 `F:\Projects\dsh\黑洞\parts\INTERFACE.md`。
+**我自己写的那版就是我自己以为的形状。** 改用真的 `describeEvents` 之后就没有这层猜测。
+
+**③ 给 `describeEvents` 传了不合约定的 `api`。**
+JSDoc 写的是 `{ isAppendSurfaceEvent } | null`，而 `appended()` 在 `api === null` 时回退到
+`event.surfaceOp === 'append'`。我第一版传 `{ title: '' }`（真值但不合规），于是走进
+`api.isAppendSurfaceEvent(event)` 并抛 `TypeError: api.isAppendSurfaceEvent is not a function`。
+**148 个候选全部抛错**，在探针里读起来像「没有真实数据」——**实际是我的调用不合约定**。
+这个错很值得记：探针把所有候选都丢进 catch 并计数，所以 148 是**一个错 148 次**，不是 148 个问题。
+
+### ★ 一个假阳性：截图看起来「第一行被切了一半」
+
+真实数据的截图顶部，`#earlier` 胶囊下方那行文字看起来缺了上半截。我据此写了逐字符判据，
+第一版报 **`coveredCount: 18`，最严重的字符 100% 被盖住**。
+
+追下去发现三层判据给出三个答案：
+
+| 判据 | 读数 | 含义 |
+| --- | --- | --- |
+| 字符矩形与胶囊相交 | **18** | 布局层 |
+| 与**所有祖先裁剪框**求交后仍相交 | **0** | 可见层 |
+| 在胶囊区域做 `elementFromPoint` 采样 | 命中的是胶囊或 `P` | 绘制层 |
+
+**那 18 个字符矩形位于 `y 54..69`，而滚动区顶边是 `y 84`——它们在裁剪框之外，根本没被绘制。**
+`getBoundingClientRect()` 返回布局位置，**不遵守祖先的 `overflow`**。这正是 v99 记录过的那条错误，
+我在这一轮又踩了一次。
+
+**正面形式的判据**（不再数相交，而是问「最上面那个可见字离胶囊多远」）：
+
+| 读数 | 值 |
+| --- | --- |
+| 已绘制字符数 | 461 |
+| 最上面的可见字 | `。`（` headless 残留。`），y=94 |
+| 胶囊底边 | y=78 |
+| **间隙** | **16px** |
+
+**结论：没有缺陷。** 滚动区上边缘的裁切是正常的，那个 18 是判据造的。
+
+同一轮里另有一次判据错误：第一版**只在当前滚动位置**量遮挡，报 `coveredCount: 18`；
+按滚动位置分三档量（顶 / 中 / 底）才看清 `0 / 15 / 13`——**「只测一个状态」会把
+「只在某个状态下出现」读成「一直存在」或「不存在」**。虽然最终证明两者都是裁剪假象，
+但分档测量本身是对的。
+
+### 测试守卫
+
+`packages/dsh-browser-bridge/test/screenshots.test.js` 新增
+`the preview host can serve a real conversation, not only a fixture`，断言三件事：
+
+- 真实行**经 `scenario.messages`** 交给宿主（`scenario.messages = realConversationRows`）
+- `--real-conversation` 仍在
+- 宿主仍按窗口切片（`const start = Math.max(0, stop - limit)`）——
+  读者自己的历史有 6969 行，一个只能全给或全不给的工具展示不了读者真正看到的面板
+
+### 验证读数（已绿，不必重跑）
+
+- `npm test` → **721 passed, 0 failed, 0 skipped**（720 → 721）
+- `npm run check:extension` → exit 0
+- 画廊 17 张重渲后只有 `SOURCES.json` 指纹变；`search.png` 出现**已记录的焦点环抖动**
+  （1 像素，CSS `(7, 56.5)`），已 `git checkout` 还原
+- 真实数据在 `normal` / `long` / `historyOpen` 三个场景下都进得去（都是 60 行窗口）
+
+### 新增探针（`.tmp-run/`，被 gitignore）
+
+`extract-real-conversation.mjs`（选段，用真的 `describeEvents`）、`probe-tool-call-shape.mjs`
+（真实 `tool/call` 字段）、`why-describe-throws.mjs`（148 个候选为什么全抛错）、
+`why-no-candidates.mjs`、`which-stub.mjs`、`probe-pill-real.js`、`probe-pill-scroll-positions.js`、
+`probe-pill-geometry-precise.js`、`probe-pill-layers.js`（三层判据）、`probe-pill-clearance.js`（正面判据）。
+## v114：面板空白多久——一次阴性结论，和它需要的仪器
 
 ### 结论先说：没有缺陷
 
