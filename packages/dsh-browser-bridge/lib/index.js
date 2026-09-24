@@ -351,6 +351,11 @@ export async function apply(ctx, _config) {
     // source, which is how the picker filled up with rows that were not sessions
     // a person could continue.
     sessions: () => ctx.get?.('sessions'),
+  // The harness's own cross-session full-text search. Optional, resolved per
+  // call like the others: a profile that does not mount it must still run the
+  // panel, and `searchEverySession` reports `available: false` rather than
+  // letting a missing index read as "no such word anywhere in your history".
+  sessionQuery: () => ctx.get?.('sessionQuery'),
     workspaces: () => ctx.get?.('workspaceRegistry'),
     // The same store the screenshot tool writes to, resolved per call for the
     // same reason: a store captured at activation freezes `undefined` if it
@@ -477,6 +482,11 @@ export async function apply(ctx, _config) {
           // from this profile — a state that otherwise looks exactly like "the
           // screenshot worked".
           attachmentService: typeof ctx.get?.('attachments')?.admitPromptContent === 'function',
+        // Whether the session list can be searched by what was said rather than
+        // only by title. `false` is a profile that does not mount the harness's
+        // query service; the panel says so instead of showing "nothing found",
+        // which is the same screen a genuine miss produces.
+        sessionSearch: typeof ctx.get?.('sessionQuery')?.searchSessions === 'function',
           // Counters for the live-output relay. `frames: 0` while a turn is
           // running means the agent event never reached this plugin, which is a
           // different problem from `dropped` climbing, which just means no
@@ -587,6 +597,15 @@ export async function apply(ctx, _config) {
         // panel has 60 of 6969 rows, and answering from those would report a
         // word as absent from a conversation that contains it.
         json(200, { sessionId, ...(await chat.searchMessages(sessionId, query)) })
+        return
+      }
+      if (parsed.action === 'search-sessions') {
+        // Every session, not one. The panel's list filter only ever compared
+        // titles, which are derived from the opening words of a conversation, so
+        // a reader who remembered a phrase from the middle of one had nothing to
+        // type. This is the same service the harness's own sidebar searches with.
+        const query = typeof parsed.query === 'string' ? parsed.query : ''
+        json(200, await chat.searchEverySession(query, parsed.limit))
         return
       }
       if (parsed.action === 'create') {

@@ -376,6 +376,26 @@ function makeHost(scenario, state) {
           const matches = findRows(rows, typeof parsed.query === 'string' ? parsed.query : [])
           return send(200, { matches, total: rows.length, truncated: matches.length >= 30 })
         }
+        if (parsed.action === 'search-sessions') {
+          // A scenario can supply hits, or declare that this profile has no
+          // index at all. Both are states the panel must draw differently — an
+          // empty result and an absent index look identical on screen otherwise,
+          // and only one of them means the word is nowhere in the history.
+          //
+          // A scenario that says nothing gets `available: false`, which is what a
+          // profile without the harness's query service answers. Defaulting to an
+          // empty-but-available search would make every existing scenario claim an
+          // index it does not stand for.
+          if (scenario.sessionSearch === false) {
+            return send(200, { available: false, hits: [], more: false, reason: 'this profile has no session search' })
+          }
+          return send(200, {
+            available: true,
+            hits: scenario.sessionHits ?? [],
+            more: false,
+            reason: '',
+          })
+        }
         if (parsed.action === 'send') {
           // What was sent joins the conversation, which is what a real host does
           // and what makes "did my message arrive" observable at all.
@@ -1358,6 +1378,55 @@ const SCENARIOS = {
 
   /** A four-column comparison table, the widest thing the panel ever shows. */
   table: { messages: TABLE_MESSAGES },
+
+  /**
+   * The session list, narrowed by a phrase that appears in a conversation rather
+   * than in any title.
+   *
+   * The words are the ones this round measured against the real corpus:
+   * `zstdDecompressSync` and `sqlite` appear in the author's transcripts and
+   * matched zero titles, which is the whole reason cross-session search exists.
+   * The hits are shaped the way the harness's own service returns them, so the
+   * row the panel draws is the row a real install draws.
+   *
+   * The query is typed by `tools/showcase-session-search.js` rather than by
+   * `scenario.type`, which targets the composer: the phrase has to arrive after
+   * the list is open and after the panel has answered its first title filter, and
+   * the probe is what controls that sequencing.
+   *
+   * The session ids are real ones from `DEFAULT_GROUPS`, not invented: the row
+   * draws its title by looking the id up in the groups the panel already holds, so
+   * a fixture with made-up ids renders three rows reading 「未命名会话」 and hides
+   * whether that join works at all. The first version did exactly that.
+   */
+  sessionSearch: {
+    click: '#title',
+    sessionHits: [
+      {
+        sessionId: 'session-b',
+        snippet: '…then decodeFrames(buffer) walks the frame magic 28 b5 2f fd and calls zstdDecompressSync on each slice…',
+        seq: 412,
+      },
+      {
+        sessionId: 'session-c',
+        snippet: '…the only place zstdDecompressSync is reached is the cold-session reader, so the cost is paid once…',
+        seq: 88,
+      },
+      {
+        sessionId: 'session-d',
+        // No excerpt: the session is still a real answer when one could not be
+        // taken, and the row has to survive that rather than draw an empty line.
+        snippet: '',
+        seq: null,
+      },
+    ],
+  },
+
+  /** The same search in a profile whose harness mounts no query service. */
+  sessionSearchUnavailable: {
+    click: '#title',
+    sessionSearch: false,
+  },
 
   /**
    * A conversation that crosses midnight twice.

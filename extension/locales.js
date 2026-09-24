@@ -60,6 +60,13 @@ export const zh = Object.freeze({
   // own sidebar has the same bucket and names it 「未分组」, so this is its word
   // rather than one of ours.
   'history.ungrouped': '未分组',
+  // The section that answers a different question from the list above it: not
+  // "which chat is this" but "which chat was that thing said in".
+  'history.inConversations': '对话正文里提到',
+  // Shown when the search could not run. Deliberately not the same sentence as
+  // 「无结果」: an absent index and a genuine miss draw the same empty list, and
+  // only one of them means the word is nowhere in the reader's history.
+  'history.noSearch': '这个配置没有会话检索',
   'tabs.title': '受控标签页',
   'tabs.none': '没有受控标签页',
   'tabs.untitled': '（无标题）',
@@ -311,6 +318,10 @@ export const en = Object.freeze({
 
   'history.empty': 'No chats yet',
   'history.ungrouped': 'Ungrouped',
+  'history.inConversations': 'Mentioned in conversations',
+  // Not the same sentence as "no results": an absent index and a genuine miss
+  // draw the same empty list, and only one of them means the word is nowhere.
+  'history.noSearch': 'No session search in this profile',
   'tabs.title': 'Controlled tabs',
   'tabs.none': 'No controlled tabs',
   'tabs.untitled': '(untitled)',

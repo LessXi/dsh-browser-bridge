@@ -88,6 +88,24 @@ const host = {
   /** Every `POST {action:'search'}` body, in order. */
   searches: [],
   /**
+   * Every `POST {action:'search-sessions'}` body, in order.
+   *
+   * Kept apart from `searches` because they are two different questions: one
+   * finds a phrase inside the conversation on screen, the other finds which
+   * conversation it was said in. A shared array could not tell them apart, and
+   * the panel sends both from the same text field depending on the view.
+   */
+  sessionSearches: [],
+  /**
+   * What the host answers a cross-session search with.
+   *
+   * `null` means this profile has no index, which is a real state — the harness's
+   * query service is optional — and the panel draws it differently from an empty
+   * result. Defaulting to an empty-but-available answer would make every test
+   * claim an index the stub does not stand for.
+   */
+  sessionSearch: null,
+  /**
    * How many requests have reached the chat endpoint, counted at the door.
    *
    * The polls are the subject of their own tests: whether a tick starts a
@@ -414,6 +432,17 @@ globalThis.fetch = async (url, options = {}) => {
         return gate.then(() => respond(answer))
       }
       return respond(answer)
+    }
+    if (body.action === 'search-sessions') {
+      host.sessionSearches.push(body)
+      // `null` is "this profile mounts no index", which the panel must draw as
+      // *could not search* rather than as *found nothing*. A stub that always
+      // answered would make that state unreachable, and the two draw the same
+      // empty list on screen.
+      if (host.sessionSearch === null) {
+        return respond({ available: false, hits: [], more: false, reason: 'this profile has no session search' })
+      }
+      return respond({ available: true, more: false, reason: '', hits: host.sessionSearch })
     }
     // Overridable so the model menu can be driven from here. It answered
     // `empty-catalog` unconditionally, which is a real state the panel must
@@ -5401,6 +5430,112 @@ test('closing the find bar over the list stops narrowing it', async (t) => {
     rows().length,
     unfiltered,
     'and the list it was narrowing is whole again, rather than short for no visible reason',
+  )
+})
+
+test('a phrase that is only in a conversation finds the session that holds it', async (t) => {
+  // The list filter compares titles, and a title is derived from the opening
+  // words of a conversation — so a reader who remembered a phrase from the middle
+  // of one had nothing to type. Measured against the real corpus: four words that
+  // appear in transcripts matched zero rows, while a word from a title matched
+  // sixteen.
+  await settleToIdle()
+  t.onCleanup(() => { host.groups = undefined; host.sessionSearch = null })
+  t.onCleanup(() => closeFindBar())
+  host.groups = [{ id: 'workspace-hit', title: 'A workspace', sessions: [sessionRow()] }]
+  await clockOf('groups')
+  await settle()
+  closeFindBar()
+  await openHistory()
+
+  registry.get('find-open').click()
+  await settle()
+  assert.equal(findBarOpen(), true, 'the bar must be open, or this proves nothing')
+  const field = registry.get('find-input')
+  field.value = 'zstdDecompressSync'
+  field.emit('input', { target: field })
+  await settle()
+
+  // The title filter is what the panel can answer without a round trip, and on
+  // this query it finds nothing — which is exactly the state that used to be the
+  // end of the story.
+  assert.equal(
+    registry.get('history').querySelectorAll('button.session:not(.session-hit)').length,
+    0,
+    'no title contains this word, so the fast filter must come up empty — otherwise this proves nothing',
+  )
+  // The suite shares one panel, so `host.sessionSearches` already holds whatever
+  // earlier tests typed. Only this test's query is asserted — and the assertion is
+  // that the reader's word reached the host at all, which is what makes the row
+  // below an answer rather than a coincidence.
+  assert.ok(
+    host.sessionSearches.some((body) => body.query === 'zstdDecompressSync'),
+    `the host is asked which sessions contain the phrase; it was asked about ${JSON.stringify(host.sessionSearches.map((body) => body.query))}`,
+  )
+
+  // A hit is drawn once the host answers, with the excerpt that says *why* this
+  // session — the part a title cannot carry.
+  host.sessionSearch = [
+    { sessionId: sessionRow().id, snippet: 'a line with zstdDecompressSync in it', seq: 12 },
+  ]
+  field.value = 'zstdDecompressSync '
+  field.emit('input', { target: field })
+  await settle()
+  const hits = () => registry.get('history').querySelectorAll('button.session-hit')
+  assert.equal(hits().length, 1, 'the session the host named is on screen')
+  const drawn = hits()[0]
+  const hitTitle = drawn.querySelector('.session-title')?.textContent ?? ''
+  assert.ok(
+    hitTitle.length > 0,
+    'a hit names the session it belongs to; a row that cannot say which chat it is answers nothing',
+  )
+  // Not just "some text": the name has to come from the session list, or the row
+  // is showing the reader an opaque id. Measured by mutation, replacing the title
+  // with `hit.sessionId` left the suite green — so the assertion asks for the name
+  // the panel actually holds for that session.
+  assert.equal(
+    hitTitle,
+    sessionRow().title,
+    `the row must show the session's own name, not its id (drew ${JSON.stringify(hitTitle)})`,
+  )
+  assert.equal(
+    drawn.querySelector('.session-snippet')?.textContent,
+    'a line with zstdDecompressSync in it',
+    'the excerpt the host chose is the reason the row is there, so it is drawn as given',
+  )
+})
+
+test('a search that could not run does not read as a search that found nothing', async (t) => {
+  // An absent index and a genuine miss draw the same empty list. Only one of them
+  // means the word is nowhere in the reader's history, so the panel has to say
+  // which one happened — it cannot be left to the absence.
+  await settleToIdle()
+  t.onCleanup(() => { host.groups = undefined })
+  t.onCleanup(() => closeFindBar())
+  host.groups = [{ id: 'workspace-nosearch', title: 'A workspace', sessions: [sessionRow()] }]
+  await clockOf('groups')
+  await settle()
+  closeFindBar()
+  await openHistory()
+
+  registry.get('find-open').click()
+  await settle()
+  const field = registry.get('find-input')
+  field.value = 'zzzz'
+  field.emit('input', { target: field })
+  await settle()
+
+  const notes = [...registry.get('history').querySelectorAll('.search-note')]
+    .map((node) => node.textContent.trim())
+  assert.equal(notes.length, 1, 'the reader is told something, rather than shown an empty list')
+  assert.ok(
+    notes[0].length > 0 && !notes[0].includes('sessionQuery'),
+    `the note is for a reader, so it must not name a service: ${notes[0]}`,
+  )
+  assert.equal(
+    registry.get('history').querySelectorAll('button.session-hit').length,
+    0,
+    'a search that did not run must not draw hits',
   )
 })
 

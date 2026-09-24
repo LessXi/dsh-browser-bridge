@@ -220,6 +220,17 @@ const SHOTS = [
     why: 'The host is not running. A dead panel that explains itself and offers the one action that helps.',
   },
   {
+    file: 'session-search.png',
+    scenario: 'sessionSearch',
+    scheme: 'dark',
+    locale: 'zh-CN',
+    // The screenshot has to be taken *after* the probe has typed the phrase: the
+    // scenario only opens the list, and an empty field renders the full list —
+    // a picture of the feature that does not show the feature.
+    probe: 'showcase-session-search.js',
+    why: 'A phrase that appears in a conversation but in no title. The list filter compared titles only, and a title comes from the opening words of a chat — measured, four words from real transcripts matched zero rows while a word from a title matched sixteen. The excerpt under each name is the part a title cannot carry: it says why this session.',
+  },
+  {
     file: 'high-contrast.png',
     scenario: 'normal',
     scheme: 'dark',

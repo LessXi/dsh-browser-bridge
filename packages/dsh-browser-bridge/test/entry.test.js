@@ -128,6 +128,62 @@ async function callRoute(routes, path, { address = '127.0.0.1', method = 'GET' }
   return { status: out.status, body: out.body, json }
 }
 
+test('a phrase search reaches the host, because the route dispatches it', async (t) => {
+  // The chat route is one endpoint serving a dozen actions, and `entry.test.js`
+  // only asserted that the route *exists*. Measured by mutation: changing
+  // `search-sessions` to an impossible condition left every test green, so the
+  // panel could have asked the host and been answered by nothing for as long as
+  // nobody looked. This drives the handler the way the panel does.
+  temporaryHome(t)
+  const plugin = await loadEntry()
+  const { ctx, routes } = fakeHost()
+  await plugin.apply(ctx, undefined)
+
+  const handler = routes.get('/browser-bridge/chat')
+  assert.ok(handler !== undefined, 'the chat route is registered')
+
+  const body = JSON.stringify({ action: 'search-sessions', query: 'zstdDecompressSync' })
+  const out = { status: null, body: '' }
+  const res = {
+    writeHead(status) { out.status = status },
+    end(chunk) { out.body = chunk === undefined ? '' : String(chunk) },
+    write(chunk) { out.body += String(chunk) },
+  }
+  // The handler reads the request body as an async iterable, not through `on`.
+  // A stub built as an event emitter fails with `req is not async iterable`, which
+  // is the plugin telling the truth about the interface it needs.
+  const req = {
+    method: 'POST',
+    url: '/browser-bridge/chat',
+    headers: {},
+    socket: { remoteAddress: '127.0.0.1' },
+    async *[Symbol.asyncIterator]() {
+      yield Buffer.from(body, 'utf8')
+    },
+  }
+  await handler(req, res)
+  // The registered handler starts `serveChatRoute` and returns immediately, so
+  // awaiting the handler awaits nothing. The response lands on a later tick, and
+  // reading it before then finds a status of `null` — which looks exactly like a
+  // route that answered nothing.
+  await new Promise((resolve) => setTimeout(resolve, 0))
+
+  assert.equal(out.status, 200, `the route answered ${out.status}: ${out.body}`)
+  const answer = JSON.parse(out.body)
+  // This profile mounts no query service, so the honest answer is "unavailable".
+  // The point of the assertion is that it is *this* action's answer: an
+  // unrecognised action would produce an error body instead.
+  assert.equal(
+    answer.available,
+    false,
+    `the route must dispatch search-sessions; it answered ${out.body}`,
+  )
+  assert.ok(
+    typeof answer.reason === 'string' && answer.reason.length > 0,
+    'and it says why, rather than answering with an empty list that reads as "nothing found"',
+  )
+})
+
 test('the entry point applies, and registers every route and tool', async (t) => {
   temporaryHome(t)
   const plugin = await loadEntry()

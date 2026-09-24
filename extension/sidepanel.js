@@ -289,6 +289,41 @@ let searchPosition = 0
 let sessionFilter = ''
 
 /**
+ * Hits from searching every session, when the list filter found nothing.
+ *
+ * The list filter compares titles, and a title is derived from the opening words
+ * of a conversation — so a reader who remembers a phrase from the middle of one
+ * has nothing to type. Measured on this machine, four words that appear in real
+ * transcripts matched zero rows while a word from a title matched sixteen.
+ *
+ * Kept apart from `searchHits`, which is the within-conversation search: they
+ * answer different questions ("where in this conversation" against "which
+ * conversation") and share no state beyond the word typed.
+ */
+let sessionHits = []
+
+/**
+ * Whether the last cross-session search reached an index at all.
+ *
+ * An empty result and a missing index draw the same list — nothing — so the panel
+ * cannot tell the reader which one happened unless this is recorded. Only one of
+ * them means "no such word anywhere in your history".
+ */
+let sessionSearchAvailable = true
+
+/** Why the index was unreachable, when it was, phrased for the reader. */
+let sessionSearchReason = ''
+
+/**
+ * Whether a cross-session search is in flight, so the panel can say so.
+ *
+ * A search over 156 sessions crosses an HTTP hop and a SQLite query, which is not
+ * instant; without this the list would show the previous answer for a moment and
+ * look like the query had been ignored.
+ */
+let sessionSearching = false
+
+/**
  * Workspaces the reader has asked to see in full, by group id.
  *
  * Kept as state rather than re-derived on each paint for the same reason the
@@ -2581,6 +2616,11 @@ async function runSearch() {
     searchPosition = 0
     drawHistory()
     renderFind()
+    // The title filter is the fast answer and it is drawn first, because it needs
+    // no round trip. Only when it comes up short is the host asked to search
+    // inside every session, and the answer arrives whenever it arrives — the list
+    // is already on screen either way, so nothing here blocks the reader.
+    runSessionSearch(query)
     return
   }
   // A blank query clears the results rather than searching for nothing: an empty
@@ -2624,6 +2664,72 @@ async function runSearch() {
     if (searchHits.length > 0) await goToMatch(0)
   } finally {
     searching = false
+    renderFind()
+  }
+}
+
+/**
+ * Ask the host which sessions contain the phrase, not which titles match it.
+ *
+ * The session list could only filter titles, and a title is derived from the
+ * opening words of a conversation. So a reader who remembered "the session where
+ * we worked out the sqlite index" had nothing to type: measured on this machine,
+ * `zstdDecompressSync`, `sqlite`, `PAGE_ROWS` and `attachmentId` all appear in
+ * real transcripts and none of them matched a single row, while a word taken from
+ * a title matched sixteen. The filter was working; it was looking in the wrong
+ * place.
+ *
+ * The host answers from the harness's own full-text index, which is the same one
+ * the app's sidebar searches with — so this is a port rather than a second index
+ * built over the same logs, which would be a worse answer that drifts.
+ *
+ * A blank query clears the hits instead of searching for nothing, for the same
+ * reason the within-conversation search does: an empty needle matches everything
+ * and a list of every session is not an answer to anything.
+ *
+ * @param {string} query - The raw text in the find bar.
+ * @returns {Promise<void>} Resolves once the hits have been drawn.
+ */
+async function runSessionSearch(query) {
+  const wanted = typeof query === 'string' ? query.trim() : ''
+  if (wanted.length === 0) {
+    sessionHits = []
+    sessionSearching = false
+    sessionSearchAvailable = true
+    sessionSearchReason = ''
+    drawHistory()
+    renderFind()
+    return
+  }
+  sessionSearching = true
+  // The previous query's hits are dropped before the request goes out, not when
+  // the answer lands: left in place they are the results for a query the reader
+  // has already moved on from, shown under the new one.
+  sessionHits = []
+  drawHistory()
+  renderFind()
+  try {
+    const { payload } = await bridge('/browser-bridge/chat', {
+      method: 'POST',
+      body: { action: 'search-sessions', query: wanted },
+    })
+    // A reply that arrives after the reader has typed on is about a query they
+    // have already left. The check is against the field the reader is typing in,
+    // not against the value passed in, so a slow answer for "sql" cannot land
+    // while "sqlite" is on screen.
+    if (sessionFilter !== wanted.toLowerCase()) return
+    sessionHits = Array.isArray(payload?.hits) ? payload.hits : []
+    sessionSearchAvailable = payload?.available !== false
+    sessionSearchReason = typeof payload?.reason === 'string' ? payload.reason : ''
+  } catch (error) {
+    // A failed search is not an empty history. Reported as unavailable so the
+    // panel says the search did not run rather than that nothing was found.
+    sessionHits = []
+    sessionSearchAvailable = false
+    sessionSearchReason = error.message
+  } finally {
+    sessionSearching = false
+    drawHistory()
     renderFind()
   }
 }
@@ -3597,6 +3703,85 @@ function drawHistory() {
       })
       item.append(more)
       list.append(item)
+    }
+  }
+
+  // What was *said*, when the list above came up short.
+  //
+  // Drawn after the titles rather than instead of them, because the two answers
+  // are different in kind: a title match is the session you named, and a phrase
+  // match is a session you only remember. Showing hits first would put the
+  // session the reader was looking for below ones that merely mention the word.
+  //
+  // Only when the reader has typed something. With an empty query the section
+  // would list every session that contains any common word — a second session
+  // list, longer than the first.
+  if (sessionFilter.length > 0) {
+    const heading = document.createElement('p')
+    heading.className = 'group-label'
+    // The heading says what the section is, and the three states it can be in are
+    // told apart in words rather than by an empty list: found nothing, still
+    // searching, and no index to search.
+    heading.textContent = t('history.inConversations')
+    fragment.append(heading)
+
+    if (sessionSearching) {
+      const note = document.createElement('p')
+      note.className = 'search-note'
+      note.textContent = t('find.searching')
+      fragment.append(note)
+    } else if (!sessionSearchAvailable) {
+      const note = document.createElement('p')
+      note.className = 'search-note'
+      // The reason is the host's sentence when it gave one. What matters is that a
+      // search that could not run does not read as a search that found nothing:
+      // both draw the same absence, and only one of them means "not in your
+      // history".
+      note.textContent = sessionSearchReason.length > 0
+        ? `${t('history.noSearch')}：${sessionSearchReason}`
+        : t('history.noSearch')
+      fragment.append(note)
+    } else if (sessionHits.length === 0) {
+      const note = document.createElement('p')
+      note.className = 'search-note'
+      note.textContent = t('find.none')
+      fragment.append(note)
+    } else {
+      const hits = document.createElement('div')
+      hits.setAttribute('role', 'list')
+      for (const hit of sessionHits) {
+        const item = document.createElement('div')
+        item.setAttribute('role', 'listitem')
+        item.className = 'session-item'
+        const row = document.createElement('button')
+        row.type = 'button'
+        row.className = 'session session-hit'
+        // Which session this is, so the same session found twice reads as one
+        // session rather than two identical-looking rows.
+        const owner = groups
+          .flatMap((group) => group.sessions)
+          .find((session) => session.id === hit.sessionId)
+        const title = document.createElement('span')
+        title.className = 'session-title'
+        title.textContent = owner?.title || t('session.untitled')
+        row.append(title)
+        // The excerpt is why this row is here — it is the only part that shows
+        // *where* the words are. A hit without one still gets a row, because the
+        // session is a real answer even when the excerpt could not be taken.
+        if (hit.snippet.length > 0) {
+          const snippet = document.createElement('span')
+          snippet.className = 'session-snippet'
+          snippet.textContent = hit.snippet
+          row.append(snippet)
+        }
+        row.addEventListener('click', () => {
+          selectSession(hit.sessionId)
+          showView('chat')
+        })
+        item.append(row)
+        hits.append(item)
+      }
+      fragment.append(hits)
     }
   }
 

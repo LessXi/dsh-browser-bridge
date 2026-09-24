@@ -72,6 +72,28 @@ const TITLE_MAX = 60
  */
 const SEARCH_MAX = 30
 
+/**
+ * Most sessions one cross-session search may return.
+ *
+ * Smaller than `SEARCH_MAX` on purpose, because the two lists answer different
+ * questions. Within a conversation, the matches are a map of where a word appears
+ * and the reader wants the shape of it. Across sessions there may be 156 of them,
+ * and a list of 156 hits is a second session list — what the reader needs is the
+ * handful of sessions that are actually about the thing, which is what the
+ * service's ranking already puts first.
+ */
+const SESSION_SEARCH_MAX = 20
+
+/**
+ * Longest an excerpt from another session may be.
+ *
+ * The service returns a snippet chosen around the match. This only bounds it: a
+ * row in a list of twenty is a signpost to a session, not the reading itself, and
+ * an excerpt long enough to hold the whole surrounding paragraph would turn the
+ * search results into a transcript that happens to be shuffled.
+ */
+const SESSION_SNIPPET_MAX = 140
+
 /** Longest an attachment notice may be before it is clipped. */
 const CONTEXT_LABEL_MAX = 60
 
@@ -939,6 +961,7 @@ export function createChat(ports) {
   const commandsOf = () => resolvePort(ports.commands)
   const workspacesOf = () => resolvePort(ports.workspaces)
   const attachmentsOf = () => resolvePort(ports.attachments)
+  const sessionQueryOf = () => resolvePort(ports.sessionQuery)
 
   /**
    * An abort signal that never aborts.
@@ -1184,6 +1207,68 @@ export function createChat(ports) {
       // is how someone concludes their conversation does not contain a word it
       // does contain.
       truncated: matches.length >= SEARCH_MAX,
+    }
+  }
+
+  /**
+   * Search every session, not one.
+   *
+   * The panel's session list could only filter titles, and a title is derived from
+   * the opening words of a conversation — so a reader who remembers "the session
+   * where we worked out the sqlite index" had nothing to type. Measured on this
+   * machine: `zstdDecompressSync`, `sqlite`, `PAGE_ROWS` and `attachmentId` all
+   * appear in real transcripts and none of them matched a single row, while a word
+   * taken from a title matched sixteen. The filter was working; it was looking in
+   * the wrong place.
+   *
+   * The harness already answers exactly this question. `sessionQuery` is its own
+   * full-text service — SQLite-backed, ranked, with snippets and cursors — and it
+   * is what the official sidebar's search goes through. So this is a port, not an
+   * index: building a second search over the same logs would be a worse answer
+   * that drifts, and a reader searching their own history deserves the same index
+   * the rest of the app uses.
+   *
+   * Absent service is a state, not a crash. `sessionQuery` is optional and this
+   * plugin must run in profiles that do not mount it, so the caller is told
+   * `available: false` and the panel can say so instead of showing nothing found —
+   * an empty result and a missing index look identical otherwise, and only one of
+   * them means "no such word".
+   *
+   * @param {string} query - What to look for.
+   * @param {number} [limit] - Maximum sessions to return.
+   * @returns {Promise<{ available: boolean, hits: object[], more: boolean, reason: string }>} Hits, whether a page remains, and why when unavailable.
+   */
+  const searchEverySession = async (query, limit) => {
+    const service = sessionQueryOf()
+    const wanted = typeof query === 'string' ? query.trim() : ''
+    if (service === undefined || typeof service.searchSessions !== 'function') {
+      // The reason is spelled for a reader, not for a log. It is shown in the
+      // panel, so it says what is missing rather than naming a service.
+      return { available: false, hits: [], more: false, reason: 'this profile has no session search' }
+    }
+    if (wanted.length === 0) return { available: true, hits: [], more: false, reason: '' }
+
+    const page = await service.searchSessions({
+      query: wanted,
+      limit: Number.isInteger(limit) && limit > 0 ? limit : SESSION_SEARCH_MAX,
+    })
+    const items = Array.isArray(page?.items) ? page.items : []
+    return {
+      available: true,
+      hits: items.map((hit) => ({
+        sessionId: asText(hit?.sessionId),
+        // The service's own excerpt, not a slice of the raw event: it is chosen
+        // around the match, which is the part the reader is looking for.
+        snippet: oneLine(asText(hit?.snippet), SESSION_SNIPPET_MAX),
+        // Which event this was, so the panel can open the session at it later
+        // without a second search.
+        seq: Number.isInteger(hit?.seq) ? hit.seq : null,
+      })).filter((hit) => hit.sessionId.length > 0),
+      // A cursor is the service saying there is more. The panel does not page yet,
+      // so it is reported rather than dropped: a capped list that reads as
+      // complete is how someone concludes their history lacks a word it contains.
+      more: page?.nextCursor !== undefined,
+      reason: '',
     }
   }
 
@@ -1453,7 +1538,7 @@ export function createChat(ports) {
     }
   }
 
-  return { listSessions, readMessages, searchMessages, createSession, send, cancel, readModels, selectModel, readImage, services }
+  return { listSessions, readMessages, searchMessages, searchEverySession, createSession, send, cancel, readModels, selectModel, readImage, services }
 }
 
 /**

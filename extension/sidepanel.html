@@ -1420,6 +1420,39 @@
       .session[aria-current="true"] { background: var(--accent-soft); }
       .session-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .session-time { flex: none; font-size: var(--text-xs); color: var(--faint); }
+      /* A row that matched inside the conversation rather than in the title. It
+         stacks, because the two lines answer different questions: the title says
+         *which chat*, the excerpt says *why this one* — and the excerpt is the
+         only part that shows where the words are. */
+      .session-hit {
+        display: block;
+        padding: 7px 10px;
+      }
+      .session-hit .session-title { display: block; }
+      .session-snippet {
+        margin-top: 2px;
+        /* Two lines at most. The excerpt is a signpost to a session, not the
+           reading itself: unbounded, one hit whose match sits in a long paragraph
+           would fill the screen and push every other result off it.
+           `-webkit-box` is the display mode here, and it is the only one written —
+           a `display: block` above it would be a second writer for the same
+           property, which is how this file's earlier drift bugs started. */
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+        overflow: hidden;
+        font-size: var(--text-xs);
+        color: var(--muted);
+        overflow-wrap: anywhere;
+      }
+      /* A note inside the list — searching, nothing found, or no index to search.
+         Quieter than a row, because it is about the search rather than a result. */
+      .search-note {
+        margin: 0;
+        padding: 4px 10px 8px;
+        font-size: var(--text-xs);
+        color: var(--faint);
+      }
       /* The row that stands for the sessions this workspace is not showing. It
          is deliberately left-aligned and quieter than a session: it is a
          control about the list, not an item in it, and the eye has to be able

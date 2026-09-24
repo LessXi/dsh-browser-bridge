@@ -1345,3 +1345,74 @@ test('an incomplete request is refused before it reaches the wire', async () => 
   assert.deepEqual(await chat.selectModel({ sessionId: 's', provider: 'p', model: 'm' }), { selected: false, reason: 'the harness returned no selection' })
   assert.equal(called, 1)
 })
+
+test('a session search goes through the harness index, and says so when there is none', async () => {
+  // The list filter could only compare titles, and a title is derived from the
+  // opening words of a conversation — so a reader who remembered a phrase from
+  // the middle of one had nothing to type. Measured on this machine: four words
+  // that appear in real transcripts matched zero rows, while a word taken from a
+  // title matched sixteen. The filter worked; it looked in the wrong place.
+  //
+  // The harness already answers this question, so this is a port rather than a
+  // second index over the same logs. What is asserted here is that the port is
+  // actually used, and that a profile without it is reported as *unavailable*
+  // rather than as an empty result — the two draw the same list, and only one of
+  // them means the word is nowhere in the reader's history.
+  const seen = []
+  const { chat } = chatWith([], {
+    ports: {
+      sessionQuery: {
+        searchSessions: async (request) => {
+          seen.push(request)
+          return {
+            items: [
+              { sessionId: 'session-b', seq: 412, snippet: 'a line with zstdDecompressSync in it' },
+              // A hit with no excerpt still names a session, and dropping it
+              // would answer "which chats" with fewer chats than there are.
+              { sessionId: 'session-c', seq: 88, snippet: '' },
+            ],
+            nextCursor: 'more-please',
+          }
+        },
+      },
+    },
+  })
+
+  const found = await chat.searchEverySession('zstdDecompressSync')
+  assert.equal(found.available, true)
+  assert.deepEqual(seen, [{ query: 'zstdDecompressSync', limit: 20 }])
+  assert.deepEqual(
+    found.hits.map((hit) => hit.sessionId),
+    ['session-b', 'session-c'],
+    'every hit names a session, including one whose excerpt could not be taken',
+  )
+  // The excerpt is the service's own, chosen around the match — that is the part
+  // the reader is looking for, and re-deriving it here would be a second answer.
+  assert.equal(found.hits[0].snippet, 'a line with zstdDecompressSync in it')
+  assert.equal(found.hits[0].seq, 412)
+  // A cursor is the service saying there is more. Reported rather than dropped:
+  // a capped list that reads as complete is how someone concludes their history
+  // lacks a word it contains.
+  assert.equal(found.more, true)
+
+  // A blank query is not a search for everything.
+  seen.length = 0
+  const blank = await chat.searchEverySession('   ')
+  assert.deepEqual(blank.hits, [])
+  assert.deepEqual(seen, [], 'a blank query must not reach the index at all')
+})
+
+test('a missing session index reads as unavailable, not as nothing found', async () => {
+  // Absent service is a state, not a crash: this plugin has to run in profiles
+  // that do not mount the harness's query service, and the panel must be able to
+  // tell the reader which of the two empty lists they are looking at.
+  const { chat } = chatWith([])
+  const answer = await chat.searchEverySession('anything')
+  assert.equal(answer.available, false)
+  assert.deepEqual(answer.hits, [])
+  // The reason is a sentence for a reader, not a service name for a log.
+  assert.ok(
+    answer.reason.length > 0 && !answer.reason.includes('sessionQuery'),
+    `the reason is shown in the panel, so it must not name the service: ${answer.reason}`,
+  )
+})
