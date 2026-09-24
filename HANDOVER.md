@@ -1,7 +1,7 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v113 已交付并入库。** 下一节就是最新的一轮改动；下面标 v108/v107/v106/v105/v104/v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v113 那一段为止即可。
+> **当前状态：v114 已交付并入库。** 下一节就是最新的一轮改动；下面标 v108/v107/v106/v105/v104/v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v114 那一段为止即可。
 >
 > **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（713 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
@@ -19,7 +19,84 @@
 > **已入库**：v3→v109 的全部改动已提交并推送到 `origin/main`。工作区干净。
 > （v108 是 `0bfdf20`，v107 是 `afc1ac1`，v105 是 `4b1f0aa`，v103 是 `91fa7dd`，v102 是 `77b75e3`，v101 是 `cc33dd9`，v99 是 `bff292d`，v92 是 `e3ad6ba`，v91 是 `3d96bf1`，v90 是 `767e4cd`，v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
 
-> ## v113：装得下的表格在撒谎——上一轮我自己引入的缺陷
+> ## v114：面板空白多久——一次阴性结论，和它需要的仪器
+
+### 结论先说：没有缺陷
+
+本轮问的是「面板打开之后、内容到达之前，读者盯着看多久空白」。答案是**约两帧、60ms**，
+四个状态（`normal` / `hostDown` / `empty` / `noBridge`）都一样。**这个数字读者感知不到，所以没有要修的东西。**
+
+这一轮的交付因此不是修复，而是**让这个问题第一次可以被问**——以及把答案如实记下来。
+
+### 为什么这个问题此前问不出来
+
+`--probe` 在**页面加载完成之后**求值。那时答案早就没了：
+
+| 探针 | 读数 | 能说明什么 |
+| --- | --- | --- |
+| `probe-first-paint.js` | `msSinceNavigation: 1356`、`rowCount: 4` | 只能说明内容**已经**到了 |
+| `probe-load-timeline.js` | `firstDataAt: 54ms` | 只能说明数据什么时候到 |
+
+**空白的那一段，截图看不见，事后的读数也恢复不了。** 它必须**在发生时**被采样。
+
+### 新增工具能力：逐帧启动记录
+
+`tools/preview.mjs` 在 `Page.addScriptToEvaluateOnNewDocument` 里注入一个采样器
+（同一机制此前已用于装 `chrome` 替身与固定光标闪烁）。它逐帧把这一刻的面板记进
+`window.__previewStartup`：
+
+```js
+{ at, rows, chars, screen, blocked }
+```
+
+- `rows` / `chars`：`#transcript` 的行数与字数
+- **`screen`：整个面板的可见文字长度**（见下，这一项是判据改对的关键）
+- `blocked`：`#blocked` 浮层是否显示
+
+**用 `requestAnimationFrame` 而不是定时器**：问的是「读者看到了什么」，而这件事由合成器决定。
+定时器量的是时钟，不是屏幕。实测帧间隔中位数 **17ms**、最大 **18ms**，覆盖 1934ms 窗口——
+所以 400ms 的延迟会是约 24 帧宽，**不可能漏掉**（`.tmp-run/probe-recorder-resolution.js`）。
+
+### ★ 判据的错误：把已经解释过的界面读成没解释
+
+第一版判据只看 `#transcript` 的行数，于是在 `hostDown` 场景报
+**「80 帧全是空白、没有任何解释」**——而那时 `#blocked` 浮层正显示着「连不上 dsh web」。
+
+**浮层是 `#transcript` 的兄弟，不是它的子节点。**
+
+改成问**整个面板**（`#stage` 的文字）之后，四个场景的读数都变成「2 帧 / 约 60ms」。
+判据错会造出缺陷——这是本仓库记录过的同一类错误，这次的表现形式是「看错了元素」。
+
+### 读到的一半与读不到的一半
+
+`probe-load-timeline.js` 明确报出它**判不了**什么（`cannotMeasure` 与 `needs` 两个字段），
+而不是用一个在错误时刻读到的数字冒充结论。这是本轮建立的习惯：
+**判据要先说清自己覆盖了什么、没覆盖什么。**
+
+### 测试守卫守的是仪器
+
+`packages/dsh-browser-bridge/test/screenshots.test.js` 新增
+`the preview tool records the first frames, before the panel has anything to say`，断言三件事：
+
+- 记录器仍在（`window.__previewStartup = samples`）
+- **逐帧**采样（`requestAnimationFrame(sample)`），不是定时器
+- 记录的是**整个面板**（`document.getElementById('stage')`），不是单个元素
+
+守卫的是能力而不是产品行为：记录器一旦消失，「空白多久」就再也问不出来，而套件里没有别的东西会发现。
+**阴性结论只有在产生它的仪器还有效时才有价值。**
+
+### 验证读数（已绿，不必重跑）
+
+- `npm test` → **720 passed, 0 failed, 0 skipped**（719 → 720）
+- `npm run check:extension` → exit 0
+- 画廊 17 张重渲后只有 `SOURCES.json` 指纹变，**图片字节未变**——注入的记录器对渲染没有副作用
+- 四个场景：`normal` 58ms / `hostDown` 62ms / `empty` 59ms / `noBridge` 56ms，全部 2 帧
+
+### 新增探针（`.tmp-run/`，被 gitignore）
+
+`probe-first-paint.js`（稳定后的状态）、`probe-load-timeline.js`（数据何时到，并明说自己判不了什么）、
+`probe-blank-frames.js`（判据本体，两版都留着）、`probe-recorder-resolution.js`（判据分辨率）。
+## v113：装得下的表格在撒谎——上一轮我自己引入的缺陷
 
 v112 给表格加了「右边还有内容」的渐隐提示。**这一轮发现那条提示对装得下的表格是假的**，而我上一轮
 既没有量过这种情况，也没有为它写过测试。

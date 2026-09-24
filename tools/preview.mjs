@@ -1656,6 +1656,54 @@ async function main() {
       })()`,
     }, sessionId)
 
+    // Record what the panel looked like on every frame, from before the panel's
+    // own script runs.
+    //
+    // A probe cannot answer "how long was the panel blank" from inside the page,
+    // because `--probe` is evaluated after the load settles — by then the answer
+    // is long gone. Measured: a probe asking that question reported
+    // `msSinceNavigation: 1356` with four rows already drawn, and could only say
+    // that content *had* arrived. The blank interval is exactly the part a
+    // screenshot cannot show and a settled reading cannot recover, so it has to be
+    // sampled as it happens.
+    //
+    // Per frame rather than on a timer: the question is what a reader *saw*, and
+    // the compositor is what decides that. Samples are appended to an array the
+    // probe reads back through `window.__previewStartup`.
+    // `rows` and `chars` describe the transcript, but whether the *screen* is blank
+    // is a question about the whole panel: the blocked surface is a sibling overlay,
+    // so a reading that watched only the transcript called a fully explained
+    // "cannot connect" screen unexplained. `screen` is the panel's own visible text.
+    //
+    // Note for anyone editing the string below: it is injected JavaScript, so a `//`
+    // comment becomes part of it and breaks the page. Explanations go out here.
+    await cdp.send('Page.addScriptToEvaluateOnNewDocument', {
+      source: `(() => {
+        const samples = []
+        window.__previewStartup = samples
+        const begin = performance.now()
+        const sample = () => {
+          const transcript = document.getElementById('transcript')
+          if (transcript === undefined || transcript === null) {
+            samples.push({ at: Math.round(performance.now() - begin), why: 'no transcript yet' })
+          } else {
+            const panel = document.getElementById('stage') ?? document.body
+            const blocked = document.getElementById('blocked')
+            const blockedShown = blocked !== null && blocked.hidden !== true
+            samples.push({
+              at: Math.round(performance.now() - begin),
+              rows: transcript.children.length,
+              chars: transcript.textContent.length,
+              screen: (panel.textContent ?? '').trim().length,
+              blocked: blockedShown,
+            })
+          }
+          requestAnimationFrame(sample)
+        }
+        requestAnimationFrame(sample)
+      })()`,
+    }, sessionId)
+
     const load = new Promise((ok) => cdp.on('Page.loadEventFired', ok))
     // `--page options` renders the settings page instead of the side panel.
     // Both are surfaces of the same product, and the settings page is the gate

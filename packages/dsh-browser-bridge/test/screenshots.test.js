@@ -517,6 +517,45 @@ test('the preview tool can carry a real answer into the page, and does not inven
   )
 })
 
+test('the preview tool records the first frames, before the panel has anything to say', () => {
+  // A probe cannot answer "how long was the panel blank". `--probe` is evaluated
+  // after the load settles, and by then the answer is gone: measured, a probe
+  // asking that question reported `msSinceNavigation: 1356` with four rows already
+  // drawn, and could say only that content *had* arrived.
+  //
+  // The blank interval is the part a screenshot cannot show at all and a settled
+  // reading cannot recover, so the tool samples it per frame through
+  // `Page.addScriptToEvaluateOnNewDocument` — the same mechanism the `chrome`
+  // stand-in already uses to exist before the panel's own script does.
+  //
+  // This assertion guards the instrument, not the product: with the recorder gone,
+  // the question cannot be asked at all, and nothing else in the suite would
+  // notice. It is also what keeps the honest reading possible — the measurement
+  // came back negative (about two frames, 60ms, in every state tried), and a
+  // negative result is only worth anything while the instrument that produced it
+  // still works.
+  const preview = readFileSync(join(root, 'tools', 'preview.mjs'), 'utf8')
+
+  assert.ok(
+    /window\.__previewStartup = samples/.test(preview),
+    'the preview tool no longer records the startup frames, so "how long was the panel blank" is unanswerable',
+  )
+  // Per frame, not on a timer: the question is what a reader saw, and the
+  // compositor is what decides that. A sampler on `setTimeout` would measure the
+  // clock rather than the screen.
+  assert.ok(
+    /requestAnimationFrame\(sample\)/.test(preview),
+    'the startup sampler must run per frame: a timer measures the clock, not what was painted',
+  )
+  // And it must record the panel, not one element of it. Watching only the
+  // transcript called a fully explained "cannot connect" screen unexplained,
+  // because the blocked surface is the transcript's sibling rather than its child.
+  assert.ok(
+    /document\.getElementById\('stage'\)/.test(preview),
+    'the startup sampler must record the whole panel: the blocked surface is not inside the transcript',
+  )
+})
+
 test('every floating surface can be opened and dismissed, so it never hides the conversation', () => {
   // Overlapping the page is what a floating surface is for; hiding a row the
   // reader can never uncover is the defect. This repository fixed that once — a
