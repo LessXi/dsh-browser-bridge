@@ -2659,6 +2659,95 @@ test('the working row comes back with the conversation', async () => {
   })
 })
 
+test('the composer leaves with the conversation it writes to', async () => {
+  // Every control in the composer acts on `currentSessionId`: the field composes a
+  // message for it, the button delivers it, and the model picker changes the model
+  // *that session* runs on. Over the session list there is no such session on
+  // screen — `renderTitle` hides the one element that names it — so a live
+  // composer there changes a conversation the reader cannot see.
+  //
+  // Measured in a real browser with the list open, choosing a model really did
+  // send `{action: 'select-model', sessionId: 'session-a'}` while the screen showed
+  // only sessions. The panel already states the rule, about the find bar: a control
+  // that cannot act on what is on screen lies about what is possible.
+  //
+  // The round trip is the point. A one-way fix that hides the composer and never
+  // brings it back is worse than the defect: the reader returns to the
+  // conversation and finds the field gone.
+  await settleToIdle()
+  const composer = registry.get('composer')
+
+  assert.equal(currentViewInPanel(), 'chat', 'this test needs to start in the conversation')
+  assert.equal(composer.hidden, false, 'the composer was already hidden in the conversation')
+
+  registry.get('title').click()
+  await settle()
+  assert.equal(currentViewInPanel(), 'history', 'the click did not open the session list')
+  assert.equal(
+    composer.hidden,
+    true,
+    'the composer stayed live over the session list, where its controls act on a conversation that is not on screen',
+  )
+
+  registry.get('title').click()
+  await settle()
+  assert.equal(currentViewInPanel(), 'chat', 'the click did not come back to the conversation')
+  assert.equal(
+    composer.hidden,
+    false,
+    'the composer did not come back with the conversation, so the field the reader composes in is gone',
+  )
+})
+
+test('a staged context does not ride under the session list', async () => {
+  // The chips above the field are pages waiting to be sent with the next message.
+  // Over a list there is no next message, and a chip sitting under a list of
+  // sessions reads as something that will be attached to whichever one is opened.
+  //
+  // This is the same shape as the composer and is asserted separately because it
+  // has its own writer: `renderContexts` owns that element's visibility and runs
+  // on its own schedule, so a repaint that ignored the view rule would pop the
+  // chips back under the list.
+  await settleToIdle()
+  const contexts = registry.get('contexts')
+
+  // Stage one through the panel's own path rather than by writing to the DOM, so
+  // the test drives what a reader's action drives. The chips come from
+  // `chrome.tabs.query`, and `refreshChips` runs that poll.
+  //
+  // Spread the fixture's own tab rather than substituting one: this suite shares a
+  // single panel instance, so a fabricated page left behind changes what the tests
+  // after this one see — inventing `Example Domain` here made the icon test look
+  // for an icon that page never had, and made a later mention look like a second
+  // promise of the same tab.
+  const originalTab = host.tab
+  const originalUrls = host.tabUrls
+  host.tab = { ...originalTab, title: 'Example Domain', url: 'https://example.com/' }
+  if (Array.isArray(originalUrls)) host.tabUrls = [host.tab.url]
+  await refreshChips()
+  assert.equal(currentViewInPanel(), 'chat', 'this test needs to start in the conversation')
+  assert.equal(contexts.children.length > 0, true, 'no chip was staged, so this test cannot prove anything')
+  assert.equal(contexts.hidden, false, 'the staged chip was not drawn in the conversation')
+
+  registry.get('title').click()
+  await settle()
+  assert.equal(
+    contexts.hidden,
+    true,
+    'the staged chip stayed visible under the session list, where there is no message to send it with',
+  )
+
+  registry.get('title').click()
+  await settle()
+  assert.equal(contexts.hidden, false, 'the staged chip did not come back with the conversation')
+
+  // Hand the suite back the fixture's own tab, for the reason noted above.
+  host.tab = originalTab
+  if (originalUrls === undefined) delete host.tabUrls
+  else host.tabUrls = originalUrls
+  await refreshChips()
+})
+
 test('a reply streaming in another session is not drawn on this one', async () => {
   // `live` carries the session it belongs to, and `applyDelta` refuses frames
   // for another session — but switching sessions does not go through

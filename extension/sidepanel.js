@@ -170,6 +170,7 @@ const blockedTitle = document.getElementById('blocked-title')
 const blockedBody = document.getElementById('blocked-body')
 const blockedAction = document.getElementById('blocked-action')
 const contexts = document.getElementById('contexts')
+const composer = document.getElementById('composer')
 const input = document.getElementById('input')
 const sendButton = document.getElementById('send')
 const modelButton = document.getElementById('model')
@@ -1515,7 +1516,11 @@ function renderContexts() {
     chips.push(chip)
   }
 
-  contexts.hidden = chips.length === 0
+  // The list is open, so there is no message these chips could be sent with.
+  // Applied here rather than only in `applyChatFooter` because this function runs
+  // on its own schedule too, and a repaint that ignored the rule would pop the
+  // chips back under the session list.
+  contexts.hidden = chatFooterHidden || chips.length === 0
   if (chips.length > 0) contexts.append(...chips)
 }
 
@@ -3423,14 +3428,69 @@ function renderChrome() {
 }
 
 /**
- * Switch between the conversation and the history.
- * @param {'chat'|'history'} next - The view to show.
+ * Whether the footer's chat-only parts are hidden because the list is open.
+ *
+ * Held as its own flag rather than read back off the elements, because
+ * `renderContexts` also owns `#contexts.hidden` and answers a different question —
+ * whether there are any chips to show. Reading either element to decide what to
+ * do about the other is how two writers to one property begin disagreeing.
+ */
+let chatFooterHidden = false
+
+/**
+ * Apply the view rule to every footer part that belongs to the conversation.
+ *
+ * `renderContexts` is called rather than assigning `contexts.hidden` here, because
+ * that element has one writer and this is not it. Writing it in both places is
+ * what this file warns about elsewhere, and it would also make the rule in
+ * `renderContexts` unverifiable: with both in place, deleting either one changed
+ * nothing observable, and a mutation that removed the rule stayed green.
+ *
  * @returns {void}
  */
+function applyChatFooter() {
+  composer.hidden = chatFooterHidden
+  renderContexts()
+}
+
 function showView(next) {
   view = next
   transcript.hidden = next !== 'chat'
   history.hidden = next !== 'history'
+  // The composer goes with the conversation it writes to.
+  //
+  // Every control in it acts on `currentSessionId`: the field composes a message
+  // for that session, the send button delivers it, and the model picker changes
+  // the model *that session* runs on. Measured with the session list open, all
+  // three were live — the picker opened, and choosing a model really did send
+  // `{action: 'select-model', sessionId: 'session-a'}` — while the screen showed
+  // only the list, with the title button (the one element that names the current
+  // session) hidden by `renderTitle`. The reader was changing a conversation
+  // they could not see, from a screen that named no target.
+  //
+  // The panel already has this rule written down, about the find bar:
+  //
+  //   a control that cannot act on what is on screen is a control that lies
+  //   about what is possible
+  //
+  // The find bar obeys it — over the list it relabels itself and hides the arrows
+  // that step between matches. The composer did not. Rather than relabel each
+  // control, the whole composer goes: unlike the find bar it has nothing to do
+  // over a list, since there is no draft to narrow and no model to attribute.
+  //
+  // Hidden rather than disabled, because a disabled field still occupies the
+  // screen and still reads as the next thing to fill in. The list has its own
+  // action — opening a session — and that is the one the footer should offer.
+  //
+  // The staged-context chips go with it, for the same reason. A chip is a page
+  // waiting to be sent with the next message; over a list there is no next
+  // message, and a chip sitting under a list of sessions reads as something that
+  // will be attached to whichever one is opened. `renderContexts` owns that
+  // element's visibility, so the rule is stated here rather than assigned here —
+  // two writers to one property is how the composer's own invitation drifted in
+  // the first place.
+  chatFooterHidden = next !== 'chat'
+  applyChatFooter()
   renderTitle()
   titleButton.setAttribute('aria-expanded', String(next === 'history'))
   // The find bar narrows whatever is on screen, so crossing views drops the query

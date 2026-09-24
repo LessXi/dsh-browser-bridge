@@ -446,7 +446,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 709 条
+npm test                          # 全部 711 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -536,7 +536,7 @@ Chrome for Testing 都装进带版本号的目录，写死路径会在一台机�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 709 条
+npm test                 # 711 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -567,7 +567,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面五层测试，709 条。包括真实 Chrome 驱动的快照、点击、输入、截图，
+**已自动化验证**：上面五层测试，711 条。包括真实 Chrome 驱动的快照、点击、输入、截图，
 以及**载入真实扩展的真实 Chromium** 走完整协议并核对页面真的被点到了。扩展的首次连接也已
 在真实 Chrome 里端到端验证过：清空 storage 后，扩展自己读了 health、取了令牌、带着正确令牌
 发起升级（`.tmp-run/probe-enrol-real-browser.js`）。
@@ -678,6 +678,10 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 | ★★ 「不能发」有多个原因，提示必须说对那一个（v105） | 第一版修法写成「没有会话就说『先新建一个会话…』」。而宿主连不上时**新建会话同样不可能成功**——输入框把读者指向了第二个也会失败的动作。是我自己重渲画廊时看到 `host-down.png` 里那句话才发现的。**原因要按「什么才能真正解开读者」排序**：宿主可达性先于会话存在性 |
 | ★ 单向修复要靠断言防住（v105） | 「没有会话就换提示」改一半，会让提示**永远**停在「先新建一个会话…」，建好会话也不回来。所以测试里同时断言了回来那一步——`assert.equal(composer.placeholder, '问点什么…')`。变异 `placeholder-never-goes-back` 证明这条断言抓得住 |
 | ★ 变异脚本要让每条坏法写明「该红哪条测试」（v105） | 两个分支住在两条不同的测试里。如果只问「套件里有没有 `✖`」，一条锚点写错的变异会看起来像「没抓住」。写上 `expects: HOST_TEST` 之后，锚点找不到就直接报错，不会伪装成等价变异 |
+| ★★ 写下一条规则不等于遵守它（v106） | 我在自己的注释里写了「一个属性只能有一个写入者」，然后在两处都写了 `contexts.hidden`。后果由变异脚本指出：**改掉任一处另一处仍然生效**，两个 chip 变异全部漏网（`realCaught: 2/5`）。删掉重复写入、让 `renderContexts` 成为唯一写入者后 5/5。**规则要被测试或变异钉住才算存在。** |
+| ★★ 共享实例的测试必须还原它改过的东西（v106） | `panel-stream` 共用同一个面板实例。为了造一个 chip，我把 `host.tab` **整个换掉**，于是后续的图标测试去找一个那页从未有过的图标、提及测试把同一标签页当成第二次承诺（`3 !== 2`）。改成 `{ ...host.tab, ... }` 并在末尾还原。**测试失败可以指向产品，也可以指向另一个测试——先分清是哪一个。** |
+| ★ 判据要在「非空」的场景上通过才算测到（v106） | 第一版 chip 探针跑在 chip 数为 0 的场景上，报「正确隐藏」——而那种场景里规则根本没被执行。先确认**本来就有东西要隐藏**，再断言它被隐藏了 |
+| ★ 探针不要假设起始状态（v106） | 两版 chip 探针都假设「从对话视图开始」，而 `historyOpen` 场景在截图前已经点过一次标题（`click: '#title'`），启动时就在列表里。转而**先读当前视图、再按真实状态驱动**，读数立刻自洽 |
 
 最后一步在探针上报错 `llm-deepseek: no API key for provider route "deepseek-official"`——
 **这是探针进程拿不到凭据，不是插件缺陷**。已核对 `$DSH_HOME/.credentials.yaml`：里面只有一条

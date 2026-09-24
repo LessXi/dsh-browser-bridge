@@ -1,9 +1,9 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v105 已交付并入库。** 下一节就是最新的一轮改动；下面标 v104/v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v105 那一段为止即可。
+> **当前状态：v106 已交付并入库。** 下一节就是最新的一轮改动；下面标 v105/v104/v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v106 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（709 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（711 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 > （真浏览器 e2e 那 4 条需要机器上有 Playwright Chromium 或 Chrome for Testing；
@@ -16,10 +16,60 @@
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
 >
-> **已入库**：v3→v105 的全部改动已提交并推送到 `origin/main`。工作区干净。
-> （v103 是 `91fa7dd`，v102 是 `77b75e3`，v101 是 `cc33dd9`，v99 是 `bff292d`，v92 是 `e3ad6ba`，v91 是 `3d96bf1`，v90 是 `767e4cd`，v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
+> **已入库**：v3→v106 的全部改动已提交并推送到 `origin/main`。工作区干净。
+> （v105 是 `4b1f0aa`，v103 是 `91fa7dd`，v102 是 `77b75e3`，v101 是 `cc33dd9`，v99 是 `bff292d`，v92 是 `e3ad6ba`，v91 是 `3d96bf1`，v90 是 `767e4cd`，v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
 
-> ## v105：输入框邀请你提问，而发送键拒绝发送
+> ## v106：输入框坐在会话列表底下，改的是你看不见的那个会话
+
+**症状**：读者打开会话列表浏览会话，屏幕上只有列表。而面板底部**完整保留着输入框、发送键与模型选择器**。输入框提示仍是「问点什么…」，模型选择器可点、菜单能打开、选项能选。
+
+**实测**（`.tmp-run/probe-history-model.js`，`historyOpen` 场景，真实点击）：
+```
+historyVisible: true      ← 屏幕上只有列表
+transcriptVisible: false  ← 对话不在屏幕上
+titleVisible: false       ← 唯一能说出「当前会话是谁」的元素被 renderTitle 隐藏
+selectedRows: []          ← 列表里没有任何一行标出「当前」
+实际请求: {"action":"select-model","sessionId":"session-a",...}
+```
+读者在浏览会话列表时选了模型，**改动打在一个屏幕上完全看不见的会话上**，而屏幕上没有任何东西说出这件事落到了谁身上。
+
+**机制**：`extension/sidepanel.js` 的 `showView()` 只管两个滚动容器与标题按钮——`transcript.hidden`、`history.hidden`、`titleButton.hidden = view === 'history'`。页脚从未被它管过，而 `#composer` 里的每一个控件都作用于 `currentSessionId`。
+
+**这个仓库自己写下了判据，只是没有贯彻到自己身上**。查找栏逻辑（`renderFind`，`sidepanel.js` 约 L2680）的注释原文：
+
+> The arrows are hidden for the same reason — a control that cannot act on what is on screen is a control that lies about what is possible.
+
+查找栏遵守了它——在列表上方改写占位符、隐藏上下箭头。而 composer 违反了同一个条规则。
+
+**判据按属性枚举**（`.tmp-run/probe-view-scoped-controls.js`）：两个视图里各扫一遍全部可操作控件，报出「可见 + 可用 + 动作目标是对话」的那些。控件与「非控件的对话表面」（待发送 chip、composer 盒）分开报，因为按 `interactive` 过滤会把 chip 整个漏掉。
+- 修复前：`chatControlsLiveInHistory: ['input', 'model']`，chip 亦然
+- **对照组**：`findControlsInHistory` 已被正确处理 → 证明判据有效，不是恒真
+- 修复后：两项皆为 `[]`，而 `chatSurfacesLiveInChat` 仍非空（**没有修过头**）
+
+**修法**（`extension/sidepanel.js`）：
+- 新增 `let chatFooterHidden = false` 与 `applyChatFooter()`，在 `showView()` 里设标志并调用
+- 隐藏 `#composer`；`#contexts`（待发送 chip）同理——它是「下一条消息要带的页面」，列表上方没有下一条消息
+- **隐藏而不是禁用**：灰掉的输入框仍占屏幕、仍读作「接下来该填这里」，而列表有自己的动作（开会话），那才是页脚该提供的
+
+**★ 我自己写下了规则又违反了它**。第一版在**两处**都写 `contexts.hidden`：`applyChatFooter()` 里写一次，`renderContexts()` 里再写一次。变异脚本抓到了后果——**改掉任一处，另一处仍然生效，两个 chip 变异全部漏网（`realCaught: 2/5`）**。删掉 `applyChatFooter()` 里那次重复写入、让 `renderContexts` 成为该属性的唯一写入者之后 **5/5 命中**。这正是我在自己的注释里写的「two writers to one property is how drift begins」——写下来不等于遵守。
+
+**★ 测试污染（自己造成并修掉）**：`panel-stream` 共享一个面板实例。我的 chip 测试为了造一个 chip，把 `host.tab` **整个换成了** `{title:'Example Domain',...}`，于是后续测试看到的是那一页：图标测试去找一个它从未有过的图标（`the chip draws no site icon`），提及测试把同一个标签页当成第二次承诺（`the same page was promised twice`，`3 !== 2`）。改为 `{ ...host.tab, title, url }`（仓库既有写法）**并在测试末尾还原 `host.tab` 与 `host.tabUrls`**，两条既有测试恢复绿。
+
+**测试**（`packages/dsh-browser-bridge/test/panel-stream.test.js` 新增 2 条）：
+- `the composer leaves with the conversation it writes to` —— 断言往返三档（对话里可见 → 列表里隐藏 → **切回来必须恢复**）。第三档是防单向修复的：只隐藏不恢复比原缺陷更糟，读者切回来发现输入框没了。
+- `a staged context does not ride under the session list` —— 先确认真的有 chip（否则这条测试什么都不证明），再断言往返。
+
+**变异**（`.tmp-run/mutate-view-scope.mjs`）**5/5 命中**、`anchorProblems: []`、`restoredExactly: true`：`composer-stays-live-over-the-list`、`composer-never-comes-back`、`chips-ride-under-the-list`、`repaint-pops-the-chips-back`、`flag-never-set`。
+
+**验证读数**（已绿，不必重跑）：
+- `npm test` → **711 passed, 0 failed, 0 skipped**
+- `npm run check:extension` → exit 0
+- 真实浏览器往返：`composerPresentInChat` / `composerHiddenInHistory` / `composerBackAfterReturn` / `chipPresentInChat` / `chipHiddenInHistory` / `chipBackAfterReturn` **六项全 true**
+- 画廊 15 张中**只有 `sessions.png` 真的变了**（115139 → 121278 字节；composer 从列表上方消失）。`search.png` 本次无抖动；`SOURCES.json` 指纹如常更新。
+
+**新增探针**（`.tmp-run/`，被 gitignore）：`probe-history-live.js`（历史视图里哪些对话控件还活着）、`probe-history-model.js`（选模型打到了哪个会话——这一条给出了决定性证据）、`probe-view-scoped-controls.js`（按属性枚举两个视图的全部控件与对话表面）、`probe-chip-facts.js`（先量清事实，不假设起始视图）、`probe-chip-roundtrip.js`（往返六项检查）、`mutate-view-scope.mjs`。
+
+## v105：输入框邀请你提问，而发送键拒绝发送
 
 **症状**：一个还没有会话的面板，屏幕上写着「还没有会话／新建一个，就可以开始问了」+ 一个新建按钮——**同时**底下留着一个可用的输入框，提示还是「问点什么…」。读者打完一整句话，按下发送：**什么都没有发生**，字还在框里。
 
