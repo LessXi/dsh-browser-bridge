@@ -1382,6 +1382,38 @@ test('the composer states its ceiling once, in the stylesheet', () => {
   )
 })
 
+test('a link in an answer is painted in the text-safe accent, not the fill colour', () => {
+  // `--accent` is calibrated as a *fill*: white text sits on top of it. As a text
+  // colour it is measured at 3.78:1 on the dark backdrop and 4.96:1 on the light
+  // one, against the 4.5:1 body text needs — so it fails in the dark scheme, which
+  // is where a reader following a link has the least light to spare.
+  //
+  // `--accent-text` exists for exactly this and always has: the same hue mixed 62%
+  // toward `CanvasText`, measured at 7.62:1 dark and 11.8:1 light. It was used for
+  // one chip button while every prose link took the raw fill colour.
+  //
+  // The comment on that token ended by calling this "a separate question from this
+  // one" and left it open. An audit across 44 scenarios and both schemes answered
+  // it: `links` reported four contrast findings, two per scheme, all of them
+  // `.answer a`. This is the last of that question.
+  const link = /\.answer a\s*\{([^}]*)\}/.exec(css)
+  assert.ok(link !== null, 'the `.answer a` rule is gone; prose links would fall back to the browser default blue')
+  assert.ok(
+    /color:\s*var\(--accent-text\)/.test(link[1]),
+    `prose links are painted ${link[1].trim()}; the raw accent is a fill colour and fails 4.5:1 on the dark backdrop`,
+  )
+
+  // And the token itself must be a mix toward `CanvasText`, because that is what
+  // makes one declaration work on both backdrops. A fixed colour here would pass
+  // in one scheme and fail in the other, which is the whole reason it is a mix.
+  const token = /--accent-text\s*:\s*([^;]+);/.exec(css)
+  assert.ok(token !== null, '--accent-text is gone; there is no longer a text-safe accent')
+  assert.ok(
+    /color-mix\(/.test(token[1]) && /CanvasText/.test(token[1]),
+    `--accent-text is ${token[1].trim()}; it must mix toward CanvasText so the two colour schemes get different results`,
+  )
+})
+
 test('a wide table asks for the width it needs instead of crushing its columns', () => {
   // `overflow-x: auto` on the wrapper was correct and never once ran. A table
   // defaults to `table-layout: auto`, which settles the conflict by shrinking

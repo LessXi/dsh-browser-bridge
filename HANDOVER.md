@@ -1,6 +1,6 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v125 已交付并入库。** 下一节就是最新的一轮改动；下面标 v108/v107/v106/v105/v104/v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> **当前状态：v126 已交付并入库。** 下一节就是最新的一轮改动；下面标 v108/v107/v106/v105/v104/v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
 > 只想知道「现在能做什么、下一步做什么」，读到 v120 那一段为止即可。
 >
 > **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（713 条）与
@@ -19,6 +19,134 @@
 > **已入库**：v3→v119 的全部改动已提交并推送到 `origin/main`。工作区干净。
 > （v118 是 `f245e21`，v117 是 `1df4842`，v108 是 `0bfdf20`，v107 是 `afc1ac1`，v105 是 `4b1f0aa`，v103 是 `91fa7dd`，v102 是 `77b75e3`，v101 是 `cc33dd9`，v99 是 `bff292d`，v92 是 `e3ad6ba`，v91 是 `3d96bf1`，v90 是 `767e4cd`，v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
 
+## v126：审计器跑的是二十一轮之前的预览工具
+
+这一轮从「审计的覆盖范围早已过时」开始，最后挖出一条更深的：**审计器根本没有在测产品**。
+
+### 起因：覆盖范围还是过期的
+
+`audit-all.mjs` 的场景列表是手写的二十个，而 `preview.mjs` 已经有 **44 个场景**。
+v77 那次审计覆盖 32 个场景 × 2 配色，看起来「全量干净」；中间新增的表格、触发器行、
+压缩标记、跨会话搜索、链接状态、宿主重启等等，**从来没有被审计过一次**。
+
+修法是让列表**从工具本身派生**（`preview.mjs --list`）——手写的列表会静默过期，而工具自己在长。
+
+### ★ 然后发现：审计器指向了一份过期的副本
+
+改成派生列表后跑全量，得到 **88 个场景 / 78 处 finding**。逐条分类时发现 `working` 那两条不可能：
+
+```
+contrast 1 < 4.5  div.working "Thinking…" (12px)
+```
+
+对比度**恰好等于 1** 意味着前景与背景完全相同——那会是一段彻底看不见的文字。而截图里它看得见。
+
+追查过程（每一步都排除了一个可能）：
+
+| 排除的可能 | 怎么排的 |
+| --- | --- |
+| 参数差异 | 逐字复刻批处理的命令行，直接跑仍然干净 |
+| 输出路径、locale | 分别单独试，都不影响 |
+| `--reduced-motion` 取值 | 两条路默认都是 `reduce`（`preview.mjs` L1800） |
+| 采样时机 | 在审计里加「强制重算 + 等两帧」，批处理**仍然**报 1 |
+| 动画某帧的产物 | 连读 40 帧，颜色**跨帧稳定**，从未透明 |
+
+最后把诊断字段加进审计本体，发现批处理拿到的 `color` 是 `rgba(0, 0, 0, 0)`，
+而**同一份审计代码**单独跑拿到的是 `oklab(… / 0.56)`。于是查 `audit-all.mjs` 的路径：
+
+```js
+const HERE = dirname(fileURLToPath(import.meta.url))   // .tmp-run/
+const PREVIEW = join(HERE, 'preview.mjs')               // .tmp-run/preview.mjs
+```
+
+而 `.tmp-run/preview.mjs` 是 **v82 搬迁时留下的旧副本**：
+
+| | 大小 | 日期 |
+| --- | ---: | --- |
+| `.tmp-run/preview.mjs`（实际在跑的） | **68,173** | 2026/9/23 20:32 |
+| `tools/preview.mjs`（仓库里的） | **127,514** | 2026/9/24 15:54 |
+
+旧副本没有 `--reduced-motion`，于是 `.working` 一直带着扫光动画的透明色，
+于是审计报了一个**产品根本不存在的缺陷**。用真工具量同一行：
+`color: var(--tertiary)`、对比度 **6.41:1**、跨 40 帧稳定。
+
+### 修法：让两者住在同一个目录
+
+把批处理入口搬进 `tools/audit.mjs`，于是 `join(HERE, 'preview.mjs')` 指向的就是真工具。
+**同一目录让这个错误不可能发生，而不只是被修正了一次。**
+
+顺带把审计的 88 张截图输出改到 `tools/.tmp-audit-shots/`（被 `.gitignore` 的 `.tmp-*` 覆盖）——
+一个已入库的工具旁边堆一目录 PNG，正是 `git add -A` 会扫进提交的东西（v71 已经发生过一次）。
+
+审计器本体 `tools/audit-in-page.js` 加了两帧稳定等待：`Emulation.setEmulatedMedia` 改变的是引擎匹配的
+媒体特性，**不会重算已经解析过的样式**，读得太早就会量到上一份渲染。
+
+### ★ 审计真正找出来的产品缺陷：正文链接的对比度
+
+88 个场景里，`links` 报出 4 处（两种配色各 2 处）：
+
+```
+contrast 3.78 < 4.5  a "Chrome 扩展 API" (14px)
+```
+
+而样式表里那条 token 的注释**自己写下了这件事**：
+
+> `--accent` is calibrated as a *fill* — white text sits on it. Used as text colour it fails
+> in both schemes … `.answer a` still uses the raw accent and is a separate question from this one.
+
+它把这个记为「另一个问题」，然后一直没有回答。审计回答了它。
+
+**实测（真实 Chromium，两种配色）**：
+
+| | `--accent`（链接在用的） | `--accent-text`（一直在文件里的） |
+| --- | ---: | ---: |
+| 深色 | **3.78** ✗ | **7.62** ✓ |
+| 浅色 | 4.96 ✓ | **11.8** ✓ |
+
+`--accent-text` 两种配色下都合格，而且**从这一轮之前就存在于文件里**——只是被用在一个 chip 按钮上。
+修法是一行：`.answer a { color: var(--accent-text); }`。
+
+### ★ 两次判据错误（都是我自己造的假读数）
+
+1. **把系统色关键字丢给 canvas 求值**。`getComputedStyle(root).getPropertyValue('--accent-text')`
+   返回的是**未解析的字符串** `color-mix(in oklab, … CanvasText)`。我把它画到 canvas 上，
+   而 canvas 是**脱离文档的元素**：没有继承的 `color-scheme`，于是 `CanvasText` 按 canvas 自己的
+   默认（浅色 = 黑）解析。**我量到的是 canvas 的上下文，不是页面的。** 由此得出「两种配色下同一个值」
+   的错误结论。正确做法是挂到**真实元素**上读计算样式——那时两种配色给出不同结果
+   （`oklab(0.726…)` vs `oklab(0.346…)`），缺陷才是真的。
+2. **只看一个采样点会得出相反的结论**。我先在 `.working` 的框里取了四个点，全是页面背景色 `#121212`，
+   几乎要判成「文字根本没渲染」。换成扫整块区域：**25.9% 的像素与背景不同**，主体是 `#979797`。
+   四个点全落在笔画之间的空隙里。**采样点的选择决定了结论**，而逐像素扫描不会。
+
+### ★ 判据太宽 = 永远通过（第三次同类）
+
+88 个场景报出 78 处 finding，其中 **60 处是表格的 `overflow`**（`table` 与 `tableFocused` 各 15，
+乘两种配色）。它们的形状是：
+
+```
+overflow 10..584 vs 380  table "方案写入成本读回延迟适用场景备注直接写会话文件…"
+```
+
+表格宽 584px 而面板 380px——但**横向滚动正是设计**（v112/v113 的成果：设备宽表格自己要求宽度，
+配边缘渐隐提示）。审计把「比容器宽」报成 finding，是因为它的判据不知道「这一处比容器宽是故意的」。
+**这不是产品缺陷，是判据没有区分「溢出」与「被允许溢出」。**
+
+### 验证读数（已绿，不必重跑）
+
+- `npm test` → **749 passed, 0 failed, 0 skipped**（747 → 749）
+- 变异一 `.tmp-run/mutate-link-contrast.mjs`：**4/4 命中**，`restoredExactly` 通过
+- 变异二 `.tmp-run/mutate-audit-runner.mjs`：**3/3 命中**，`restoredExactly` 通过
+- 审计器现在覆盖 **44 场景 × 2 配色 = 88 次测量**（此前 40 次，且其中 40 次在测旧工具）
+- 画廊 20 张重渲，只有指纹变
+
+### 新增与移动的文件
+
+- **新增 `tools/audit.mjs`**（原 `.tmp-run/audit-all.mjs`，搬入仓库并加 `--only` / `--scheme`）
+- 删除 `.tmp-run/preview.mjs`（过期副本，68 KB）、`.tmp-run/audit-all.mjs`、`.tmp-run/audit-in-page.js`
+- 探针：`probe-working-contrast.js`、`probe-working-box.js`、`probe-working-state.js`、
+  `probe-working-frames.js`、`probe-audit-chain.js`、`probe-audit-repeat.js`、`probe-link-contrast.js`、
+  `probe-link-scan.js`、`probe-token-resolve.js`、`probe-token-split.js`、`probe-element-resolve.js`、
+  `scan-region.mjs`、`add-audit-diagnostic.mjs`、`mutate-link-contrast.mjs`、`mutate-audit-runner.mjs`
 ## v125：图片被渲染成了「前面带感叹号的链接」
 
 ### 缺陷

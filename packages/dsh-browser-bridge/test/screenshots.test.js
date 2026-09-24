@@ -231,6 +231,39 @@ test('every poster is drawn from a screenshot the gallery actually produces', ()
   assert.deepEqual(unknown, [], `the posters are drawn from files the gallery does not produce: ${unknown.join(', ')}`)
 })
 
+test('the audit runner aims at the tool that is actually here', () => {
+  // The runner reads its scenario list from `preview.mjs --list`, so it is always
+  // in step with the tool it runs — that much was fixed by making the list derived
+  // rather than hand-written.
+  //
+  // What was not fixed is *which* `preview.mjs` it ran. The runner used to live in
+  // the scratch directory and resolve the tool as a sibling there, and a copy of the
+  // tool had been left behind when the real one moved into `tools/`. So it ran a
+  // preview twenty-one versions old and reportable findings came out of it that the
+  // real tool does not produce — `div.working` at `ratio: 1` in a transparent colour,
+  // because the old tool had no `--reduced-motion` and the row kept its sweep
+  // animation.
+  //
+  // Asserting the shape of the path is the point: a runner pointed at a stale copy
+  // is indistinguishable from a product defect, and nothing else here would notice.
+  const runner = readFileSync(join(root, 'tools', 'audit.mjs'), 'utf8')
+  assert.ok(
+    /const PREVIEW = join\(HERE, 'preview\.mjs'\)/.test(runner),
+    'the audit runner no longer resolves the preview tool as its own sibling, which is what keeps it from running a stale copy',
+  )
+  assert.ok(
+    !/join\(HERE, '\.\.', 'tools', 'preview/.test(runner),
+    'the audit runner reaches outside its own directory for the tool; living beside it is what makes a stale copy impossible',
+  )
+  // And the scenario list must stay derived: the hand-written version it replaced
+  // named twenty scenarios while the tool had grown to forty-four, so every screen
+  // added in between was never audited.
+  assert.ok(
+    /execFileSync\(process\.execPath, \[PREVIEW, '--list'\]/.test(runner),
+    'the audit runner went back to a list of its own; a hand-written list goes stale silently while the tool keeps growing',
+  )
+})
+
 test('the preview host can lose the host and get it back, so recovery is testable', () => {
   // A harness restart is ordinary here rather than hypothetical: the user's own
   // instance changed process four times in one working session — 59968, 54204,

@@ -134,8 +134,7 @@
            text colour it fails in both schemes (measured 2.82:1 on the dark
            backdrop, 3.86:1 on the light one, against the 4.5:1 body text needs).
            Same fix as the status colours below: mix toward `CanvasText` so one
-           declaration darkens on light and lightens on dark. `.answer a` still
-           uses the raw accent and is a separate question from this one. */
+           declaration darkens on light and lightens on dark. */
         --accent-text: color-mix(in oklab, var(--accent) 62%, CanvasText);
         /* Blending the status colours toward `CanvasText` is what keeps them
            legible in both schemes from one declaration: mixed with black on a
@@ -628,7 +627,19 @@
         color: var(--muted);
       }
       .answer hr { border: 0; border-top: 1px solid var(--line-soft); }
-      .answer a { color: var(--accent); }
+      /* A link in an answer is text, so it takes the text-safe accent. The raw
+         `--accent` is a fill colour: measured against each backdrop it is 3.78:1
+         on the dark one and 4.96:1 on the light one, so it fails the 4.5:1 body
+         text needs in the dark scheme — where a reader following a link has the
+         least light to spare. `--accent-text` is the same hue mixed toward
+         `CanvasText`, measured at 7.62:1 dark / 11.8:1 light.
+
+         The comment on that token used to end by naming this as "a separate
+         question from this one", and left it open. The audit answered it: every
+         prose link in the panel was reported below 4.5 in the dark scheme. The
+         token that fixes it had been in the file the whole time, used for one
+         chip button. */
+      .answer a { color: var(--accent-text); }
       /* The address a link named but could not become. Quieter than the label it
          follows, because it is there to say which target was declined, not to be
          read as part of the sentence. */

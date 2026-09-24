@@ -21,6 +21,28 @@
  * Evaluated with `awaitPromise: true`, so it returns a JSON string.
  */
 (async () => {
+  // Wait for the emulated media features to actually take effect before measuring.
+  //
+  // The tool sets `prefers-reduced-motion`, `prefers-color-scheme` and
+  // `forced-colors` through `Emulation.setEmulatedMedia`, which changes what the
+  // engine matches but does not recompute styles that were already resolved. An
+  // audit that reads immediately can therefore measure the *previous* rendering
+  // and report a colour the reader can never see.
+  //
+  // It did. `div.working` was reported at `ratio: 1` with `color: rgba(0, 0, 0, 0)`
+  // — the sweep animation's transparent colour from before the emulation landed.
+  // The panel does override that row under reduced motion (`color: var(--tertiary)`,
+  // measured at 6.41:1), so the finding was the instrument's, not the product's.
+  // It showed up only when the audit ran through `audit-all.mjs` and never in a
+  // direct `--audit`, which is what a race looks like from the outside.
+  //
+  // Reading `offsetHeight` forces a synchronous style recalculation, and the two
+  // frames then let anything that resolves on the next paint settle. Both are
+  // needed: the recalc alone still returns values from before the media change.
+  void document.documentElement.offsetHeight
+  await new Promise((resolve) => requestAnimationFrame(resolve))
+  await new Promise((resolve) => requestAnimationFrame(resolve))
+
   // A 1x1 canvas is the colour model: fill it, read the pixel back.
   const canvas = document.createElement('canvas')
   canvas.width = 1
