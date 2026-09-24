@@ -202,6 +202,8 @@ function probeVersion(port) {
 function makeHost(scenario, state) {
   // Whether the `hostDiedAfterLoad` scenario has already served its one answer.
   let hostAnsweredOnce = false
+  /** Whether the transcript read has been answered once yet. */
+  let transcriptAnsweredOnce = false
   /** When this host came up, so a scripted outage can be measured against it. */
   const hostStartedAt = Date.now()
   // What the panel has sent during this run. A real host appends it to the
@@ -337,6 +339,19 @@ function makeHost(scenario, state) {
           return send(200, { catalog: scenario.catalog ?? DEFAULT_CATALOG })
         }
         if (parsed.action === 'messages') {
+          // A host that cannot answer the transcript read at all. This is the path
+          // `loadEverything` reports with `error.loadFailed`, and it is the one
+          // startup failure whose aftermath was never looked at: the panel comes up
+          // empty, and that sentence is the only thing on screen that says why.
+          if (scenario.transcriptRefused === true) {
+            return send(500, { error: 'the transcript could not be read' })
+          }
+          // Answer once, then fail: the panel has real rows on screen when the
+          // read starts going wrong, which is the state a guard has to protect.
+          if (scenario.transcriptRefusedAfterFirst === true) {
+            if (transcriptAnsweredOnce === false) transcriptAnsweredOnce = true
+            else return send(500, { error: 'the transcript could not be read' })
+          }
           // Sent messages come first, then the fixture: the order a real host
           // would answer with, since the fixture stands for what was already in
           // the conversation.
@@ -1394,6 +1409,34 @@ const SCENARIOS = {
    * itself in order to watch the toast arrive and then expire.
    */
   sendRefused: { sendRefused: true },
+
+  /**
+   * The panel's own startup throws before it has finished drawing.
+   *
+   * `start()` is called with a `.catch` that reports through the toast, and the
+   * toast expires. Nothing else in the panel has a state for "I did not come up",
+   * so this is the one failure whose aftermath has never been looked at.
+   */
+  startFails: { startFails: true },
+
+  /**
+   * The host cannot answer the transcript read, so the panel starts up empty.
+   *
+   * This is the failure `loadEverything` reports with `error.loadFailed`, and it
+   * is worse than a missing message: with nothing in the transcript and the reason
+   * gone after six seconds, the panel looks like a conversation that has not begun.
+   */
+  transcriptRefused: { transcriptRefused: true },
+
+  /**
+   * The transcript reads fine, and then the host stops being able to answer.
+   *
+   * This is the case the guard is for: there is real content on screen, the poll
+   * goes out, and the answer is a failure. Clearing the list and drawing nothing
+   * is the panel asserting that the conversation is empty — something it was just
+   * told it could not know.
+   */
+  transcriptRefusedLater: { transcriptRefusedAfterFirst: true },
 
   /**
    * The session list, narrowed by a phrase that appears in a conversation rather

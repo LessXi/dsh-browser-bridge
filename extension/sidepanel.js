@@ -166,6 +166,8 @@ const earlierButton = document.getElementById('earlier')
 const toast = document.getElementById('toast')
 /** The persistent half of `toast`: what happened to the last send, until acted on. */
 const sendNote = document.getElementById('send-note')
+/** Why the conversation is stale: the last read did not come back. */
+const transcriptNote = document.getElementById('transcript-note')
 const announcer = document.getElementById('announcer')
 const surface = document.getElementById('blocked')
 // The stage and the four things sitting beside it. `renderOffline` makes
@@ -644,6 +646,27 @@ function noteSendFailure(text) {
  */
 function clearSendNote() {
   noteSendFailure('')
+}
+
+/**
+ * Say that the conversation could not be read, or take that back.
+ *
+ * Kept apart from `sendNote` because it is a different claim about a different
+ * thing: that one is about the reader's own message not leaving, this one is
+ * about the panel not being able to look. They can both be true at once, so they
+ * cannot share an element.
+ *
+ * The text is here rather than in a toast for the reason the toast was wrong: a
+ * transcript that cannot be read stays unreadable. The poll runs every eight
+ * seconds and will keep failing, so this stays up for as long as the state does
+ * and is cleared by the first read that works.
+ *
+ * @param {string} text - What to say. An empty string clears it.
+ * @returns {void}
+ */
+function noteTranscriptFailure(text) {
+  transcriptNote.textContent = text
+  transcriptNote.hidden = text.length === 0
 }
 
 /**
@@ -3500,7 +3523,7 @@ async function refreshTranscript() {
     renderEarlier()
     return
   }
-  const { payload, status } = await bridge('/browser-bridge/chat', {
+  const { ok, payload, status } = await bridge('/browser-bridge/chat', {
     method: 'POST',
     body: {
       action: 'messages',
@@ -3523,6 +3546,26 @@ async function refreshTranscript() {
     renderContexts()
     return
   }
+  // Any other failure is still a failure, and it used to be invisible.
+  //
+  // The guard above asks `status === 0`, so a 500 fell through to
+  // `Array.isArray(payload?.messages) ? … : []` and was drawn as **no rows**. An
+  // unreadable transcript and an empty conversation then looked identical, held
+  // indefinitely — the poll runs every eight seconds and would have gone on
+  // answering the same way. `error.loadFailed` was announced once on startup and
+  // the toast expired six seconds later, so nothing was left to say which of the
+  // two the reader was looking at.
+  //
+  // Returning here rather than drawing is the load-bearing part: whatever is on
+  // screen is the last thing the host actually said, and it stays. Overwriting it
+  // with an empty list is the panel asserting something it was just told it could
+  // not know.
+  if (!ok) {
+    setHostReachable(true)
+    noteTranscriptFailure(t('read.failed', { reason: payload?.error ?? `HTTP ${status}` }))
+    return
+  }
+  noteTranscriptFailure('')
   setHostReachable(true)
   const messages = Array.isArray(payload?.messages) ? payload.messages : []
   const session = currentSession()

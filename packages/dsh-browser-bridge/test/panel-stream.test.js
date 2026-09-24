@@ -80,6 +80,13 @@ const host = {
   releaseCreate: null,
   /** When true, every request is refused, as if nothing were listening. */
   down: false,
+  /**
+   * When true, the transcript read answers with a failure status.
+   *
+   * Kept apart from `down`, which refuses the connection: a host that is *there*
+   * and cannot answer is a different state, and the panel treated it as success.
+   */
+  readFails: false,
   /** Every `POST {action:'messages'}` body, in order. */
   reads: [],
   /**
@@ -388,6 +395,14 @@ globalThis.fetch = async (url, options = {}) => {
     const body = options.body === undefined ? {} : JSON.parse(options.body)
     if (body.action === 'messages') {
       host.reads.push(body)
+      // A host that answers, but not with the transcript. The panel used to read
+      // any non-zero status as a successful read of zero rows, so this answer drew
+      // an empty conversation and held it — the same screen as a session with
+      // nothing in it. The stub could only fail by refusing the connection, which
+      // is the one shape the panel already handled.
+      if (host.readFails === true) {
+        return respond({ error: 'the transcript could not be read' }, 500)
+      }
       // Sliced the way the host slices, and for the same reason: this stub used
       // to answer every request with the whole fixture, so the panel's window —
       // the thing `depth`, `loadEarlier` and a search jump are all about — was
@@ -1828,6 +1843,58 @@ test('a refusal notice does not follow the reader into another session', async (
     // instance is shared, so a test that walks away mid-switch breaks whichever
     // test runs next rather than the one that caused it.
     await switchTo(SESSION)
+  })
+})
+
+test('a transcript that cannot be read is not drawn as an empty one', async () => {
+  // `refreshTranscript` asked `status === 0` — a connection failure — and treated
+  // every other answer as a successful read. A 500 therefore fell through to
+  // `Array.isArray(payload?.messages) ? … : []` and was drawn as **no rows**, so
+  // "the host cannot tell me" and "this conversation is empty" were the same
+  // screen, held for as long as the host kept failing. The one sentence for it
+  // went through the toast, which is gone six seconds later.
+  //
+  // Two things have to hold, and they fail independently: the rows already on
+  // screen stay, and the screen says why they are stale.
+  await onStoppedClock(async () => {
+    await settleToIdle()
+    host.messages = [
+      { kind: 'user', text: 'first' },
+      { kind: 'assistant', text: 'the answer' },
+    ]
+    host.readFails = false
+    await readTranscript()
+    assert.equal(
+      transcript.querySelectorAll('.row').length,
+      2,
+      'the fixture never rendered, so nothing below is proved',
+    )
+
+    host.readFails = true
+    await readTranscript()
+
+    assert.equal(
+      transcript.querySelectorAll('.row').length,
+      2,
+      'a failed read wiped the conversation, which is the panel asserting it is empty',
+    )
+    const note = registry.get('transcript-note')
+    assert.equal(note.hidden, false, 'nothing on screen says the transcript could not be read')
+    assert.ok(
+      note.textContent.includes('could not be read'),
+      `the standing notice does not carry the host's reason: ${JSON.stringify(note.textContent)}`,
+    )
+
+    // A read that works is what ends it, and the notice has to go with the state
+    // it describes.
+    host.readFails = false
+    await readTranscript()
+    assert.equal(
+      registry.get('transcript-note').hidden,
+      true,
+      'the notice outlived the failure it describes',
+    )
+    host.messages = []
   })
 })
 

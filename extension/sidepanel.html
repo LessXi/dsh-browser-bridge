@@ -417,6 +417,23 @@
 
       /* ---- the stage: one scroller visible at a time ---- */
       #stage { flex: 1; min-height: 0; position: relative; display: flex; }
+      /* `#stage` is a row: the transcript and the session list sit side by side
+         and `showView` hides one of them. A notice that belongs above the
+         conversation cannot be a third column, so it takes the whole width and
+         the transcript flows underneath it. */
+      #stage:has(> #transcript-note:not([hidden])) { flex-direction: column; }
+      #transcript-note {
+        flex: none;
+        margin: 0;
+        padding: 8px 12px;
+        /* A border rather than a tint: Windows High Contrast repaints every
+           background to `Canvas`, and this panel has four recorded cases of a
+           surface that separated itself with a colour and then vanished. */
+        border-bottom: 1px solid var(--bad);
+        font-size: var(--text-xs);
+        color: var(--bad);
+        overflow-wrap: anywhere;
+      }
       .scroll {
         flex: 1;
         min-width: 0;
@@ -1881,6 +1898,22 @@
         does not reorder anything — the element keeps its place in the document.
       -->
       <main id="transcript" class="scroll" tabindex="0" role="list"></main>
+      <!--
+        The conversation could not be read.
+
+        A sibling of `#transcript` rather than a child of it, because that element
+        is a `list` and may own nothing but `listitem`s. It is also not a child for
+        a second reason: what is on screen is the last thing the host actually
+        said, and this says the panel could not ask again — the two have to be
+        readable together, which is the whole point of not clearing the list.
+
+        Without it, an unreadable transcript and an empty conversation were the
+        same screen: `refreshTranscript` treated any answer that was not a
+        connection failure as a successful read of zero rows, so a 500 was drawn
+        as 「this conversation has nothing in it」 and held there. The one sentence
+        the panel had for it went through the toast, which is gone in six seconds.
+      -->
+      <p id="transcript-note" hidden></p>
       <!--
         Not a list itself: a `list` may own nothing but `listitem`s, and this
         element also holds the workspace headings and the settings footer. It is

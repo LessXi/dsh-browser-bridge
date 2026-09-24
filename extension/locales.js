@@ -216,6 +216,8 @@ export const zh = Object.freeze({
   'send.failed': '没发出去（{reason}），文字还在',
   'error.notStopped': '没能停下：{reason}',
   'error.loadFailed': '读取失败：{error}',
+  // Standing, not transient: a read that failed stays failed until one works.
+  'read.failed': '这段对话没能读到（{reason}），下面是上次读到的内容',
   'error.startedFailed': '面板启动失败：{error}',
   'error.noSession': '先选择一个会话',
   // The panel and the host ship separately: reloading the extension is one
@@ -406,6 +408,7 @@ export const en = Object.freeze({
   'send.failed': 'Not sent ({reason}), text kept',
   'error.notStopped': 'Could not stop: {reason}',
   'error.loadFailed': 'Could not load: {error}',
+  'read.failed': 'Showing older rows: {reason}',
   'error.startedFailed': 'Panel failed to start: {error}',
   'error.noSession': 'Pick a chat first',
   'error.restartHost': 'Restart dsh web (host is older)',

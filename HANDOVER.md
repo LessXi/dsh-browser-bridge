@@ -1,6 +1,6 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v121 已交付并入库。** 下一节就是最新的一轮改动；下面标 v108/v107/v106/v105/v104/v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> **当前状态：v122 已交付并入库。** 下一节就是最新的一轮改动；下面标 v108/v107/v106/v105/v104/v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
 > 只想知道「现在能做什么、下一步做什么」，读到 v120 那一段为止即可。
 >
 > **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（713 条）与
@@ -19,6 +19,108 @@
 > **已入库**：v3→v119 的全部改动已提交并推送到 `origin/main`。工作区干净。
 > （v118 是 `f245e21`，v117 是 `1df4842`，v108 是 `0bfdf20`，v107 是 `afc1ac1`，v105 是 `4b1f0aa`，v103 是 `91fa7dd`，v102 是 `77b75e3`，v101 是 `cc33dd9`，v99 是 `bff292d`，v92 是 `e3ad6ba`，v91 是 `3d96bf1`，v90 是 `767e4cd`，v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
 
+## v122：读不出来的对话，不能被画成空的
+
+### 缺陷
+
+`refreshTranscript()` 的判据是 `if (status === 0)` —— 只有**连不上**才算失败。
+其余任何状态码都落到 `setHostReachable(true)`，接着：
+
+```js
+const messages = Array.isArray(payload?.messages) ? payload.messages : []
+drawTranscript(messages)
+```
+
+于是 **HTTP 500 被读成「这个会话有零行」并画出来**。实测（新场景 `transcriptRefused`）：
+
+| 读数 | 值 |
+| --- | --- |
+| 宿主对 `messages` 的答复 | **500** |
+| 面板画出的行数 | **0** |
+| `#blocked`（宿主不可达界面） | **不出现** |
+| toast | **空** |
+
+所以「宿主读不出来」与「这个会话是空的」在屏幕上**完全一样**，而且**一直如此**——轮询每 8 秒一次，
+每次都会得到同样的答案。`error.loadFailed` 只在启动时说过一次，六秒后连那句也没了。
+
+### 为什么这比 v121 更严重
+
+v121 修的是「提示消失了，读者不知道发生了什么」。这一条不同：
+**面板把失败显示成了一个事实**。「这个会话没有内容」是面板自己断言的，
+而它刚刚被告知自己无法知道这件事。
+
+### 修法
+
+`extension/sidepanel.js` 的 `refreshTranscript()`：解构出 `ok`，在 `status === 0` 之后新增：
+
+```js
+if (!ok) {
+  setHostReachable(true)
+  noteTranscriptFailure(t('read.failed', { reason: payload?.error ?? `HTTP ${status}` }))
+  return
+}
+noteTranscriptFailure('')
+```
+
+**`return` 而不 `drawTranscript([])`** 是承重的部分：屏幕上留着的是宿主**最后一次真正说过的话**。
+用空列表覆盖它，是面板断言一件它刚被告知无法知道的事。
+
+`extension/sidepanel.html` 新增 `<p id="transcript-note" hidden>`，是 `#transcript` 的**兄弟**而不是子节点——
+那个元素是 `role="list"`，只能拥有 `listitem`。第二个理由同样是设计上的：
+「上次读到的内容」与「这次读不到」必须在同一屏上能被一起读到。
+
+### ★ CSS：`#stage` 是 row，通知不能当第三列
+
+`#stage` 是 `display: flex`（默认 row），转写区与会话列表并排、由 `showView` 隐藏其一。
+新增一个兄弟节点会变成**第三列**。修法用 `:has()` 在通知可见时把容器转成 column：
+
+```css
+#stage:has(> #transcript-note:not([hidden])) { flex-direction: column; }
+```
+
+描边同样用 `border-bottom` 而不是染色——这是本仓库第**五**次记录这个机制
+（v75、v96、v101、v121），高对比度把每个 `background` 重绘为 `Canvas`。
+
+### ★ 判据读错了层
+
+第一版探针从 `window.__previewState.requests` 读宿主答复，报 `failedAnswers: 0` 与
+「the host never failed, so this reading proves nothing」。**但请求记录在 Node 侧**，不在页面里——
+页面里的 `requests` 是空数组。这是仓库记录过的同类错误（v115：真实行放 `window` 而 `messages` 在 Node 宿主里）。
+缺陷由**工具自己打印的宿主日志**确认：`{"action":"messages",…,"status":500}`。
+
+### ★ 第一次注入点选错了，而且被代码自己吞掉
+
+最初的夹具让 `chrome.storage.local.get` 抛错，想制造「启动失败」。实测读数显示面板**画了 4 行、9 个控件**，
+看起来完全正常——因为 `start()` 里 `loadDrafts().catch(() => {})` 自带守卫，失败被吞。
+改用 `messages` 返回 500，才落在真正没有守卫的那条路径上（`loadEverything` 的 `refreshTranscript` 分支）。
+**注入失败要选在没有守卫的那一段。**
+
+### 验证读数（已绿，不必重跑）
+
+- `npm test` → **741 passed, 0 failed, 0 skipped**（740 → 741）
+- `npm run check:extension` → exit 0
+- 变异 `.tmp-run/mutate-transcript-note.mjs`：**3/3 命中**、`restoredExactly: true`
+  （`any-answer-counts-as-a-read`、`a-failed-read-clears-the-conversation`、`the-notice-is-never-taken-back`）
+- 真实浏览器：新场景 `transcriptRefusedLater`（先答一次再失败）实测**旧的 4 行全部留住**、`readsAsEmpty: false`；
+  首个场景 `transcriptRefused` 实测 `#transcript-note` 出现在屏上
+- 画廊 20 张重渲后**只有指纹变，图片逐字节未变**
+
+### ★ 一次假失败
+
+全量跑出现过 `a cancellation for one call does not stop a different one` 失败
+（`call-cancel.test.js`，真浏览器 e2e）。**单跑 4 passed**，随后全量 741 passed——
+按仓库规程判为并发干扰而非缺陷。同一轮里另一次「失败」其实是画廊指纹守卫（改了 `extension/` 就必须重渲）。
+
+### 新增工具能力
+
+`tools/preview.mjs`：`scenario.transcriptRefused`（一律 500）与 `scenario.transcriptRefusedAfterFirst`
+（先答一次再 500），配 `transcriptAnsweredOnce` 标志。
+
+### 新增探针（`.tmp-run/`，被 gitignore）
+
+`probe-start-failure.js`（分「提示在时 / 提示消失后」两段采样，另问屏幕上还有没有出路）、
+`probe-transcript-refused.js`（问三件事：宿主答了什么、面板认为宿主可达吗、对话区画成了什么）、
+`mutate-transcript-note.mjs`。
 ## v121：发不出去的消息，不能只在屏幕上停六秒
 
 ### 缺陷
