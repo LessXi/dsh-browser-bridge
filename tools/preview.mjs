@@ -202,6 +202,15 @@ function probeVersion(port) {
 function makeHost(scenario, state) {
   // Whether the `hostDiedAfterLoad` scenario has already served its one answer.
   let hostAnsweredOnce = false
+  // What the panel has sent during this run. A real host appends it to the
+  // conversation, so the rows it answers with next time include it; the mock
+  // has to do the same or a sent message is erased on the following poll.
+  //
+  // Exposed on the state so a probe can ask "did the send reach the host"
+  // without guessing from the DOM, which is what the composer's own echo makes
+  // ambiguous.
+  const sentMessages = []
+  state.sent = sentMessages
   return createServer((request, response) => {
     const url = new URL(request.url, 'http://127.0.0.1')
     let body = ''
@@ -290,7 +299,10 @@ function makeHost(scenario, state) {
           return send(200, { catalog: scenario.catalog ?? DEFAULT_CATALOG })
         }
         if (parsed.action === 'messages') {
-          const rows = scenario.messages ?? DEFAULT_MESSAGES
+          // Sent messages come first, then the fixture: the order a real host
+          // would answer with, since the fixture stands for what was already in
+          // the conversation.
+          const rows = [...(scenario.messages ?? DEFAULT_MESSAGES), ...sentMessages]
           // Sliced exactly the way the host slices, from the end and by an
           // absolute index. The mock used to answer every request with the whole
           // fixture, so a scenario with 470 rows drew 470 rows and the panel's
@@ -319,7 +331,25 @@ function makeHost(scenario, state) {
           const matches = findRows(rows, typeof parsed.query === 'string' ? parsed.query : [])
           return send(200, { matches, total: rows.length, truncated: matches.length >= 30 })
         }
-        if (parsed.action === 'send') return send(200, { accepted: true })
+        if (parsed.action === 'send') {
+          // What was sent joins the conversation, which is what a real host does
+          // and what makes "did my message arrive" observable at all.
+          //
+          // The same reasoning as `create` below, and the same defect was here:
+          // the mock answered `accepted: true` and then kept serving the fixture,
+          // so the row the panel echoes on send was wiped by the next poll and no
+          // probe could tell a delivered message from a dropped one. The panel
+          // draws that echo deliberately — see `sendMessage`, which notes it is an
+          // echo and not a record — so an instrument that always erases it cannot
+          // check the path it exists for.
+          //
+          // The sent text is carried in the page as well as here, because a probe
+          // runs inside the page and cannot read this process's variables. The
+          // `send` response is the only channel the panel opens in both directions.
+          const text = typeof parsed.text === 'string' ? parsed.text : ''
+          if (text.length > 0) sentMessages.push({ kind: 'user', text })
+          return send(200, { accepted: true, sentText: text })
+        }
         if (parsed.action === 'cancel') return send(200, { cancelled: true })
         if (parsed.action === 'create') {
           // A created session joins the list, which is what a real host does and
@@ -808,6 +838,17 @@ function chromeStub(port, state, scenario) {
             : String(port),
         }),
         set: async (values) => { Object.assign(state.stored, values) },
+        // `remove` is here because the panel calls all three of `get`, `set` and
+        // `remove`, and a stub that answers two of them fails at the worst moment:
+        // `clearDraft` removes the saved draft *after* the host has accepted a
+        // send, so the missing method threw there and every step after it —
+        // clearing the composer, dropping the mention, drawing the message the
+        // reader just sent — silently never ran. Sending looked broken in the
+        // preview while it worked in Chrome.
+        remove: async (...names) => {
+          const flat = names.flat().filter((name) => typeof name === 'string')
+          for (const name of flat) delete state.stored[name]
+        },
       },
     },
     runtime: {

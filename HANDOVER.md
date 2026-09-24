@@ -1,9 +1,9 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v108 已交付并入库。** 下一节就是最新的一轮改动；下面标 v107/v106/v105/v104/v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v108 那一段为止即可。
+> **当前状态：v109 已交付并入库。** 下一节就是最新的一轮改动；下面标 v108/v107/v106/v105/v104/v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v109 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（712 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（713 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 > （真浏览器 e2e 那 4 条需要机器上有 Playwright Chromium 或 Chrome for Testing；
@@ -16,8 +16,109 @@
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
 >
-> **已入库**：v3→v108 的全部改动已提交并推送到 `origin/main`。工作区干净。
-> （v107 是 `afc1ac1`，v105 是 `4b1f0aa`，v103 是 `91fa7dd`，v102 是 `77b75e3`，v101 是 `cc33dd9`，v99 是 `bff292d`，v92 是 `e3ad6ba`，v91 是 `3d96bf1`，v90 是 `767e4cd`，v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
+> **已入库**：v3→v109 的全部改动已提交并推送到 `origin/main`。工作区干净。
+> （v108 是 `0bfdf20`，v107 是 `afc1ac1`，v105 是 `4b1f0aa`，v103 是 `91fa7dd`，v102 是 `77b75e3`，v101 是 `cc33dd9`，v99 是 `bff292d`，v92 是 `e3ad6ba`，v91 是 `3d96bf1`，v90 是 `767e4cd`，v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
+
+> ## v109：假宿主少了一个方法，于是「发送」这条路在仪器里整段不可观测
+
+**症状**：探针按下发送，宿主日志里**明明收到了** `{"action":"send",...,"text":"ZEBRA_PROBE"}`
+且回了 `accepted: true`，而屏幕上**什么都没有**：输入框里的字还在、消息没画上去、
+下一次轮询之后仍然没有。看起来像「发送坏了」。
+
+**真相不是产品，是仪器。** 面板紧接在发送被接受之后调 `clearDraft()`，而那里面是：
+
+```js
+chrome.storage.local.remove(DRAFT_PREFIX + sessionId).catch(() => {})
+```
+
+`tools/preview.mjs` 的假 `chrome.storage.local` **只有 `get` 和 `set`**。缺了 `remove`
+就在这一行抛 `chrome.storage.local.remove is not a function`，而它后面**整段发送成功路径**
+——清空输入框、`mentioned = null`、`renderContexts()`、`renderLive()`、`renderWorking()`、
+`drawTranscript([...rows, { kind: 'user', text }])` —— 一次都没执行。
+
+```
+出错了：chrome.storage.local.remove is not a function
+```
+
+#### ★ 为什么 713 条测试全绿却没看见
+
+面板一共用三个方法：`get`、`set`、`remove`。
+
+| | `get` | `set` | **`remove`** |
+|---|---|---|---|
+| 面板实际调用 | ✓ | ✓ | **✓** |
+| 测试替身（`panel-stream.test.js` 的 `makeStorage`） | ✓ | ✓ | **✓** |
+| **preview 假宿主** | ✓ | ✓ | **✗** |
+
+**只有 preview 那个替身缺它。** 所以套件测得到发送路径（替身是完整的），
+而 preview 里的发送路径整段是死的——而 preview 恰恰是唯一能截图、能发真实按键、
+能逐帧量耗时的那个仪器。**一个缺方法的替身，把整个仪器对这条路径变成了瞎子。**
+
+#### 修法（`tools/preview.mjs`）
+
+1. 补 `remove: async (...names) => { ... }`（`names.flat()` 后逐个 `delete`），与面板
+   调用的三种方法对齐。
+2. **顺带补上发送本身**：假宿主原来对 `send` 只回 `accepted: true`，然后继续回夹具——
+   所以面板画的 echo 会被下一次轮询抹掉，「我的消息送到了吗」在仪器里不可判定。
+   现在发出的文本进入 `sentMessages`，并**先于夹具**参与 `messages` 的分页返回，
+   与真宿主一致。（同文件 L324 附近的 `create` 早就为完全同形的问题修过一次：
+   假宿主不承认新建的会话，于是按钮看起来是死的。）
+
+#### 修复后的读数（`.tmp-run/probe-send-path.js`）
+
+| 读数 | 修复前 | 修复后 |
+|---|---|---|
+| 消息出现在屏幕上 | **false** | **true（16.5ms）** |
+| 扛过下一次轮询 | **false** | **true** |
+| 掉帧数 | 0 | 0 |
+
+16.5ms 恰好一帧——读者按下发送，消息在**下一帧**就到位了。
+
+#### 新增守卫测试
+
+`packages/dsh-browser-bridge/test/screenshots.test.js` 的
+`the preview host answers every chrome.storage method the panel calls`：
+从 `extension/sidepanel.js` 里**抽出**面板真正调用的方法名，然后要求
+**preview 假宿主与测试替身都实现它们**。三处一起对齐，两个替身不会再朝相反方向漂移。
+变异验证：把 `remove:` 改名为 `removeXXX:` → 新测试变红并报出
+「the preview's fake chrome.storage.local has no remove(), so anything the panel
+does after calling it is invisible to every probe」，还原后恢复。
+
+#### ★ 同轮的第二条结论：一条悬了两轮的「性能账」正式关闭
+
+本轮原本要量「上翻历史会不会越来越慢」，第一版判据（「等到稳定」）量到
+**每次点击都是 33ms，且完全不随窗口增长**——114 行 34.7ms、402 行 33.4ms。
+这与已知的渲染曲线矛盾（第 7 轮实测 60 行 2.4ms、470 行 18.2ms）。**读数不随被测变量
+变化时，先怀疑判据。** 果然：「等到稳定」要求连续两帧相同，**至少有 2 帧的固定下限**。
+
+换成**逐帧间隔**（浏览器 60Hz 排帧，一次 18ms 的同步工作会把那一帧的间隔撑到约 33ms）
+之后：
+
+| 场景 | 行数 | 最长帧 | 掉帧 |
+|---|---|---|---|
+| 上翻一页 | 114 → 450 | **16.8ms** | **0** |
+| 按下发送 | 60 | **16.8ms** | **0** |
+
+**450 行的上翻，最长帧恰好一帧，一次都没掉。** 判据本身验证过：人为同步阻塞 50ms，
+它读到 **49.9ms**——它能看见卡顿，而它说这里没有。
+
+所以第 7 轮那笔「18.2ms 重建」的账**在读者的关键路径上并不成立**。`HANDOVER` 的 v72
+段落早就记载过原因：**v71 量的是探针自己造的最坏情况**（把整份行集克隆一遍再
+`replaceChildren`），不是面板真正走的路径。这条现在有了正面证据，不必再查第三遍。
+
+#### 验证读数（已绿）
+
+- `npm test` → **713 passed, 0 failed, 0 skipped**
+- `npm run check:extension` → exit 0
+- 画廊 15 张重渲后**只有 `SOURCES.json` 指纹变**，图片**逐字节未变**
+- 判据有效性：人为阻塞 50ms → 帧间隔读到 49.9ms
+
+#### 本轮新增探针（`.tmp-run/`，被 gitignore）
+
+- `probe-send-path.js` —— 判据本体：消息是否上屏、是否扛过轮询、最长帧、掉帧数。
+- `probe-paging-frames.js` —— 逐帧间隔判据（有分辨率），量上翻历史的成本。
+- `probe-paging-cost.js`、`probe-paging-breakdown.js` —— **判据错的两版**，保留以说明为什么换掉。
+- `probe-frame-judge-valid.js` —— 判据自身的有效性验证（阻塞 50ms 必须被看见）。
 
 > ## v108：画一条回答要多久 —— 量完判定**不该修**，并把判据做成可复现的
 

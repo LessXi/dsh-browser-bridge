@@ -38,6 +38,48 @@ const SHOTS = join(root, 'docs', 'screenshots')
 /** The 8-byte PNG signature, so a file is checked for being an image at all. */
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
 
+test('the preview host answers every chrome.storage method the panel calls', () => {
+  // The panel calls `get`, `set` and `remove`. The preview's fake host had the
+  // first two, and the third was missing — which is a small omission with a large
+  // effect, because `clearDraft` removes the saved draft *after* the host has
+  // accepted a send. The missing method threw there, so every step after it
+  // silently never ran: the composer kept its text, the mention stayed attached,
+  // and the message the reader had just sent was never drawn. Sending looked
+  // broken in the preview while it worked in Chrome, and the 712-test suite could
+  // not see it, because the *test* double implements all three.
+  //
+  // So the assertion is parity between the two doubles and the panel's usage. A
+  // stub is an instrument, and an instrument that answers two of three questions
+  // is one that reports a defect where there is none — or, as here, hides the
+  // behaviour being measured.
+  const script = readFileSync(join(root, 'extension', 'sidepanel.js'), 'utf8')
+  const used = new Set([...script.matchAll(/chrome\.storage\.local\.(\w+)\(/g)].map((match) => match[1]))
+  assert.ok(used.size > 0, 'the panel no longer calls chrome.storage.local at all; this check has gone stale')
+  assert.deepEqual(
+    [...used].sort(),
+    ['get', 'remove', 'set'],
+    `the panel now calls ${[...used].sort().join(', ')} on chrome.storage.local; update this expectation deliberately rather than by accident`,
+  )
+
+  const preview = readFileSync(join(root, 'tools', 'preview.mjs'), 'utf8')
+  for (const method of used) {
+    assert.ok(
+      new RegExp(`\\b${method}: async`).test(preview),
+      `the preview's fake chrome.storage.local has no ${method}(), so anything the panel does after calling it is invisible to every probe`,
+    )
+  }
+
+  // And the test double, which is the one that *did* have it — kept in the same
+  // check so the two cannot drift apart in opposite directions next time.
+  const stream = readFileSync(join(here, 'panel-stream.test.js'), 'utf8')
+  for (const method of used) {
+    assert.ok(
+      new RegExp(`\\b${method}: async`).test(stream),
+      `the test double has no ${method}(), so the panel's behaviour after that call is untestable`,
+    )
+  }
+})
+
 /** Every `src="..."` the README points at, as repo-relative paths. */
 function readmeImages(readme) {
   return [...readme.matchAll(/<img\s+src="([^"]+)"/g)].map((match) => match[1])
