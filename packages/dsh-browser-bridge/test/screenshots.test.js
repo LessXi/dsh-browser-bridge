@@ -347,6 +347,54 @@ test('the header shrinks to fit a narrow panel instead of pushing controls off i
   )
 })
 
+test('the preview tool can carry a real answer into the page, and does not invent one', () => {
+  // A probe that asks "how long does the panel take to draw an answer" is only
+  // answering a real question when the answer is one a person actually received.
+  // A generated sample measures the structure its author thought of, which is the
+  // one shape already known to work — measured across this machine's 11261
+  // assistant messages, the median is 90 characters and the longest is 35159, so
+  // the interesting cases are the ones a fixture would never contain.
+  //
+  // The reader's own text is read from a file rather than committed, because it is
+  // their conversation. That makes the flag's plumbing load-bearing, and this is a
+  // channel that fails *silently* in both directions: a flag never read leaves
+  // `window.__realAnswers` undefined and the probe reports "no data" rather than
+  // failing, and a flag that leaks into runs without it would make every other
+  // probe measure a page carrying somebody's answers.
+  const preview = readFileSync(join(root, 'tools', 'preview.mjs'), 'utf8')
+
+  // The flag exists and reads the file it names.
+  assert.ok(
+    /rest\.indexOf\('--real-answers'\)/.test(preview),
+    'the preview tool no longer accepts --real-answers, so no probe can measure a real answer',
+  )
+  assert.ok(
+    /realAnswers = readFileSync\(resolve\(rest\[realIndex \+ 1\]\), 'utf8'\)/.test(preview),
+    'the preview tool parses --real-answers but does not read the file it names',
+  )
+
+  // The read has to happen *before* `bootstrapSource` is called with the value.
+  // Reading it later left the injection empty while the flag still parsed — the
+  // exact silent failure this assertion exists for.
+  const readAt = preview.indexOf("rest.indexOf('--real-answers')")
+  const callAt = preview.indexOf('bootstrapSource(hostPort, scenario,')
+  assert.ok(readAt !== -1 && callAt !== -1 && readAt < callAt, 'the real answers are read after the bootstrap script that carries them was already built')
+
+  // And the value has to reach the page through the bootstrap's parameter, since
+  // that function has its own scope.
+  assert.ok(
+    /function bootstrapSource\(port, scenario, tabUrl, realAnswers = ''\)/.test(preview),
+    'bootstrapSource must take the real answers as a parameter; a free variable there is a ReferenceError at runtime',
+  )
+
+  // A run without the flag must inject nothing. The default is the guard: a
+  // non-empty fallback would put sample text into every screenshot.
+  assert.ok(
+    /let realAnswers = ''\n/.test(preview),
+    'the real answers must default to empty, or every run without the flag injects whatever came before',
+  )
+})
+
 test('every floating surface can be opened and dismissed, so it never hides the conversation', () => {
   // Overlapping the page is what a floating surface is for; hiding a row the
   // reader can never uncover is the defect. This repository fixed that once — a

@@ -1150,13 +1150,25 @@ function makeStaticServer() {
  * Inject the `chrome` stub and the scenario's initial DOM state *before* the
  * panel module runs, so `start()` sees a coherent world on its first paint.
  */
-function bootstrapSource(port, scenario, tabUrl) {
+function bootstrapSource(port, scenario, tabUrl, realAnswers = '') {
   return `
     (() => {
       const state = { stored: {}, requests: [], selectionText: ${JSON.stringify(scenario.selectionText ?? '')}, tabs: ${JSON.stringify([
         { id: 7, title: 'Example Domain', url: tabUrl, active: true, favIconUrl: '' },
       ])} };
       window.__previewState = state;
+      // Real answers, when the caller supplied some with --real-answers.
+      //
+      // (No backticks in this comment: it sits inside a template literal, and a
+      // backtick here ends the template and breaks the whole file at parse time.)
+      //
+      // A probe that measures how long the panel takes to draw an answer is only
+      // answering a real question if the answer is one a person actually received:
+      // a generated sample measures the structure its author thought of, which is
+      // the one shape already known to work. The reader's own text is passed in as
+      // a file rather than committed here, because it is their conversation, not
+      // this repository's fixture.
+      ${realAnswers}
       window.chrome = ${JSON.stringify({})};
       const stub = (${chromeStub.toString()})(${port}, state, ${JSON.stringify({
         hasSelection: scenario.hasSelection === true,
@@ -1395,6 +1407,19 @@ async function main() {
       ],
     }, sessionId)
 
+    // `--real-answers <file.js>`: a script that assigns the reader's own long
+    // answers to `window.__realAnswers`, for probes that ask how long the panel
+    // takes to draw a real one. It is a file rather than a fixture here because it
+    // is somebody's conversation.
+    //
+    // Read here, before the bootstrap script is built below: the bootstrap is what
+    // carries it into the page, and reading it later left the injection empty.
+    let realAnswers = ''
+    const realIndex = rest.indexOf('--real-answers')
+    if (realIndex !== -1 && typeof rest[realIndex + 1] === 'string') {
+      realAnswers = readFileSync(resolve(rest[realIndex + 1]), 'utf8').trim()
+    }
+
     // Errors in the panel are the single most useful thing a preview can report.
     const consoleErrors = []
     cdp.on('Runtime.exceptionThrown', (params) => {
@@ -1407,7 +1432,7 @@ async function main() {
     })
 
     await cdp.send('Page.addScriptToEvaluateOnNewDocument', {
-      source: bootstrapSource(hostPort, scenario, 'https://github.com/LessXi/dsh-browser-bridge'),
+      source: bootstrapSource(hostPort, scenario, 'https://github.com/LessXi/dsh-browser-bridge', realAnswers),
     }, sessionId)
 
     // Pin the text caret's blink phase, so the same code renders the same bytes.
