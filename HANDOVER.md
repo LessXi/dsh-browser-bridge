@@ -1,7 +1,7 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v116 已交付并入库。** 下一节就是最新的一轮改动；下面标 v108/v107/v106/v105/v104/v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v116 那一段为止即可。
+> **当前状态：v117 已交付并入库。** 下一节就是最新的一轮改动；下面标 v108/v107/v106/v105/v104/v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v117 那一段为止即可。
 >
 > **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（713 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
@@ -19,7 +19,105 @@
 > **已入库**：v3→v109 的全部改动已提交并推送到 `origin/main`。工作区干净。
 > （v108 是 `0bfdf20`，v107 是 `afc1ac1`，v105 是 `4b1f0aa`，v103 是 `91fa7dd`，v102 是 `77b75e3`，v101 是 `cc33dd9`，v99 是 `bff292d`，v92 是 `e3ad6ba`，v91 是 `3d96bf1`，v90 是 `767e4cd`，v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
 
-> ## v116：渐隐画在哪个元素上，和它读哪个 flag 一样要紧
+> ## v117：把变异检查从「每轮重写一遍」变成仓库里的一件工具
+
+这一轮的出发点是我自己的失败：**四个判据里三个报出了不存在的缺陷。**
+
+### 四次判据误报（全部发生在同一轮）
+
+| 我想查的 | 判据报的 | 真相 |
+| --- | --- | --- |
+| 表格横向溢出的可发现性 | `unannouncedCount: 1` | 渐隐用 `background: linear-gradient` 画，而我只查了 `content`（恒为 `''`） |
+| 渐隐挂在哪个元素上 | 正确实现有罪 | 正确写法 `.table-box:has(.table-scroll[…])` 在 `:has()` 里**提到**了 `.table-scroll`，我的正则匹配了整个选择器 |
+| 行末未闭合的 `**` | `unclosed-emphasis: 3468` | `**重要：**` 有配对，`/\*\*[^*\n]{1,60}$/` 在中文句末判断错了 |
+| 行内代码的字号 | `12.88px` 是「不在设计语言里的尺寸」 | 那是**有意的**，注释（`extension/sidepanel.html` L602-609）写明了理由：`.92em` 在 14px 正文里落在 12.88px，让行内代码与周围文字视觉上有别 |
+
+四次都是同一个形状：**判据问了一个貌似相关、实际不对的问题。**
+
+### 判别一个判据是否「空」的方法
+
+`.tmp-run/probe-judge-selfcheck.mjs` 把这件事**量化**了：对同一个正确实现，
+同时跑判据与它的否定，并要求它能区分正确与坏实现。
+
+三条候选判据的读数：
+
+| 判据 | 正确实现 | 坏实现 | 性质 |
+| --- | --- | --- | --- |
+| 宿主必须是 `.table-box` | true | **false** | **有效** |
+| 选择器里必须提到 `data-scrolled` | true | **true** | **空的**（好坏一样为真） |
+| 必须存在 `.table-box::before` 这个形状 | true | **true** | **空的** |
+
+**一个对坏实现同样为真的判据不是判据。** 这条读数把这个仓库反复记录的经验
+（v78 的 15 个变异里 8 个假报、v93「断言单位而不断言值」、v96「比声明字符串而非合成结果」）
+变成了一个可执行的检查。
+
+### 交付：`tools/mutate.mjs`
+
+每一轮的变异检查都在 `.tmp-run/` 里**从零重写一遍**，而那些文件被 gitignore——
+所以纪律活在人的记忆里而不是仓库里，同样的错误反复回来：
+
+1. **锚点找不到**与「变异正确未被抓住」**完全无法区分**，所以一个未察觉的笔误静默变成一条「等价变异」（v36）；
+2. 在输出里**匹配测试名**会把通过行 `✔ <name>` 当成命中，曾把 15 个变异里的 8 个报成抓住（v78）；
+3. 脚本复原了它改的源码，**没复原它覆盖的图片**，留下一张内容是文字的 PNG（v82）；
+4. 变异**插在被禁代码之前**，什么都没改，于是所有「未抓住」的读数都无意义（v36）。
+
+现在变异是**数据**而非过程：
+
+```js
+{ name, file, from, to, suite, expect: 'red' | 'green', why }
+```
+
+`expect: 'red'` 是真的坏法，套件必须红。`expect: 'green'` 是**作者论证过的等价变异**，
+它必须**不红**——红了说明论证错了。上面四条现在由机器检查，而不是靠记得。
+
+### 工具自身的三个坑（都是写它时踩的）
+
+1. **`tools/subset.mjs` 不存在**——`.tmp-run/subset.mjs` 才有。工具报 `SUITE DID NOT RUN`，
+   而不是静默把「套件没跑」读成「未被抓住」。**这正是它要防的那类错误，它自己先抓住了。**
+2. **直接 `node test/foo.test.js` 什么都不打印**：套件文件只**注册**测试，输出由 `harness.js` 的
+   `runTests()` 产生。所以工具用 `node --input-type=module -e` 现造一个 runner，
+   而不是依赖某个可能不存在的临时文件。
+3. **`extension/sidepanel.html` 是 CRLF**，源码字面量里的 `\n` 永远匹配不到（v36 的同一坑）。
+   锚点按 `source.includes('\r\n')` 决定分隔符。
+
+### 实际读数
+
+`.tmp-run/check-shade-link.mjs` 用新工具复查 v116 那条链：
+
+| 变异 | 声明 | 读数 |
+| --- | --- | --- |
+| `shade-drawn-on-the-scroller-itself` | red | **red** ✓ |
+| `leading-shade-keyed-off-a-value-nobody-writes` | red | **red** ✓ |
+| `shared-declarations-spelled-with-logical-properties` | green | **green** ✓ |
+
+第三条是**如实标注的等价变异**：`inset-block: 0` 与 `top: 0; bottom: 0` 在横排书写模式下
+解析成同一对物理值。它保持绿，说明套件断言的是行为而不是拼写。
+
+`verdict: every mutation behaved as declared, and every file was restored`（3/3）。
+
+### 新测试，以及它自己的否定验证
+
+`packages/dsh-browser-bridge/test/screenshots.test.js` 新增
+`the mutation tool refuses to read an unchanged file as a caught mutation`：
+给工具一个锚点不存在的变异，它必须返回**失败计数 1**、报告里出现 `ANCHOR NOT FOUND`、
+且不留下任何改动。
+
+**这条判据本身也做了否定验证**（`.tmp-run/verify-mutate-guard.mjs`）：
+把工具改成「锚点未找到算作抓住」，测试必须变红。读数 `suiteWentRed: true`、
+`restoredExactly: true`、verdict `the guard is discriminating`。
+**每写一条判据都要问它一次：把被测行为弄坏，它会红吗。**
+
+### 验证读数
+
+- `npm test` → **722 passed, 0 failed, 0 skipped**（721 → 722）
+- `npm run check:extension` → exit 0
+- 未改 `extension/` 或 `tools/preview.mjs`，所以画廊指纹无需更新（已核实 `SOURCES.json` 无差异）
+
+### 新增文件（`tools/mutate.mjs` 已入库，其余在 `.tmp-run/` 被 gitignore）
+
+`tools/mutate.mjs`（**入库**）、`probe-judge-selfcheck.mjs`、`probe-real-shapes.mjs`、
+`probe-emphasis-shape.mjs`、`check-shade-link.mjs`、`verify-mutate-guard.mjs`。
+## v116：渐隐画在哪个元素上，和它读哪个 flag 一样要紧
 
 这一轮修的是一个**守卫缺口**，不是产品缺陷。产品是对的，测试漏了一半。
 

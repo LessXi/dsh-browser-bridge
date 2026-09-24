@@ -620,6 +620,52 @@ test('every floating surface can be opened and dismissed, so it never hides the 
   }
 })
 
+test('the mutation tool refuses to read an unchanged file as a caught mutation', async () => {
+  // Mutation checking is how every round argues that its test would notice the
+  // bug it is about. It was re-implemented from scratch each round in a scratch
+  // file, so the same two mistakes came back: an anchor that was not found
+  // changes nothing, and "nothing changed" is indistinguishable from "the suite
+  // correctly did not catch it"; and a test name matched anywhere in the output
+  // counts the passing line `✔ <name>` as a hit, which once reported 8 of 15
+  // mutations as caught when they were not.
+  //
+  // `tools/mutate.mjs` is that discipline written down once. This test is about
+  // the honest failure mode rather than the happy path: given a mutation whose
+  // anchor is not in the file, it must say so, and must not count it as caught.
+  const { checkMutations } = await import('../../../tools/mutate.mjs')
+
+  const original = readFileSync(join(root, 'tools', 'mutate.mjs'), 'utf8')
+  assert.equal(typeof checkMutations, 'function', 'the mutation tool no longer exports a checker')
+  assert.ok(original.includes('ANCHOR NOT FOUND'), 'an anchor that is not found must be reported as its own outcome')
+
+  // Swallow the report: the point is the returned failure count, not the print.
+  const written = []
+  const write = process.stdout.write.bind(process.stdout)
+  process.stdout.write = (chunk, ...rest) => { written.push(String(chunk)); return true }
+  let wrong
+  try {
+    wrong = checkMutations([{
+      name: 'anchor-that-is-not-in-the-file',
+      file: 'tools/mutate.mjs',
+      from: 'this text does not appear anywhere in the repository at all',
+      to: 'replacement',
+      suite: 'screenshots',
+      expect: 'red',
+    }])
+  } finally {
+    process.stdout.write = write
+  }
+
+  assert.equal(wrong, 1, 'a mutation whose anchor is absent changed nothing and must be reported as a failure, not as a caught mutation')
+  const report = written.join('')
+  assert.ok(report.includes('ANCHOR NOT FOUND'), 'the report must name the reason, so a typo is not mistaken for an equivalent mutation')
+  assert.equal(
+    readFileSync(join(root, 'tools', 'mutate.mjs'), 'utf8'),
+    original,
+    'the tool must leave the file it was pointed at untouched',
+  )
+})
+
 /**
  * The declaration block for a selector, without any `@media` wrapper.
  *

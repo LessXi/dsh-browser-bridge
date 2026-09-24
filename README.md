@@ -446,7 +446,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 721 条
+npm test                          # 全部 722 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -536,7 +536,7 @@ Chrome for Testing 都装进带版本号的目录，写死路径会在一台机�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 721 条
+npm test                 # 722 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -567,7 +567,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面五层测试，721 条。包括真实 Chrome 驱动的快照、点击、输入、截图，
+**已自动化验证**：上面五层测试，722 条。包括真实 Chrome 驱动的快照、点击、输入、截图，
 以及**载入真实扩展的真实 Chromium** 走完整协议并核对页面真的被点到了。扩展的首次连接也已
 在真实 Chrome 里端到端验证过：清空 storage 后，扩展自己读了 health、取了令牌、带着正确令牌
 发起升级（`.tmp-run/probe-enrol-real-browser.js`）。
@@ -694,6 +694,10 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 | ★★ 假宿主不承认写操作，面板画的即时反馈就会被下一次轮询抹掉（v109） | 假宿主对 `send` 只回 `accepted: true`，然后继续回夹具。而面板发送后是**先画一条 echo**、再由轮询用宿主的真实列表替换整份——所以「我的消息送到了吗」在仪器里不可判定：显示成功与显示丢失长得一模一样。修法是让发出的文本先于夹具参与分页返回，与真宿主一致。**同文件里 `create` 早就为完全同形的问题修过一次**（假宿主不承认新建的会话，于是按钮看起来是死的）——**同一个假宿主犯两次同一种错，说明该补的是「写操作要落到读路径上」这条规则，不是一个一个修** |
 | ★★ 假宿主少一个分支，面板就会为一次成功的操作报错（v110） | 读者点「只允许一次」，面板弹出 **「没能作答：HTTP 200」**——请求成功了，面板却在指责它。根因：真宿主有 8 个 action 分支，preview 假宿主只有 7 个，**`approval` 是缺的那个**，于是回答落到兜底 `send(200, {})`；而面板写的是 `if (payload?.answered !== true) say(...)`——**只有 `{answered: true}` 才算成功**，`{}` 自然不算。面板是对的，**错的只有量它的仪器**。与上一行同一个文件、同一类错误，所以这次的断言不再是「再补一个分支」，而是**两个宿主的 action 集合必须相等**（多一个也报，否则探针会在量一个不存在的宿主） |
 | ★ 探针读错了那一份记录，会把「已经发生」读成「什么都没发生」（v110） | 面板**确实发出了** `{"action":"approval","id":"q1","outcome":"allowed-once","scope":"once"}`（Node 侧打印得清清楚楚），而我的第一版探针报 `sentAnAnswer: false`。原因是 `tools/preview.mjs` 里有**两个 `state`**：Node 侧那个（L1372，权威，记录面板经 HTTP 发来的每个请求）与页面内 `window.__previewState`（L1197，另一份）。**同一个名字下两份记录，读数就只能靠猜。** 判据最终改为读**屏幕上的告警**——那是读者会看到的东西，也是唯一不需要我判断哪份记录为真的量 |
+| ★ 判据要能区分好坏实现，否则它不是判据（v117） | 同一个正确实现上，三条候选判据里**两条对坏实现同样为真**（「选择器里提到 flag」「存在 `.table-box::before` 这个形状」）。判别方法写成了 `tools/mutate.mjs` 与 `.tmp-run/probe-judge-selfcheck.mjs`：判据必须在正确实现上为真、在坏实现上为假 |
+| ★ 判据也会造出不存在的缺陷（v117） | 一轮里四次：查 `content` 而渐隐是 `background` 画的；用正则匹配整个选择器而正确写法在 `:has()` 里提到了那个类名；`$` 锚点在中文句末判断错；把注释里写明理由的 `12.88px` 当成「不在设计语言里」。判据错会把缺陷读没了，**也会凭空造出一个** |
+| ★ 直接从源码字面量拼锚点会漏掉 CRLF（v117） | `extension/sidepanel.html` 是 CRLF，脚本里 `\n` 拼的锚点永远匹配不到，症状是 `ANCHOR NOT FOUND`——而它看起来和「变异正确未被抓住」一模一样。按 `source.includes('\r\n')` 决定分隔符 |
+| ★ 套件文件只注册测试，不打印结果（v117） | `node test/foo.test.js` 什么都不输出：输出由 `harness.js` 的 `runTests()` 产生。要跑单个套件得自己 import 它再调 `runTests()`，不是 spawn 套件文件 |
 | ★ 判据要问「画出东西了吗」，不是问 `content`（v116） | 表格边缘渐隐是 `background: linear-gradient(...)` 画的，它的 `content` 恒为 `''`。第一版探针因此报 `hasHint: false`、`unannouncedCount: 1`——**一个不存在的缺陷**。同一个探针还量错了元素：渐隐挂在 `.table-box` 上，滚动的是它的子元素 `.table-scroll` |
 | ★ 判据要问「挂在哪个元素上」，不是「选择器提到了什么」（v116） | 正确的写法 `.table-box:has(.table-scroll[...])::before` 在 `:has()` 里**提到**了 `.table-scroll`，于是用 `/\\.table-scroll/` 匹配整个选择器的判据把**正确实现**拒掉了。取宿主要用 `split(':has(')[0]` |
 | ★ 两段各自正确的文本断言之间，可以有缝（v116） | 一半测试断言面板**写**的 flag 值，另一半断言 CSS 里**存在**读这些 flag 的选择器。两半都对，而把渐隐从 `.table-box` 挪到 `.table-scroll` 上之后**两半全部通过**——滚动容器的伪元素会跟着内容滚走，读者正需要它时它不在。缝隙由「渐隐挂在哪个元素上」这条断言补上 |
