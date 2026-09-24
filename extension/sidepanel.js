@@ -1029,11 +1029,32 @@ function renderTitle() {
  * @returns {Promise<void>} Resolves once the trigger has been repainted.
  */
 async function refreshCatalog() {
-  const { status, payload } = await bridge('/browser-bridge/chat', {
+  const { ok, status, payload } = await bridge('/browser-bridge/chat', {
     method: 'POST',
     body: { action: 'models' },
   })
-  if (status === 0) return
+  // A failure that is not a connection failure still says nothing about which
+  // models exist, and it used to be read as if it did: a 500 has no `catalog`, so
+  // `catalog` became null and `catalogReason` became empty, and the menu drew
+  // 「模型列表不可用」 with no reason attached.
+  //
+  // That is the screen a deployment draws when it has *answered* that it routes no
+  // models — 「模型列表不可用：no model service in this profile」 — and the two call
+  // for opposite things. One is a configuration to go and change; this one is worth
+  // retrying, which is exactly what the docstring above promises happens.
+  //
+  // So the failure's own words become the reason. The state stays "no catalog",
+  // which is true, but the reader can now tell the two apart.
+  if (!ok) {
+    // A refused connection is already reported by the health poll as an
+    // unreachable host, and it leaves the last good catalog alone rather than
+    // replacing it with nothing.
+    if (status === 0) return
+    catalog = null
+    catalogReason = payload?.error ?? `HTTP ${status}`
+    drawModel()
+    return
+  }
   catalog = payload?.catalog ?? null
   catalogReason = typeof payload?.reason === 'string' ? payload.reason : ''
   drawModel()
@@ -1482,7 +1503,15 @@ async function chooseModel(patch) {
   }
   const selected = payload?.selected
   if (selected === false || selected === undefined || selected === null) {
-    say(t('model.failed', { reason: typeof payload?.reason === 'string' ? payload.reason : '' }))
+    // The host's own reason when it gave one, and otherwise the HTTP answer.
+    // Without the fallback a 500 produced 「切换失败：」 — a sentence that stops
+    // mid-clause, because `payload.reason` is a field a failed response does not
+    // have. The reader is told something went wrong and nothing else.
+    say(t('model.failed', {
+      reason: typeof payload?.reason === 'string' && payload.reason.length > 0
+        ? payload.reason
+        : payload?.error ?? `HTTP ${status}`,
+    }))
     return
   }
   // The listing is this panel's copy of the host's state, so keeping it in step

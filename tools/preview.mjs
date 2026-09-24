@@ -335,6 +335,12 @@ function makeHost(scenario, state) {
         if (parsed.action === 'models') {
           if (scenario.catalogReason !== undefined) {
             return send(200, { catalog: null, reason: scenario.catalogReason })
+          }          // A host that fails the catalog read outright, rather than answering
+          // that it has no models. The two are different states — one is worth
+          // retrying, the other is a configuration — and `refreshCatalog` only
+          // guarded the connection failure, so this shape had no fixture.
+          if (scenario.catalogRefused === true) {
+            return send(500, { error: 'the model catalog could not be read' })
           }
           return send(200, { catalog: scenario.catalog ?? DEFAULT_CATALOG })
         }
@@ -1437,6 +1443,15 @@ const SCENARIOS = {
    * told it could not know.
    */
   transcriptRefusedLater: { transcriptRefusedAfterFirst: true },
+
+  /**
+   * The host answers, but cannot name its models.
+   *
+   * `refreshCatalog` guarded `status === 0` and treated every other answer as a
+   * successful read of a catalog it does not have. `catalogReason` already exists
+   * for "the deployment told us why" — this is the shape where nobody did.
+   */
+  catalogRefused: { catalogRefused: true },
 
   /**
    * The session list, narrowed by a phrase that appears in a conversation rather

@@ -1,6 +1,6 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v122 已交付并入库。** 下一节就是最新的一轮改动；下面标 v108/v107/v106/v105/v104/v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> **当前状态：v123 已交付并入库。** 下一节就是最新的一轮改动；下面标 v108/v107/v106/v105/v104/v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
 > 只想知道「现在能做什么、下一步做什么」，读到 v120 那一段为止即可。
 >
 > **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（713 条）与
@@ -19,6 +19,99 @@
 > **已入库**：v3→v119 的全部改动已提交并推送到 `origin/main`。工作区干净。
 > （v118 是 `f245e21`，v117 是 `1df4842`，v108 是 `0bfdf20`，v107 是 `afc1ac1`，v105 是 `4b1f0aa`，v103 是 `91fa7dd`，v102 是 `77b75e3`，v101 是 `cc33dd9`，v99 是 `bff292d`，v92 是 `e3ad6ba`，v91 是 `3d96bf1`，v90 是 `767e4cd`，v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
 
+## v123：宿主拒绝描述模型目录时，菜单不再在冒号处断掉
+
+v122 修的是一处 `status === 0` 当作唯一失败的判据。这一轮做的是**按属性枚举同一个模式**，
+而不是再撞见一个。
+
+### 全文件搜下来只有两处候选，只有一处是缺陷
+
+`status === 0` 在 `extension/sidepanel.js` 里只剩两处：`refreshCatalog`（L1036 附近）与
+`select-model`（L1479 附近）。第三处（L3544）是 v122 已修的 `refreshTranscript`。
+
+`select-model` **不是缺陷**：它后面还有第二道检查 `if (selected === false || selected === undefined
+|| selected === null)` 会把失败报出来。**按属性枚举不等于见一个改一个。**
+
+### 缺陷
+
+`refreshCatalog` 只把「连不上」（`status === 0`）当失败，其余状态码落到成功路径：
+一个 500 没有 `catalog`，于是 `catalog` 变成 `null`、`catalogReason` 变成**空串**，
+菜单画出「模型列表不可用」**后面什么都没有**。
+
+而那正是宿主**回答**「这个部署不路由任何模型」时的句子形态——「模型列表不可用：no model service
+in this profile」。两者要读者去做的事**正好相反**：一个是去改配置，一个值得重试，
+而 `refreshCatalog` 自己的 docstring 就写着这个失败「会在下次打开时重试」。
+
+### 修法
+
+解构出 `ok` 并改为 `if (!ok) {`：
+
+```js
+if (!ok) {
+  // A refused connection is already reported by the health poll as an
+  // unreachable host, and it leaves the last good catalog alone rather than
+  // replacing it with nothing.
+  if (status === 0) return
+  catalog = null
+  catalogReason = payload?.error ?? `HTTP ${status}`
+  drawModel()
+  return
+}
+```
+
+`status === 0` 单独保留：那已经由健康轮询报成「宿主不可达」，再在这句话里说第二遍，
+读者会以为有两个东西坏了。
+
+### 实测读数（真实 Chromium，新场景 `catalogRefused`）
+
+| 读数 | 修复前 | 修复后 |
+| --- | --- | --- |
+| `.menu-note` | `模型列表不可用` | `模型列表不可用：the model catalog could not be read` |
+| `reason`（冒号之后） | `""` | `the model catalog could not be read` |
+| `saysWhy` | **false** | **true** |
+| 可选项数 | 0 | 0（失败态本就没有可选项） |
+
+### ★ 我的探针第一版把缺陷读成了修复
+
+第一版 `saysWhy` 的写法是「把冒号之前的部分剥掉，看还剩不剩东西」。
+而缺陷产出的那句**根本没有冒号**，于是什么都剥不掉，剩下整句，探针报
+「the menu reports the state and its reason」——**判据把一句断了的话读成完整的**。
+
+这是本仓库记录的第五次同类错误，也是同一个形状：**一个不可能失败的判据读起来像通过**。
+改成显式找分隔符（`/[：:]/`），找不到就是没有理由；顺带把 `endsAtTheColon` 与 `reason`
+都报出来，让读数自己说清楚。
+
+### ★ 测试必须放在文件末尾（又一次撞到）
+
+这个状态**不能**用 `openModelMenu` 驱动：面板只读一次目录并**一直保留**，
+而 `panel-stream` 全程共享同一个面板实例——跑到这条测试时，前面的测试早已把目录填好，
+面板没有理由再问一次。诚实的到达方式是**重新 import 一份面板**（带 `?no-catalog-failed=`
+的 cache-busting 查询），与既有那两条同类的测试一致。
+
+第一版把它放在 L4302（文件中部），结果**后续六条测试全红**
+（「the arrow keys walk the picker」「a draft is sent, not kept」「a search reaches rows the panel
+has never held」等）。原因正是文件里已经写明的：再次 import 会给同一批 stub 元素挂上**第二套监听器**，
+之后任何派发事件的测试都会让处理器跑两遍。移到文件末尾后 169 passed / 0 failed。
+
+### 变异检查（`tools/mutate.mjs`）4/4 符合声明
+
+三个真坏法全部变红：`back-to-status-zero`（缺陷本身）、`the-reason-is-dropped`
+（报了状态不报原因）、`the-failure-is-read-as-success`（整个分支跳过）。
+
+一条**等价变异保持绿**：`connection-guard-hoisted`——把 `if (status === 0) return` 从 `!ok` 块内
+挪到块外。因为 `status === 0` 蕴含 `!ok`，两种位置对完全相同的输入返回。
+它写进 "expect: green" 并附理由，而不是假装没红是侥幸。
+
+### 验证读数
+
+- `npm test` → **742 passed, 0 failed, 0 skipped**（741 → 742）
+- `npm run check:extension` → exit 0
+- 变异 4/4；画廊 20 张重渲**只有指纹变，图片逐字节未变**
+  （`catalogRefused` 是失败态，不在画廊里）
+
+### 新增文件（`.tmp-run/`，被 gitignore）
+
+`probe-catalog-refused.js`（判据本体，A/B 两版都跑过）、`mutate-catalog-failure.mjs`。
 ## v122：读不出来的对话，不能被画成空的
 
 ### 缺陷

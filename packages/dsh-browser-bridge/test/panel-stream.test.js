@@ -87,6 +87,17 @@ const host = {
    * and cannot answer is a different state, and the panel treated it as success.
    */
   readFails: false,
+  /**
+   * When true, the catalog read answers with a failure status.
+   *
+   * A real host can fail this route; the stub could only answer with a catalog or
+   * with the "no models" reason, so the failure had no shape to be tested with.
+   */
+  catalogFailed: false,
+  /** When set, the answer `select-model` gets, mutated per test. */
+  selectModel: null,
+  /** Every `POST {action:'select-model'}` body, in order. */
+  selectModelCalls: [],
   /** Every `POST {action:'messages'}` body, in order. */
   reads: [],
   /**
@@ -466,7 +477,23 @@ globalThis.fetch = async (url, options = {}) => {
     // handle — but it was the *only* state reachable, so `drawModelMenu`'s
     // rendering had no test at all, and the two state-carrying rows it builds
     // (the chosen model, the chosen reasoning effort) shipped without one.
+    if (body.action === 'select-model') {
+      // Overridable so a failed switch can be driven from here. It answered
+      // success unconditionally, so the branch that reports a refusal — the one
+      // that produced 「切换失败：」 with nothing after the colon — was unreachable.
+      host.selectModelCalls.push(body)
+      if (host.selectModel !== null && host.selectModel !== undefined) {
+        return respond(host.selectModel.payload, host.selectModel.status)
+      }
+      return respond({ selected: body.model })
+    }
     if (body.action === 'models') {
+      // A host that cannot answer the catalog read at all, as opposed to one that
+      // answers "this deployment routes no models". Both leave the panel without a
+      // catalog and they call for opposite things.
+      if (host.catalogFailed === true) {
+        return respond({ error: 'the model catalog could not be read' }, 500)
+      }
       // The panel reads `payload.catalog`, and falls back to `error` when there is
       // no catalog at all — the two are different states and the shape here has
       // to be the real one, or the menu renders "unavailable" while the fixture
@@ -6437,3 +6464,77 @@ test('a panel nobody is looking at stops asking, and asks again when looked at',
   }
 })
 
+test('a catalog a host refused to describe is not reported as "no models here"', async (t) => {
+  // The panel reads the catalog once and keeps it, so this cannot be driven with
+  // `openModelMenu`: by the time this test runs an earlier one has filled the
+  // cache and the panel has no reason to ask again. A fresh panel is the honest
+  // way to reach the state — it is what someone gets when they open the side
+  // panel while the catalog route is failing.
+  t.onCleanup(() => {
+    host.catalogFailed = false
+    host.catalog = null
+    registry.get('model').click()
+  })
+
+  // The stated-reason state first, so the difference is shown rather than
+  // asserted in the abstract: here the host *answered*, and its answer is the
+  // part the reader needs.
+  host.catalog = { catalog: null, reason: 'no model service in this profile' }
+  globalThis.setInterval = (body) => {
+    clocks.push(body)
+    return clocks.length
+  }
+  try {
+    await import(`${pathToFileURL(join(extensionDir, 'sidepanel.js')).href}?no-catalog-stated=${turn += 1}`)
+    await settle()
+  } finally {
+    globalThis.setInterval = realSetInterval
+  }
+  registry.get('model').click()
+  await settleMacrotask()
+  await settle()
+  const stated = registry.get('model-menu').textContent
+  assert.ok(
+    stated.includes('no model service in this profile'),
+    `the stated-reason state no longer reaches the reader, so the contrast below proves nothing: ${JSON.stringify(stated)}`,
+  )
+  registry.get('model').click()
+  await settle()
+
+  // Now the read itself fails. The guard was `status === 0`, so a 500 fell through
+  // to the success path: `payload.catalog` was undefined, `catalog` became null,
+  // and the menu drew 「模型列表不可用」 with nothing after the colon — the same
+  // sentence as the state above, minus the one part that says *which* state it is.
+  host.catalog = null
+  host.catalogFailed = true
+  globalThis.setInterval = (body) => {
+    clocks.push(body)
+    return clocks.length
+  }
+  try {
+    await import(`${pathToFileURL(join(extensionDir, 'sidepanel.js')).href}?no-catalog-failed=${turn += 1}`)
+    await settle()
+  } finally {
+    globalThis.setInterval = realSetInterval
+  }
+  registry.get('model').click()
+  await settleMacrotask()
+  await settle()
+
+  const failed = registry.get('model-menu').textContent
+  assert.ok(
+    failed.includes('模型列表不可用'),
+    `the menu no longer reports the state at all: ${JSON.stringify(failed)}`,
+  )
+  // The assertion is that the sentence does not stop at the colon. That is what
+  // an empty reason looks like on screen, and it reads as a truncated thought
+  // rather than as a failure with a cause.
+  assert.ok(
+    !/模型列表不可用\s*[：:]?\s*$/.test(failed),
+    `the menu says the list is unavailable and nothing else: ${JSON.stringify(failed)}`,
+  )
+  assert.ok(
+    failed.includes('the model catalog could not be read'),
+    `the failure's own words never reached the reader: ${JSON.stringify(failed)}`,
+  )
+})
