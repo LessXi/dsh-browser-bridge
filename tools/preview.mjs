@@ -673,6 +673,31 @@ const TABLE_MESSAGES = [
 ]
 
 /**
+ * A two-column table narrow enough to fit the panel without scrolling.
+ *
+ * The fitting case is the one a scroll-driven edge state gets wrong: a table that
+ * fits is never scrolled, so any state that is only refreshed from the scroll
+ * handler stays at whatever the renderer wrote. That was `at-end="no"`, which the
+ * stylesheet reads as "more table to the right" — so the reader was shown a shade
+ * promising content that does not exist, on the one table where they can see the
+ * whole thing at once.
+ */
+const TABLE_FITTING_MESSAGES = [
+  { kind: 'user', text: '这两个哪个快' },
+  {
+    kind: 'assistant',
+    text: [
+      '实测是这样：',
+      '',
+      '| 做法 | 中位耗时 |',
+      '| --- | ---: |',
+      '| 直写 | 2.4ms |',
+      '| 批量 | 0.3ms |',
+    ].join('\n'),
+  },
+]
+
+/**
  * A short conversation around one failed tool call that carries a reason.
  *
  * Kept apart from `DEFAULT_MESSAGES` so the failure is on screen without a long
@@ -1229,6 +1254,18 @@ const SCENARIOS = {
 
   /** A four-column comparison table, the widest thing the panel ever shows. */
   table: { messages: TABLE_MESSAGES },
+
+  /**
+   * A two-column table narrow enough to fit the panel without scrolling.
+   *
+   * This is the case that a scroll-driven edge state gets wrong. `markTableEdges`
+   * was called only from the scroll handler, and a table that fits is never
+   * scrolled — so it kept the `at-end="no"` that `markdown.js` writes, which the
+   * stylesheet reads as "there is more to the right" and draws a shade for. The
+   * reader is told about content that does not exist, on the one table where they
+   * can see the whole thing at once.
+   */
+  tableFits: { messages: TABLE_FITTING_MESSAGES },
 
   /**
    * The same table with the scroller focused, so a real key press can be judged.

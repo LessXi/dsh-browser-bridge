@@ -49,6 +49,19 @@ class Element {
     this.clientHeight = 0
     this.offsetHeight = 0
     /**
+     * The horizontal metrics, defaulted for the same reason as the vertical ones.
+     *
+     * They were missing, and `undefined - undefined` is `NaN`, not zero — so every
+     * comparison against the scrollable width was false and any code asking "does
+     * this still have content to the right" took the branch for a box it cannot
+     * measure. A table scroller is judged entirely on these numbers, so without
+     * them the panel's edge logic was unreachable from the suite while looking
+     * perfectly exercised.
+     */
+    this.scrollLeft = 0
+    this.scrollWidth = 0
+    this.clientWidth = 0
+    /**
      * Where this element's box starts, in the viewport.
      *
      * A plain assignable field rather than a real layout engine: a test that
@@ -306,11 +319,22 @@ class Element {
     this.selectionEnd = this.#value.length
   }
 
-  /** Reset scroll metrics, for tests that drive the follow-the-bottom rule. */
-  measure({ scrollTop = 0, scrollHeight = 0, clientHeight = 0 } = {}) {
+  /**
+   * Reset scroll metrics, for tests that drive the follow-the-bottom rule.
+   *
+   * The horizontal pair is here for the same reason as the vertical one, and was
+   * missing: the panel's table scrollers read `scrollWidth`/`clientWidth` to decide
+   * which way a table still has content. Without them those sums are `NaN`, every
+   * comparison against them is false, and a table is reported as fitting whatever
+   * its size — so a test could not tell the edge logic working from it being dead.
+   */
+  measure({ scrollTop = 0, scrollHeight = 0, clientHeight = 0, scrollLeft = 0, scrollWidth = 0, clientWidth = 0 } = {}) {
     this.scrollTop = scrollTop
     this.scrollHeight = scrollHeight
     this.clientHeight = clientHeight
+    this.scrollLeft = scrollLeft
+    this.scrollWidth = scrollWidth
+    this.clientWidth = clientWidth
   }
 
   /**

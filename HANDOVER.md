@@ -1,7 +1,7 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v112 已交付并入库。** 下一节就是最新的一轮改动；下面标 v108/v107/v106/v105/v104/v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v112 那一段为止即可。
+> **当前状态：v113 已交付并入库。** 下一节就是最新的一轮改动；下面标 v108/v107/v106/v105/v104/v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v113 那一段为止即可。
 >
 > **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（713 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
@@ -19,7 +19,102 @@
 > **已入库**：v3→v109 的全部改动已提交并推送到 `origin/main`。工作区干净。
 > （v108 是 `0bfdf20`，v107 是 `afc1ac1`，v105 是 `4b1f0aa`，v103 是 `91fa7dd`，v102 是 `77b75e3`，v101 是 `cc33dd9`，v99 是 `bff292d`，v92 是 `e3ad6ba`，v91 是 `3d96bf1`，v90 是 `767e4cd`，v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
 
-> ## v112：表格 —— 一条从未有过视觉覆盖的渲染路径
+> ## v113：装得下的表格在撒谎——上一轮我自己引入的缺陷
+
+v112 给表格加了「右边还有内容」的渐隐提示。**这一轮发现那条提示对装得下的表格是假的**，而我上一轮
+既没有量过这种情况，也没有为它写过测试。
+
+### 缺陷
+
+`markTableEdges(scroller)` **只在滚动事件里被调用**。而一张比面板窄的表格**永远不会被滚动**，
+所以它保留 `markdown.js` 写下的初值，那条初值就是它的终值：
+
+| 属性 | 值 | 样式表读成 | 实际几何 |
+| --- | --- | --- | --- |
+| `data-scrolled` | `no` | 左阴影隐藏 | 左边确实没有内容 ✓ |
+| `data-at-end` | `no` | **右阴影显示** | **右边也没有内容** ✗ |
+
+实测（`.tmp-run/probe-table-fitting-hint.js`，`probe-table-in-transcript.js`）：
+
+| 读数 | 修复前 | 修复后 |
+| --- | --- | --- |
+| `overflow` | 0 | 0 |
+| `data-at-end` | **`no`** | **`yes`** |
+| `rightShadeVisible` | **true** | **false** |
+| `leftShadeVisible` | **true** | **false** |
+| `falseHintCount` | **1** | **0** |
+
+两条阴影同时出现，而那张表格左右都没有更多内容——**读者在唯一一张能一眼看全的表格上，被告诉还有内容没看到。**
+
+这与我在 v112 的 CSS 注释里写的「visible while there is more table in that direction and gone once there is not」
+正好相反。
+
+### 修法：绘制之后问一次，而不是在渲染时猜
+
+新增 `markEveryTableEdge()`（`extension/sidepanel.js`），在 `reconcileRows` 末尾调用一次，
+对 `transcript` 里每个 `.table-scroll` 跑一遍 `markTableEdges`。
+
+**为什么不能在渲染时决定**：渲染器产出的是标记，而一张表格最终多宽是**布局**的答案，不是标记的答案。
+所以只能去问元素自己。`reconcileRows` 是每次行集变化之后的必经之处，也就是表格唯一可能出现或改变尺寸的时刻。
+
+修后 `markTableEdges` 的提前返回分支（`maximum <= 1` → `scrolled=no` / `atEnd=yes`）**终于会被执行到**，
+而它正好隐藏两条阴影——那段代码本来是对的，只是从没被叫到。
+
+### 变异验证（`.tmp-run/mutate-table-edges-suite.mjs`）
+
+**真坏法 2/2 命中、等价变异 1/1 保持绿**、`restoredExactly: true`：
+
+- `no-post-draw-pass`（删掉 `markEveryTableEdge()` 调用）→ 变红 ✓
+- `end-without-tolerance`（`>= maximum - 1` 改成 `=== maximum`）→ 变红 ✓
+- `every-table-claims-the-end`（删掉提前返回分支）→ **等价变异，必须不红** ✓
+
+**★ 那个等价变异用穷举证明过，而不是推理**（`.tmp-run/probe-edge-mutation-equivalence.mjs`）：
+对 `maximum` 与 `scrollLeft` 的 40413 组取值逐一比对两版输出，**8 处差异**——
+而全部 8 处都要求 `maximum <= 1` **且** `scrollLeft > 1`，这在几何上不可能共存：
+一个没有可滚动余量的盒子不可能被滚动。所以它与原实现只在**不可达状态**上不同。
+脚本把 `realCaught` 与 `equivalentHeld` 分开统计，不混成一个「命中数」。
+
+### ★ 测试基建的两个真实缺口（不修就写不出上面的测试）
+
+**① `packages/dsh-browser-bridge/test/dom-shim.js` 的元素没有水平滚动度量。**
+它一直有 `scrollTop`/`scrollHeight`/`clientHeight`，而没有 `scrollLeft`/`scrollWidth`/`clientWidth`。
+
+后果不是「少一个字段」，而是 **`undefined - undefined === NaN`**，于是 `maximum <= 1` 恒为 false、
+**面板的边缘逻辑在套件里完全不可达**——看起来被覆盖了，实际一次都没进去过。
+已补上三个字段的初值，并让 `measure()` 接受水平的三个参数。
+
+**② `settle()` 只排空微任务，不驱动轮询。** 我第一版测试写 `host.messages = [...]` 然后 `await settle()`，
+报「the fixture did not render a table」——因为**从没有谁去问宿主拿新行**，读到的还是上一个夹具。
+该文件里已有 `readTranscript()`（注释原文写着「a test that sets `host.messages` and calls `settle` is still
+looking at the previous fixture」），我没看见。已改用 `readTranscript()`。
+
+### ★ 我自己的判据错误（两次）
+
+**① 探针克隆表格去测「装得下」的情形**：`probe-table-fitting-hint.js` 用 `cloneNode` 造了一张宽容器里的表格，
+而克隆体在 `#transcript` **之外**——`markEveryTableEdge()` 看不到它。所以它报的「假提示」里，
+至少有一部分是探针自己造的产物。改成读面板**真的画出来**的那张表（`probe-table-in-transcript.js`），
+并新增场景 `tableFits`（两张两列的小表格）。**判据必须在产品自己的路径上通过。**
+
+**② 断言在正确的时机之前读**：第一版测试在 `readTranscript()` **之后**才用 `measure()` 设置宽度，
+于是读的是面板上一次测量（shim 默认全 0）的结论。顺序必须反过来：宽度要在**做决定的那一遍之前**就位。
+
+### 验证读数（已绿，不必重跑）
+
+- `npm test` → **719 passed, 0 failed, 0 skipped**（717 → 719）
+- `npm run check:extension` → exit 0
+- 画廊 17 张重渲后只有 `SOURCES.json` 指纹变，图片字节未变
+- 高对比度下 `tableFits` 也是 `falseHintCount: 0`
+
+### 新增探针与场景（`.tmp-run/`，被 gitignore）
+
+`probe-table-edge-state.js`（三个滚动位置 × 属性值是否与几何一致）、
+`probe-table-fitting-hint.js`（克隆体，**这个判据是错的，留作记录**）、
+`probe-table-in-transcript.js`（最终判据：只读面板画出来的表）、
+`probe-edge-mutation-equivalence.mjs`（穷举证明等价变异）、
+`mutate-table-edges.mjs`、`mutate-table-edges-suite.mjs`、
+`why-no-table-in-suite.mjs`、`why-suite-table-missing.mjs`、`inspect-suite-pattern.mjs`。
+新场景 `tableFits`（`tools/preview.mjs` 的 `TABLE_FITTING_MESSAGES`）。
+## v112：表格 —— 一条从未有过视觉覆盖的渲染路径
 
 ### 起因：真实数据说这不是边缘情况
 

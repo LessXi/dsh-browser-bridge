@@ -2389,6 +2389,35 @@ function reconcileRows(next) {
       ?.node.querySelector(`.${carried.control}`)
       ?.focus()
   }
+
+  markEveryTableEdge()
+}
+
+/**
+ * Put every table's edge state right for the size it now has.
+ *
+ * `markTableEdges` was only ever called from the scroll handler, which left the
+ * values `markdown.js` writes as the table's *final* state until somebody
+ * happened to scroll it. For a table narrower than the panel that never happens,
+ * so it kept `at-end="no"` — which the stylesheet reads as "there is more table
+ * to the right" — and showed a shade claiming content that does not exist. Both
+ * halves were wrong at once: `scrolled="no"` also left the leading shade hidden
+ * on a table that, being centred in its own scroller, had nothing to its left
+ * either. Measured on a fitting table: `rightShadeVisible: true`,
+ * `leftShadeVisible: true`, `overflow: 0`.
+ *
+ * The fix is to ask once after a draw rather than to guess at render time. The
+ * renderer cannot know: it produces markup, and the width a table ends up with is
+ * the layout's answer, not the markup's. So the panel asks the elements
+ * themselves, here, where the seams are — `reconcileRows` runs after every change
+ * to the row set, which is the only time a table can appear or change size.
+ *
+ * @returns {void}
+ */
+function markEveryTableEdge() {
+  for (const scroller of transcript.querySelectorAll('.table-scroll')) {
+    markTableEdges(scroller)
+  }
 }
 
 /**

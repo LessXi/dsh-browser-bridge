@@ -1486,6 +1486,108 @@ test('the message is on screen the moment it is sent, not 800ms later', async ()
   })
 })
 
+test('a table that fits says so, and one that does not says which way it continues', async () => {
+  // The edge shades are driven by two attributes the stylesheet reads, because CSS
+  // cannot see `scrollLeft`. The failure this test exists for is specific: those
+  // attributes were only ever refreshed from the scroll handler, and a table that
+  // fits is never scrolled, so it kept the `at-end="no"` the renderer writes —
+  // which the stylesheet reads as "there is more table to the right". Measured in
+  // the browser on a fitting table: both shades visible, on the one table where
+  // the reader can see the whole thing at once.
+  //
+  // Both cases are asserted, because a fix that made every table say "nothing to
+  // the right" would pass the fitting half and silently drop the hint from the
+  // tables that need it.
+  await settleToIdle()
+  host.messages = [
+    { kind: 'user', text: '这两个哪个快' },
+    {
+      kind: 'assistant',
+      text: '实测：\n\n| 做法 | 中位耗时 |\n| --- | ---: |\n| 直写 | 2.4ms |\n| 批量 | 0.3ms |',
+    },
+  ]
+  // `settle` only drains microtasks; nothing has asked the host for the new rows
+  // until the transcript clock runs. Setting the fixture and settling reads the
+  // *previous* one, which is how this test first reported that the fixture
+  // rendered no table at all.
+  await readTranscript()
+
+  const scrollers = transcript.querySelectorAll('.table-scroll')
+  assert.equal(scrollers.length, 1, 'the fixture did not render a table, so this test proves nothing')
+
+  // The panel measured this table when it drew it, and the shim has no layout —
+  // so the width it reported is the shim's default of zero, which is the fitting
+  // case. That is the case under test: a table that fits must say the end is here.
+  //
+  // Ordering is the lesson from writing this twice. Setting the widths *after* the
+  // draw and reading the attributes asserts nothing about the panel: it reads back
+  // whatever the last measurement concluded, which is the zero-width answer. The
+  // widths have to be in place before the pass that decides.
+  const narrow = scrollers[0]
+  assert.equal(
+    narrow.getAttribute('data-scrolled'),
+    'no',
+    'a table narrower than the panel must not claim content to its left',
+  )
+  assert.equal(
+    narrow.getAttribute('data-at-end'),
+    'yes',
+    'a table that fits must report the end, or the stylesheet draws a shade promising content that is not there',
+  )
+
+  // And the same element, once it is genuinely wider than its box, has to say the
+  // opposite — otherwise a fix that marked every table as "nothing to the right"
+  // would pass the half above and quietly drop the hint from the tables that need
+  // it most. The scroll handler is what re-decides, so it is driven directly.
+  narrow.measure({ scrollWidth: 574, clientWidth: 332, scrollLeft: 0 })
+  narrow.emit('scroll', { target: narrow })
+  assert.equal(
+    narrow.getAttribute('data-at-end'),
+    'no',
+    'a table wider than its box has more to the right, and must say so',
+  )
+})
+
+test('scrolling a table moves the shades to match where the reader is', async () => {
+  await settleToIdle()
+  host.messages = [
+    { kind: 'user', text: '这两个哪个快' },
+    {
+      kind: 'assistant',
+      text: '实测：\n\n| 做法 | 中位耗时 |\n| --- | ---: |\n| 直写 | 2.4ms |\n| 批量 | 0.3ms |',
+    },
+  ]
+  await readTranscript()
+
+  const scroller = transcript.querySelectorAll('.table-scroll')[0]
+  assert.notEqual(scroller, undefined, 'the fixture did not render a table')
+
+  // The scroll handler is the only thing that keeps these current while the reader
+  // moves, so it is driven here exactly as the browser drives it: set the position,
+  // dispatch the event, read what the panel decided.
+  scroller.measure({ scrollWidth: 574, clientWidth: 332, scrollLeft: 0 })
+  scroller.emit('scroll', { target: scroller })
+  assert.equal(scroller.getAttribute('data-scrolled'), 'no', 'at the left edge there is nothing to the left')
+  assert.equal(scroller.getAttribute('data-at-end'), 'no', 'and 242px of table is still to the right')
+
+  scroller.measure({ scrollWidth: 574, clientWidth: 332, scrollLeft: 121 })
+  scroller.emit('scroll', { target: scroller })
+  assert.equal(scroller.getAttribute('data-scrolled'), 'yes', 'past the left edge the leading shade belongs on screen')
+  assert.equal(scroller.getAttribute('data-at-end'), 'no', 'the middle is not the end')
+
+  // `scrollLeft` lands on 573.5 for a 574 maximum in a real browser, so the end has
+  // to be recognised within a pixel — an exact comparison would leave the trailing
+  // shade lit with nothing left to show.
+  scroller.measure({ scrollWidth: 574, clientWidth: 332, scrollLeft: 573.5 })
+  scroller.emit('scroll', { target: scroller })
+  assert.equal(
+    scroller.getAttribute('data-at-end'),
+    'yes',
+    'a sub-pixel short of the end is the end; otherwise the shade stays lit over an empty margin',
+  )
+  assert.equal(scroller.getAttribute('data-scrolled'), 'yes', 'the leading shade stays while there is table behind')
+})
+
 test('the echo is replaced by the host\'s own rows, so it cannot become a lie', async () => {
   // The echo is a stand-in. `rows` still holds what the host last sent, so the
   // next read replaces the whole list — which is what keeps a message the host
