@@ -20,7 +20,7 @@
  */
 
 /** A run of inline content: literal text, or one styled span. */
-const INLINE_PATTERN = /(`[^`\n]+`|\*\*[^*\n]+\*\*|__[^_\n]+__|\*[^*\n]+\*|_[^_\n]+_|\[[^\]\n]*\]\([^()\s]+\))/g
+const INLINE_PATTERN = /(!?\[[^\]\n]*\]\([^()\s]+\)|`[^`\n]+`|\*\*[^*\n]+\*\*|__[^_\n]+__|\*[^*\n]+\*|_[^_\n]+_)/g
 
 /** Schemes a message is allowed to turn into a clickable link. */
 const SAFE_SCHEMES = new Set(['http:', 'https:', 'mailto:'])
@@ -266,6 +266,30 @@ export function renderInline(document, text) {
       const node = document.createElement('strong')
       node.textContent = token.slice(2, -2)
       fragment.append(node)
+    } else if (token.startsWith('![')) {
+      // A markdown image is its own thing, and it used to be read as a link: the
+      // pattern matched from the `[`, so the `!` stayed on the line as literal
+      // text and the picture became a clickable link to its own file — measured
+      // across this machine's sessions, 162 images in real answers, 48 of them
+      // remote and therefore rendered as `!alt` pointing at an image file.
+      //
+      // The panel cannot show a remote picture: it renders a conversation, and the
+      // message's own images arrive through the harness as attachments with a
+      // content-addressed id, not as markdown. So the honest thing is the alt text
+      // — that is what the author wrote for a reader who cannot see the picture —
+      // with the source beside it, the same way a declined link is drawn. When the
+      // alt is empty the source is the only thing the message ever said.
+      const split = token.indexOf('](')
+      const alt = token.slice(2, split)
+      const src = token.slice(split + 2, -1)
+      const label = alt.length > 0 ? alt : src
+      fragment.append(document.createTextNode(label))
+      if (alt.length > 0) {
+        const address = document.createElement('span')
+        address.className = 'image-src'
+        address.textContent = ` (${src})`
+        fragment.append(address)
+      }
     } else if (token.startsWith('[')) {
       const split = token.indexOf('](')
       const label = token.slice(1, split)

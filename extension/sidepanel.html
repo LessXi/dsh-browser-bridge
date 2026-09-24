@@ -633,6 +633,10 @@
          follows, because it is there to say which target was declined, not to be
          read as part of the sentence. */
       .answer .href-raw { color: var(--faint); }
+      /* The same treatment for a picture the panel cannot fetch: the alt text is
+         what the author wrote for a reader who cannot see it, and the source says
+         which file was meant. */
+      .answer .image-src { color: var(--faint); }
       pre {
         background: color-mix(in oklab, CanvasText 6%, transparent);
         border-radius: var(--radius-lg);

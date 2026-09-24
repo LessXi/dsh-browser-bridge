@@ -767,6 +767,13 @@ const LINK_MESSAGES = [
       '- 另一处绝对地址：[W3C 无障碍](https://www.w3.org/TR/WCAG22/)',
       '',
       '本地文件不走链接：[compatibility.json](C:/Users/hj/.dsh/profiles/web/compatibility.json)',
+      '',
+      // Pictures, in the two shapes a real answer carries. A remote source is the
+      // one that used to become a link (the allowlist passed it, so the reader got
+      // a clickable link to a PNG); an empty alt is common for badges and is where
+      // the old shape printed the same path twice with a bang in front of it.
+      '![截图](https://example.com/shot.png)',
+      '![](/img/pnpm-light.svg)',
     ].join('\n'),
   },
 ]

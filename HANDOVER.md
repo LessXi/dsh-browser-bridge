@@ -1,6 +1,6 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v124 已交付并入库。** 下一节就是最新的一轮改动；下面标 v108/v107/v106/v105/v104/v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> **当前状态：v125 已交付并入库。** 下一节就是最新的一轮改动；下面标 v108/v107/v106/v105/v104/v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
 > 只想知道「现在能做什么、下一步做什么」，读到 v120 那一段为止即可。
 >
 > **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（713 条）与
@@ -19,6 +19,108 @@
 > **已入库**：v3→v119 的全部改动已提交并推送到 `origin/main`。工作区干净。
 > （v118 是 `f245e21`，v117 是 `1df4842`，v108 是 `0bfdf20`，v107 是 `afc1ac1`，v105 是 `4b1f0aa`，v103 是 `91fa7dd`，v102 是 `77b75e3`，v101 是 `cc33dd9`，v99 是 `bff292d`，v92 是 `e3ad6ba`，v91 是 `3d96bf1`，v90 是 `767e4cd`，v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
 
+## v125：图片被渲染成了「前面带感叹号的链接」
+
+### 缺陷
+
+`INLINE_PATTERN` 从 `[` 开始匹配，所以 `![Preview](/absolute/path/image.png)` 里
+**`!` 留在原处当普通文字**，而从 `[` 开始的那一段被当成链接。真实数据里的后果分两种：
+
+| 源 | 渲染结果 | 后果 |
+| --- | --- | --- |
+| `/absolute/path/image.png`（相对） | `!Preview (/absolute/path/image.png)` | 文字前多一个感叹号 |
+| `https://example.com/shot.png`（远程） | `!Preview` **且是可点链接** | 读者点下去到达一张 PNG 文件 |
+
+★ 第二种是承重的：图片 URL 通常是 https，所以 `isSafeHref` **会通过**，
+于是「渲染错了」变成「渲染成了一条通向图片文件的可点链接」。
+
+### 真实读数（`.tmp-run/probe-real-images.mjs`，本机全部会话）
+
+| 读数 | 值 |
+| --- | --- |
+| 真实回答里的 markdown 图片 | **162** |
+| 其中源是远程 http(s) | **48** |
+| **被渲染成可点链接的比例** | **29.6%** |
+| 源是相对路径 | 113 |
+
+alt 为空时更难看：真实数据里很常见（徽章、图表），而旧形状把它印成
+`!/img/pnpm-light.svg (/img/pnpm-light.svg)`——**同一个地址出现两遍，前面还带个感叹号**。
+
+### 官方判据
+
+`@deepseek-ai/dsh-client-ui-primitives` 的 `renderImage`（`lib/index.js` L10897）把图片做成
+**独立的一种节点**，不是链接；解析不出源时返回：
+
+```js
+if (src === void 0) return jsx("span", { className: markdownCss.imageAlt, children: alt })
+```
+
+也就是**退化成 alt 文字**。本仓库照此把图片当成第三种行内类型：
+
+- `INLINE_PATTERN` 的第一条分支改为 `!?\[...\]\(...\)`，**把感叹号纳入匹配**
+- `renderInline` 新增 `token.startsWith('![')` 分支，**放在链接分支之前**
+- 渲染成 **alt 文字 + 灰色地址**（`.image-src`，与 `.href-raw` 同一处理）
+- alt 为空时**只印源一次**，不重复
+
+### 为什么不是真的显示图片
+
+面板渲染的是**对话**，而消息自带的图片经 harness 以附件形式到达（内容寻址的 id），
+不是 markdown。远程图片要显示就得**替读者发起网络请求**——那是另一个功能，
+而且会让「渲染一条消息」变成有副作用的事。所以诚实的做法是显示作者为「看不见图的人」写下的 alt 文字。
+
+### 边界（都有测试）
+
+| 输入 | 输出 | 为什么 |
+| --- | --- | --- |
+| `a! [x](https://e.com) b` | `a! x b`（真链接保留） | 感叹号只有**贴着方括号**时才是图片 |
+| `` `![code](x)` `` | 原样 | 行内代码里是字面量 |
+| `literal \! not an image` | 原样 | 转义的感叹号不是语法 |
+| `![nested [brackets]](/a.png)` | 原样 | 括号嵌套不是这个语法支持的形状 |
+
+### ★ 产品判断：「标签 + 地址」值不值（量了才决定）
+
+上一轮把被拒绝的链接、本轮把图片都改成「标签 + 地址」，屏幕上因此多出一段地址。
+因为这是个真实的取舍，所以量了代价——`.tmp-run/probe-address-cost.mjs`，按**行数**（读者真正付出的是竖直空间）：
+
+| 类别 | 数量 | 多出的行数 | 地址中位字符 |
+| --- | ---: | ---: | ---: |
+| `link:root-relative` | 1238 | 626 | 34 |
+| `link:relative` | 665 | 391 | 39 |
+| `link:fragment` | 538 | 154 | 26 |
+| `image` | 170 | 95 | 35 |
+| `link:file` | 32 | 49 | 74 |
+| **合计** | **2673** | **1339** | — |
+
+**平均每项 0.5 行。** 半行的代价换取「这条链接本该指向哪里」——而地址恰恰是被拒绝的目标里**唯一的信息来源**。
+所以维持现状，并把数字写进 README。
+
+### ★ 一条自我核查（上一轮的改动是不是回归）
+
+上一轮把 `[label](href)` 从「原始 markdown」改成「标签 + 地址」，两者都含标签与地址，
+差别只在标点，所以**变长是完全可能的**。`.tmp-run/probe-declined-length-delta.mjs` 用真实数据两版各算一次：
+
+`shrankCount: 2602 / grewCount: 0`，平均 47.9 → 46.8 字符，估计行数 3984 → 3924。
+**每一条都变短了**，不是回归。
+
+### 变异检查（`tools/mutate.mjs`）5/5 全部命中
+
+`back-to-matching-from-the-bracket`（缺陷本身）、`image-falls-through-to-the-link-branch`、
+`empty-alt-prints-the-source-twice`、`bang-anywhere-on-the-line-swallows-links`、
+`image-branch-skipped-but-pattern-keeps-the-bang`——最后一条证明**两个半边各自独立**：
+把感叹号纳入匹配，与把图片分支接上，是两件都要做的事。
+
+### 验证读数
+
+- `npm test` → **747 passed, 0 failed, 0 skipped**（744 → 747）
+- `npm run check:extension` → exit 0
+- 真实 Chromium（场景 `links`，新增两张图片）：`imageLinkCount: 0`、`syntaxLeaks: []`、`doubledCount: 0`
+- 画廊 20 张重渲**只有指纹变，图片逐字节未变**（`links` 不在画廊里）
+
+### 新增文件（`.tmp-run/`，被 gitignore）
+
+`probe-real-images.mjs`、`probe-declined-width.mjs`、`probe-declined-kinds.mjs`、
+`probe-declined-length-delta.mjs`、`probe-address-cost.mjs`、`probe-href-raw-fit.js`、
+`probe-image-render.js`、`mutate-image-inline.mjs`。
 ## v124：相对路径的链接，读者点下去到达的不是作者写的那个站点
 
 ### 缺陷

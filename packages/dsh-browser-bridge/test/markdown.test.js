@@ -202,6 +202,66 @@ test('a link that does not name its own site is not drawn as one', () => {
   )
 })
 
+test('a picture is not a link with a stray bang in front of it', () => {
+  // The inline pattern matched from the `[`, so `![Preview](/absolute/path/image.png)`
+  // became a link whose visible text began with a literal `!` — and when the source
+  // was a remote URL the check passed it, so the reader got a clickable link
+  // pointing at an image file. Measured across this machine's sessions: 162
+  // markdown images in real answers, 48 of them remote, and the shape with an empty
+  // alt rendered as the same path twice with a bang in front.
+  const document = makeDocument()
+  const rendered = renderMarkdown(document, '![screenshot](/absolute/path/image.png)')
+  assert.equal(
+    flatten(rendered).filter((entry) => entry.startsWith('a:')).length,
+    0,
+    'a picture must not become an anchor: the panel cannot fetch it and the target is a file, not a page',
+  )
+  assert.ok(
+    !rendered.textContent.includes('!'),
+    `the bang is on screen, which is the markdown syntax rather than the words: ${JSON.stringify(rendered.textContent)}`,
+  )
+  // The alt text is what the author wrote for a reader who cannot see the picture,
+  // and the source says which file was meant. Both stay.
+  assert.equal(rendered.textContent, 'screenshot (/absolute/path/image.png)')
+
+  // An empty alt is common in real answers — badges and diagrams carry one — and
+  // then the source is the only thing the message ever said. Printing it twice
+  // (`!src (src)`) is what the old shape did.
+  const bare = renderMarkdown(document, '![](/img/pnpm-light.svg)')
+  assert.equal(bare.textContent, '/img/pnpm-light.svg')
+})
+
+test('a remote picture is not offered as a link either', () => {
+  // This is the case that made the defect visible rather than merely wrong: the
+  // source is https, so it passed the allowlist and the reader got a link to a
+  // PNG. The harness draws the line in the same place — its `renderImage` builds
+  // an image node, and an image it cannot resolve becomes a span holding the alt.
+  const document = makeDocument()
+  const rendered = renderMarkdown(document, 'see ![diagram](https://example.com/a.png) here')
+  assert.equal(rendered.textContent, 'see diagram (https://example.com/a.png) here')
+  assert.equal(
+    flatten(rendered).filter((entry) => entry.startsWith('a:')).length,
+    0,
+    'an image URL is not a destination the reader asked for',
+  )
+})
+
+test('a real link is untouched by the picture rule', () => {
+  // The bang is only a bang when it is attached to the bracket. `a! [x](https://e.com)`
+  // is a sentence ending in an exclamation mark followed by a link, and a rule that
+  // keyed on `!` anywhere on the line would swallow the link.
+  const document = makeDocument()
+  const anchored = renderMarkdown(document, 'a! [docs](https://example.com/) b')
+  assert.equal(flatten(anchored).filter((entry) => entry.startsWith('a:')).length, 1, 'the link must survive')
+  assert.equal(anchored.textContent, 'a! docs b')
+
+  // Inside code the syntax is literal, and so is an escaped bang.
+  const code = renderMarkdown(document, '`![code](x)`')
+  assert.equal(code.textContent, '![code](x)', 'code spans stay literal')
+  const escaped = renderMarkdown(document, 'literal \\! not an image')
+  assert.equal(escaped.textContent, 'literal \\! not an image')
+})
+
 test('only a web address asks for a new tab', () => {
   // `mailto:` is handed to the browser as it is; a tab is not what an email
   // address means. The harness's renderer sets `target` for http(s) alone.
