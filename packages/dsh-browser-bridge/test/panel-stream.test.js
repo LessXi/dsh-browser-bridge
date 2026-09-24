@@ -867,6 +867,22 @@ test('with nothing listening, the panel says so once, and offers a way out', asy
   // And the header must not claim the account is empty: the sessions are all
   // still there, on a port nothing is answering.
   assert.equal(registry.get('title-text').textContent, 'DSH', 'the header claimed there were no sessions')
+
+  // The composer says the same thing, and it has to be *this* reason. The field
+  // names the missing step, and with nothing listening the step is not "create a
+  // session" — that cannot work either, so naming it would send the reader to a
+  // second thing that also fails. The panel's own surface already says what to do
+  // here; the field must not contradict it with a different next move.
+  assert.equal(
+    registry.get('input').placeholder,
+    'dsh web 没在运行…',
+    'the field pointed at a step that cannot work while nothing is listening',
+  )
+  assert.notEqual(
+    registry.get('input').placeholder,
+    '先新建一个会话…',
+    'the field told the reader to create a session against a host that is not answering',
+  )
 })
 
 test('a built panel whose bridge is not attached still offers the way to fix it', async () => {
@@ -955,6 +971,29 @@ test('with no sessions at all, the panel says how to start one, and the button d
     // a stutter.
     assert.equal(registry.get('title-text').textContent, 'DSH', 'the header repeated the empty-state sentence')
 
+    // The composer is the other half of that screen, and it had the same problem
+    // the surface did. The send button was disabled — correctly, there is no
+    // session to send to — while the field kept inviting 「问点什么…」 and stayed
+    // writable. A reader could type a whole question, press send, and watch
+    // nothing happen with the text still sitting there: two entries on one
+    // screen, one of them silently dead.
+    //
+    // The field is not disabled instead. The screen already says what to do first
+    // and the field is where the question goes once it is done; a greyed-out box
+    // with no explanation tells the reader less than the sentence they were about
+    // to type. What it must not do is ask for something it cannot accept.
+    const composer = registry.get('input')
+    assert.equal(
+      composer.placeholder,
+      '先新建一个会话…',
+      'the field invited a question that the disabled send button could not send',
+    )
+    assert.notEqual(
+      composer.placeholder,
+      '问点什么…',
+      'the field is still asking for a question with nowhere to send it',
+    )
+
     const action = registry.get('blocked-action')
     assert.equal(action.textContent, '新建会话')
     host.created.length = 0
@@ -970,6 +1009,14 @@ test('with no sessions at all, the panel says how to start one, and the button d
     await settle()
     assert.equal(registry.get('blocked').hidden, true, 'the empty surface outlived the first session')
     assert.equal(registry.get('title-text').textContent, '新会话')
+    // The invitation comes back with the session. A field that kept saying
+    // 「先新建一个会话…」 after one exists would be wrong in the other direction,
+    // and that is the failure a one-way fix would have shipped.
+    assert.equal(
+      composer.placeholder,
+      '问点什么…',
+      'the field still asks for a session after one exists',
+    )
   } finally {
     host.groups = undefined
     await clockOf('groups')

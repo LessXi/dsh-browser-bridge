@@ -1,7 +1,7 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v104 已交付并入库。** 下一节就是最新的一轮改动；下面标 v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v104 那一段为止即可。
+> **当前状态：v105 已交付并入库。** 下一节就是最新的一轮改动；下面标 v104/v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v105 那一段为止即可。
 >
 > **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（709 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
@@ -16,8 +16,58 @@
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
 >
-> **已入库**：v3→v104 的全部改动已提交并推送到 `origin/main`。工作区干净。
+> **已入库**：v3→v105 的全部改动已提交并推送到 `origin/main`。工作区干净。
 > （v103 是 `91fa7dd`，v102 是 `77b75e3`，v101 是 `cc33dd9`，v99 是 `bff292d`，v92 是 `e3ad6ba`，v91 是 `3d96bf1`，v90 是 `767e4cd`，v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
+
+> ## v105：输入框邀请你提问，而发送键拒绝发送
+
+**症状**：一个还没有会话的面板，屏幕上写着「还没有会话／新建一个，就可以开始问了」+ 一个新建按钮——**同时**底下留着一个可用的输入框，提示还是「问点什么…」。读者打完一整句话，按下发送：**什么都没有发生**，字还在框里。
+
+**实测**（`.tmp-run/probe-empty-composer.js`，`empty` 场景，派发真实点击）：
+
+| 读数 | 值 |
+|---|---|
+| `sendDisabled` | **true**（没有会话，无处可发——这是对的） |
+| `inputDisabled` / `inputReadOnly` | **false / false** |
+| 输入后 `sendBecameEnabled` | **false** |
+| 点击发送后的 `requests` | **`[]`** |
+| `inputValue` | 「这个页面讲的是什么？」——**原样留着** |
+| `verdict` | `the composer accepts a question and does nothing with it` |
+
+机制（`extension/sidepanel.js` 的 `drawSend`）：`sendButton.disabled = … \|\| currentSessionId.length === 0 \|\| …`。按钮知道没有会话就不能发，**而输入框从来不知道**——`input.disabled` 在整个文件里**一次都没被赋值**，`input.placeholder` 只在启动时设过一次。两个控件对同一件事有两种认识。
+
+**已有的那个测试其实描述过这个缺陷**（`panel-stream.test.js` 的 `with no sessions at all…`）：注释原文「the composer still invited 「问点什么…」 and the send button sat disabled with nothing on screen explaining why」——上一轮修的是**中间那块空白**，把 composer 留在了原地。
+
+**修法**：`drawSend` 现在也管输入框的提示文字，于是两者由同一段代码决定。
+
+```js
+const composerPlaceholder = !hostReachable
+  ? t('composer.needsHost')
+  : currentSessionId.length === 0 ? t('composer.needsSession') : t('composer.placeholder')
+if (input.placeholder !== composerPlaceholder) input.placeholder = composerPlaceholder
+```
+
+**为什么不禁用输入框**：面板已经说了要先做什么，而输入框正是做完那步之后要用的地方。灰掉一个框而不说明原因，比读者正要打的那句话信息更少。
+
+**为什么按原因分支而不是只写一句「不能发」**：「不能发」至少有三种原因，出路各不相同——宿主没运行／还没有会话／输入框是空的。第三种由发送键天然表达，前两种要说出来。
+
+**★ 本轮我自己引入并修掉了一个新缺陷**：第一版写成「没有会话就说『先新建一个会话…』」。而在宿主连不上的时候（`hostDown` 场景），**新建会话同样不可能成功**——输入框把读者指向了第二个也会失败的动作。是重渲画廊时看到 `host-down.png` 里那句提示发现的，随后用 `.tmp-run/probe-composer-reasons.js` 定性：`promisesTheWrongNextStep: true`。**顺序因此是按「什么才能真正解开读者」排的**：宿主可达性先于会话存在性。修后两档各自正确：`hostDown` → 「dsh web 没在运行…」，`empty` → 「先新建一个会话…」，`normal` → 「问点什么…」。
+
+**测试**：`panel-stream.test.js` 扩了两条既有测试，而不是新加文件——它们本来就是这两个状态的家。
+- `with no sessions at all, the panel says how to start one, and the button does it`：新增三条断言（提示必须是 `先新建一个会话…`、**必须不是** `问点什么…`、建好会话后必须回到 `问点什么…`）。最后一条是**防单向修复**的：只改一半会让提示永远停在「先新建一个会话…」。
+- `with nothing listening, the panel says so once, and offers a way out`：新增两条（提示必须是 `dsh web 没在运行…`、必须不是 `先新建一个会话…`）。
+
+**变异**（`.tmp-run/mutate-composer-invite.mjs`）：**5/5 命中**、`restoredExactly: true`。每条都写明**该红哪条测试**（`expects`），因为两个分支住在两条测试里——这也让「锚点写错」不会伪装成「等价变异」。
+
+| 坏法 | 红的测试 |
+|---|---|
+| `placeholder-stays-an-invitation`（回到原缺陷） | `with no sessions at all…` |
+| `placeholder-never-goes-back`（单向修复） | `with no sessions at all…` |
+| `needs-session-string-removed`（词条缺失） | `with no sessions at all…` |
+| `host-reason-dropped`（本轮引入的缺陷） | `with nothing listening…` |
+| `reasons-in-the-wrong-order`（先问会话后问宿主） | `with nothing listening…` |
+
+**画廊**：只有 `host-down.png` 真的变了（逐像素核过）。`search.png` 重渲后出现 **1 个像素**差异，位于 CSS `(7, 56.5)`——本仓库第三次遇到同一处的**焦点环抗锯齿抖动**（v93、v104 记录过），已用 `git checkout` 还原。
 
 > ## v104：一篇长回答被整篇念给读者听，而 live region 停不下来
 

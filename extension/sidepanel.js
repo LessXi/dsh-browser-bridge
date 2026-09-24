@@ -690,7 +690,10 @@ function paintStaticCopy() {
   findInput.placeholder = t('find.placeholder')
   toBottom.textContent = '↓'
   toBottom.setAttribute('aria-label', t('action.toBottom'))
-  input.placeholder = t('composer.placeholder')
+  input.setAttribute('aria-label', t('composer.placeholder'))
+  // The field's text is `drawSend`'s to set, because whether a question can be
+  // asked depends on state this function does not read. Setting it here too would
+  // give the panel two writers for one string, which is how they drift.
   // Both scrollers are focusable, and a focusable region with no name is
   // announced as an unlabelled group — the reader is told they are somewhere
   // without being told where. Naming them is what turns "group" into "Conversation".
@@ -3847,6 +3850,28 @@ function drawSend() {
   sendButton.disabled = busy
     ? stopping
     : !hostReachable || currentSessionId.length === 0 || input.value.trim().length === 0
+  // The field and the button have to agree about whether a question can be asked.
+  //
+  // They did not. With no session the button was disabled while the field stayed
+  // writable and the placeholder kept inviting a question, so a reader could type
+  // a whole sentence, press send, and watch nothing happen — the text still
+  // sitting there. Two entries on one screen, one of them silently dead.
+  //
+  // Disabling the field would be the other way to make them agree and it is the
+  // wrong one: the field is where the question goes once the missing step is
+  // done. Keeping it writable and naming that step is the honest version; a
+  // disabled box with no explanation tells the reader less than the sentence they
+  // were about to type.
+  //
+  // ★ The step has to be the *right* one. The first version of this said
+  // 「先新建一个会话…」 whenever there was no session, which was wrong whenever the
+  // host was unreachable: creating a session cannot work either, so the field sent
+  // the reader to a second thing that would also fail. The reasons are ordered by
+  // what actually unblocks the reader.
+  const composerPlaceholder = !hostReachable
+    ? t('composer.needsHost')
+    : currentSessionId.length === 0 ? t('composer.needsSession') : t('composer.placeholder')
+  if (input.placeholder !== composerPlaceholder) input.placeholder = composerPlaceholder
 }
 
 /**

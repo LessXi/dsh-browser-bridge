@@ -73,6 +73,13 @@ export const zh = Object.freeze({
 
   // The composer and its attachments.
   'composer.placeholder': '问点什么…',
+  // Shown instead of the invitation when there is no session to send to. The send
+  // button is disabled in that state, and the field used to keep asking for a
+  // question anyway — a reader could type a sentence and watch it go nowhere.
+  'composer.needsSession': '先新建一个会话…',
+  // And the one for a host that is not answering. Creating a session cannot work
+  // either in that state, so the field must not send the reader to do it.
+  'composer.needsHost': 'dsh web 没在运行…',
   // The way back into a conversation longer than one window. A long session is
   // not unusual — one of the author's own is 6969 rows, of which the panel used
   // to show the last 60 with no indication that anything was missing.
@@ -295,6 +302,8 @@ export const en = Object.freeze({
   'sessions.collapse': 'Show less',
 
   'composer.placeholder': 'Ask anything…',
+  'composer.needsSession': 'Create a chat first…',
+  'composer.needsHost': 'dsh web is not running…',
   'transcript.earlier': 'Earlier messages',
   'transcript.loading': 'Loading…',
   'find.placeholder': 'Find…',
