@@ -38,6 +38,49 @@ const SHOTS = join(root, 'docs', 'screenshots')
 /** The 8-byte PNG signature, so a file is checked for being an image at all. */
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
 
+test('the preview host answers every action the real host does', () => {
+  // The preview's fake host is an instrument, and an instrument that answers a
+  // different set of questions than the real host reports a defect where there is
+  // none. That has now happened twice, in the same file:
+  //
+  //   - `chrome.storage.local.remove` was missing, so every step of a send after
+  //     it silently never ran (see the storage check below).
+  //   - the `approval` action had no branch, so answering a card fell through to
+  //     the catch-all and came back as a bare `{}`. The panel, correctly, treats
+  //     anything but `answered: true` as a failure — so the reader allowed a tool
+  //     once and was told 「没能作答：HTTP 200」. The request had succeeded.
+  //
+  // Both were invisible to the suite, because neither is a panel defect: the panel
+  // was right both times, and only the measurement was wrong.
+  //
+  // The assertion is set equality between the two hosts' branches, so adding an
+  // action to one and not the other fails here rather than being discovered later
+  // as a phantom failure on screen.
+  const real = readFileSync(join(root, 'packages', 'dsh-browser-bridge', 'lib', 'index.js'), 'utf8')
+  const preview = readFileSync(join(root, 'tools', 'preview.mjs'), 'utf8')
+
+  const actions = (source) => new Set(
+    [...source.matchAll(/parsed\.action === '([a-z-]+)'/g)].map((match) => match[1]),
+  )
+
+  const realActions = actions(real)
+  const previewActions = actions(preview)
+  assert.ok(realActions.size >= 6, `only ${realActions.size} actions found in the real host; this check has gone stale`)
+
+  const missing = [...realActions].filter((action) => !previewActions.has(action)).sort()
+  assert.deepEqual(
+    missing,
+    [],
+    `the preview's fake host does not answer ${missing.join(', ')}, so those requests fall through to its catch-all and every probe that exercises them measures the wrong thing`,
+  )
+  const extra = [...previewActions].filter((action) => !realActions.has(action)).sort()
+  assert.deepEqual(
+    extra,
+    [],
+    `the preview answers ${extra.join(', ')}, which the real host does not: a probe would be measuring a host that does not exist`,
+  )
+})
+
 test('the preview host answers every chrome.storage method the panel calls', () => {
   // The panel calls `get`, `set` and `remove`. The preview's fake host had the
   // first two, and the third was missing — which is a small omission with a large

@@ -1,7 +1,7 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v109 已交付并入库。** 下一节就是最新的一轮改动；下面标 v108/v107/v106/v105/v104/v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v109 那一段为止即可。
+> **当前状态：v110 已交付并入库。** 下一节就是最新的一轮改动；下面标 v108/v107/v106/v105/v104/v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v110 那一段为止即可。
 >
 > **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（713 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
@@ -19,7 +19,68 @@
 > **已入库**：v3→v109 的全部改动已提交并推送到 `origin/main`。工作区干净。
 > （v108 是 `0bfdf20`，v107 是 `afc1ac1`，v105 是 `4b1f0aa`，v103 是 `91fa7dd`，v102 是 `77b75e3`，v101 是 `cc33dd9`，v99 是 `bff292d`，v92 是 `e3ad6ba`，v91 是 `3d96bf1`，v90 是 `767e4cd`，v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
 
-> ## v109：假宿主少了一个方法，于是「发送」这条路在仪器里整段不可观测
+> ## v110：假宿主少一个分支，面板为一次成功的操作报错
+
+**症状**：读者在审批卡上点「只允许一次」，面板弹出 `没能作答：HTTP 200`。
+
+`HTTP 200` 是荒谬的读数——请求成功了，面板却在指责它。而这次面板是对的，错的只有量它的仪器。
+
+### 机制
+
+真宿主（`packages/dsh-browser-bridge/lib/index.js` L623）有 8 个 action 分支：`messages`/`search`/`create`/
+`models`/`select-model`/`cancel`/**`approval`**/`send`。preview 假宿主（`tools/preview.mjs`）只有 7 个，
+**`approval` 正是缺的那个**，于是回答落到兜底 `return send(200, {})`。
+
+而面板写的是：
+
+```js
+if (payload?.answered !== true) {
+  say(t('error.notAnswered', { reason: payload?.reason ?? `HTTP ${result.status}` }))
+}
+```
+
+**只有 `{answered: true}` 才算成功**，`{}` 自然不算——于是 `reason` 回退成 `HTTP 200`，一句自相矛盾的告警。
+真宿主回的是 `json(result.answered ? 200 : 409, result)`，且注释写明 409 是**寻常**的（问题可能已在图形
+客户端答过，或回合被取消）。
+
+### 修法
+
+`tools/preview.mjs` 补上 `approval` 分支并**镜像真宿主的三种结局**（而非一律成功）：回答记入
+`state.approvalAnswers`，`scenario.approvalAlreadyAnswered === true` 时回 409 带原因，否则回
+`{ answered: true, id, outcome }`。`state` 初始化改为 `{ requests: [], created: [], approvalAnswers: [] }`。
+
+### 新增守卫测试（`packages/dsh-browser-bridge/test/screenshots.test.js`）
+
+`the preview host answers every action the real host does`：从两个文件各抽出 `parsed.action === '...'` 的
+集合，要求**相等**。多一个也报——否则探针会在量一个真宿主里不存在的宿主。
+
+这条断言的形式是本次的关键：**同一个假宿主在同一个文件里已经犯过两次同类错误**（v109 缺
+`chrome.storage.local.remove`，本轮缺 `approval` 分支），所以补的不是「再修一个分支」，而是「两个宿主的
+能力必须对齐」。
+
+### ★ 探针自身读错了哪一份记录
+
+第一版探针（`.tmp-run/probe-approval-answer.js`）报 `sentAnAnswer: false`，而 Node 侧明明打印出了
+`{"action":"approval","id":"q1","outcome":"allowed-once","scope":"once"}`。原因是 `tools/preview.mjs` 里有
+**两个 `state`**：Node 侧那个（L1372，权威，记录面板经 HTTP 发来的每个请求）与页面内
+`window.__previewState`（L1197，另一份）。**同一个名字下两份记录，读数就只能靠猜。**
+
+判据最终改为读**屏幕上的告警**（`.tmp-run/probe-approval-complaint.js`）——那是读者会看到的东西，也是
+唯一不需要我判断哪份记录为真的量。
+
+### 验证读数
+
+- `npm test` → **714 passed, 0 failed, 0 skipped**（713 → 714）
+- `npm run check:extension` → exit 0
+- 修复前：`panelComplained: true`、`complaint: "没能作答：HTTP 200"`、`cardWentAway: true`
+- 修复后：`panelComplained: false`、`complaint: null`、`cardWentAway: true`
+- 画廊 15 张重渲后**只有 `SOURCES.json` 指纹变，图片逐字节未变**（`git diff --numstat -- docs/screenshots/` 只有 1 行）
+
+### 新增文件（`.tmp-run/`，被 gitignore）
+
+`probe-approval-answer.js`（第一版判据，读错了记录）、`probe-approval-complaint.js`（最终判据：读屏幕告警）、
+`add-readme-rows.mjs`（README 经验表插入脚本）。
+## v109：假宿主少了一个方法，于是「发送」这条路在仪器里整段不可观测
 
 **症状**：探针按下发送，宿主日志里**明明收到了** `{"action":"send",...,"text":"ZEBRA_PROBE"}`
 且回了 `accepted: true`，而屏幕上**什么都没有**：输入框里的字还在、消息没画上去、

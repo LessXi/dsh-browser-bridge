@@ -351,6 +351,24 @@ function makeHost(scenario, state) {
           return send(200, { accepted: true, sentText: text })
         }
         if (parsed.action === 'cancel') return send(200, { cancelled: true })
+        if (parsed.action === 'approval') {
+          // The panel answering a question it was asked. This branch used to be
+          // absent, so the answer fell through to the catch-all below and came
+          // back as a bare `{}` — while the panel, correctly, treats anything
+          // other than `answered: true` as a failure and says so. Answering a
+          // card therefore produced the toast 「没能作答：HTTP 200」: the request
+          // succeeded and the panel told the reader it had not.
+          //
+          // The real host replies `json(result.answered ? 200 : 409, result)`,
+          // and a 409 there is ordinary — the question may have been answered in
+          // the graphical client first, or the turn cancelled. So the relay's
+          // three outcomes are modelled rather than a flat success.
+          state.approvalAnswers.push({ id: parsed.id, outcome: parsed.outcome, scope: parsed.scope ?? null })
+          if (scenario.approvalAlreadyAnswered === true) {
+            return send(409, { answered: false, reason: 'the question was already answered' })
+          }
+          return send(200, { answered: true, id: parsed.id, outcome: parsed.outcome })
+        }
         if (parsed.action === 'create') {
           // A created session joins the list, which is what a real host does and
           // what lets the panel leave its empty state. A fixture that kept
@@ -1351,7 +1369,7 @@ async function main() {
   scenario.locale = textOf('locale', 'en-US')
 
   const out = resolve(outArg ?? join(HERE, `${name}.png`))
-  const state = { requests: [], created: [] }
+  const state = { requests: [], created: [], approvalAnswers: [] }
   const host = makeHost(scenario, state)
   await new Promise((ok) => host.listen(0, '127.0.0.1', ok))
   const hostPort = host.address().port

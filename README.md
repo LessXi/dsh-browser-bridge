@@ -446,7 +446,7 @@ Chrome 需要你在**扩展详情页**手动打开 **「允许访问文件网址
 ## 测试
 
 ```powershell
-npm test                          # 全部 713 条
+npm test                          # 全部 714 条
 npm run check:extension           # 扩展脚本语法检查（Chrome 加载前的预检）
 ```
 
@@ -536,7 +536,7 @@ Chrome for Testing 都装进带版本号的目录，写死路径会在一台机�
 
 ```powershell
 # 推荐：什么都不装。测试是零依赖的自建 runner（自建 harness，不用 node --test）。
-npm test                 # 713 条
+npm test                 # 714 条
 npm run check:extension
 
 # 只在想要编辑器跳转时，才把 profile 的模块树接到本包上（Windows 目录联接）
@@ -567,7 +567,7 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 
 ### 已验证 / 未验证
 
-**已自动化验证**：上面五层测试，713 条。包括真实 Chrome 驱动的快照、点击、输入、截图，
+**已自动化验证**：上面五层测试，714 条。包括真实 Chrome 驱动的快照、点击、输入、截图，
 以及**载入真实扩展的真实 Chromium** 走完整协议并核对页面真的被点到了。扩展的首次连接也已
 在真实 Chrome 里端到端验证过：清空 storage 后，扩展自己读了 health、取了令牌、带着正确令牌
 发起升级（`.tmp-run/probe-enrol-real-browser.js`）。
@@ -692,6 +692,8 @@ cmd /c mklink /J packages\dsh-browser-bridge\node_modules "$env:USERPROFILE\.dsh
 | ★ 判据要先证明它能报红，再相信它报绿（v109） | 「发送与上翻都不掉帧」是一个**到处报绿**的结论，而一条永远为真的判据也会全绿。所以人为同步阻塞主线程 50ms，判据读到 **49.9ms**——它能看见卡顿，而它说这里没有。没有这一步，「零掉帧」只能说明探针跑了，不能说明它分辨得出 |
 | ★★ 替身少一个方法，整个仪器对那条路径就变成了瞎子（v109） | 探针按下发送，宿主**明明收到了** `{"action":"send",...,"text":"ZEBRA_PROBE"}` 且回了 `accepted: true`，而屏幕上什么都没有。根因是 `tools/preview.mjs` 的假 `chrome.storage.local` **只有 `get` 和 `set`**，缺 `remove`——而 `clearDraft()` 正是紧接在发送被接受之后调它，于是那后面**整段成功路径**（清空输入框、放下提及、画出读者刚发的那句）一次都没执行。面板用三个方法，测试替身实现了三个，**只有 preview 那个少一个**：所以 713 条测试全绿，而唯一能截图、能发真实按键的仪器对这条路径完全瞎。修法是把「面板调用的每个 storage 方法」写成一条断言，**要求两个替身都实现**，三处一起对齐 |
 | ★★ 假宿主不承认写操作，面板画的即时反馈就会被下一次轮询抹掉（v109） | 假宿主对 `send` 只回 `accepted: true`，然后继续回夹具。而面板发送后是**先画一条 echo**、再由轮询用宿主的真实列表替换整份——所以「我的消息送到了吗」在仪器里不可判定：显示成功与显示丢失长得一模一样。修法是让发出的文本先于夹具参与分页返回，与真宿主一致。**同文件里 `create` 早就为完全同形的问题修过一次**（假宿主不承认新建的会话，于是按钮看起来是死的）——**同一个假宿主犯两次同一种错，说明该补的是「写操作要落到读路径上」这条规则，不是一个一个修** |
+| ★★ 假宿主少一个分支，面板就会为一次成功的操作报错（v110） | 读者点「只允许一次」，面板弹出 **「没能作答：HTTP 200」**——请求成功了，面板却在指责它。根因：真宿主有 8 个 action 分支，preview 假宿主只有 7 个，**`approval` 是缺的那个**，于是回答落到兜底 `send(200, {})`；而面板写的是 `if (payload?.answered !== true) say(...)`——**只有 `{answered: true}` 才算成功**，`{}` 自然不算。面板是对的，**错的只有量它的仪器**。与上一行同一个文件、同一类错误，所以这次的断言不再是「再补一个分支」，而是**两个宿主的 action 集合必须相等**（多一个也报，否则探针会在量一个不存在的宿主） |
+| ★ 探针读错了那一份记录，会把「已经发生」读成「什么都没发生」（v110） | 面板**确实发出了** `{"action":"approval","id":"q1","outcome":"allowed-once","scope":"once"}`（Node 侧打印得清清楚楚），而我的第一版探针报 `sentAnAnswer: false`。原因是 `tools/preview.mjs` 里有**两个 `state`**：Node 侧那个（L1372，权威，记录面板经 HTTP 发来的每个请求）与页面内 `window.__previewState`（L1197，另一份）。**同一个名字下两份记录，读数就只能靠猜。** 判据最终改为读**屏幕上的告警**——那是读者会看到的东西，也是唯一不需要我判断哪份记录为真的量 |
 
 最后一步在探针上报错 `llm-deepseek: no API key for provider route "deepseek-official"`——
 **这是探针进程拿不到凭据，不是插件缺陷**。已核对 `$DSH_HOME/.credentials.yaml`：里面只有一条
