@@ -84,14 +84,23 @@ test('no dictionary entry is a sentence', (t) => {
   // `dsh web`, which no label can say. Only the body is exempt — the title is
   // 「dsh web 需要重启」, short enough to be a label, and it stays subject to the
   // rule like everything else.
+  // It grew a fourth time, for a different reason. `row.answerAnnounce` is not a
+  // label — it is a sentence assembled for a screen reader, and the first half of
+  // it is the answer's own opening, which carries the answer's punctuation. The
+  // word limit cannot apply to text the panel did not write, and the punctuation
+  // rule cannot apply to text whose whole job is to quote someone else's.
+  //
+  // The exemption is narrow on purpose: only this key, and the panel's own half
+  // of the sentence (「（其余 N 字）」) stays short.
   const ALLOWED = [
+    'row.answerAnnounce',
     'blocked.hostTitle',
     'blocked.hostBody',
     'blocked.emptyTitle',
     'blocked.emptyBody',
     'blocked.staleBody',
   ]
-  assert.equal(ALLOWED.length, 5, 'the exempt list grew; was that intentional?')
+  assert.equal(ALLOWED.length, 6, 'the exempt list grew; was that intentional?')
 
   const offenders = []
   for (const [locale, dictionary] of Object.entries(DICTIONARIES)) {

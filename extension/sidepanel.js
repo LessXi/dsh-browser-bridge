@@ -105,6 +105,29 @@ const PAGE_ROWS = 60
 const MATCH_CONTEXT_ROWS = 12
 
 /**
+ * How much of a finished answer is spoken aloud before the count takes over.
+ *
+ * A live region cannot be skipped, scrolled or interrupted, so whatever goes in
+ * is time the reader has to sit through. The median answer on this machine is 89
+ * characters and longer ones reach 35159, so the ceiling is what keeps the long
+ * tail from turning one answer into minutes of speech.
+ *
+ * The floor is the shortest cut that still reads as an opening: below it, the
+ * search for a sentence end is abandoned in favour of the hard cut, because a
+ * three-character "opening" is not worth a sentence boundary.
+ */
+const ANNOUNCE_MAX = 240
+const ANNOUNCE_MIN = 80
+
+/**
+ * How much an announcement must save before it is worth making.
+ *
+ * The count sentence costs the reader time too, so shortening by less than this
+ * is a net loss. Measured: a 241-character answer came out at 244.
+ */
+const ANNOUNCE_WORTH = 40
+
+/**
  * How many idle sessions of a workspace are drawn before the rest fold away.
  *
  * A real list is not four rows: measured on this machine, the busiest workspace
@@ -548,6 +571,58 @@ function announce(text) {
   setTimeout(() => {
     announcer.textContent = text
   }, 0)
+}
+
+/**
+ * Reduce an answer to something worth hearing, and say how much was left out.
+ *
+ * The panel used to hand the finished answer to the live region whole. That is
+ * not "thorough"; it is a transcript read aloud with no way to stop it. Measured
+ * on a 5612-character answer, the region held all 5612 — roughly 22 minutes of
+ * speech a screen reader will not let the reader skip or interrupt, because a
+ * live region is not a document. That length is ordinary here: across this
+ * machine's 10885 assistant messages the median is 89 characters, but p99 is
+ * 2116 and the longest is 35159.
+ *
+ * So the announcement is the opening — which is what tells a reader that an
+ * answer arrived and what it is about — plus a count of the rest. The remainder
+ * is on screen, in a document, where the reader can read it at their own pace
+ * and move through it by heading and paragraph, which a live region cannot offer.
+ * The count is not decoration: without it, a shortened announcement reads as a
+ * short answer, and the reader has no reason to go looking for the rest.
+ *
+ * `ANNOUNCE_MAX` comes from the distribution rather than from taste: at the
+ * median answer (89 characters) nothing is cut at all, so the common case is
+ * unchanged and only the long tail changes shape.
+ *
+ * Cutting has to save more than the sentence that says it was cut. At 241
+ * characters the opening plus 「（其余 5 字）」 came to 244 — eleven characters
+ * longer than the answer it was abbreviating. `ANNOUNCE_WORTH` is that margin:
+ * below it the answer is announced whole, because bounding it would cost the
+ * reader more than it saved.
+ *
+ * @param {string} text - The finished answer.
+ * @returns {string} What to hand to the live region.
+ */
+function announceableAnswer(text) {
+  const body = text.trim()
+  if (body.length <= ANNOUNCE_MAX) return body
+  // Cut at a sentence end when one is near the limit, so the opening does not
+  // stop mid-clause. The hard cut is the fallback, and it still reads as an
+  // opening rather than as a broken word.
+  const head = body.slice(0, ANNOUNCE_MAX)
+  const lastStop = Math.max(
+    head.lastIndexOf('。'),
+    head.lastIndexOf('.'),
+    head.lastIndexOf('！'),
+    head.lastIndexOf('？'),
+    head.lastIndexOf('\n'),
+  )
+  const opening = lastStop >= ANNOUNCE_MIN ? head.slice(0, lastStop + 1) : head
+  const rest = body.length - opening.length
+  const said = t('row.answerAnnounce', { opening, rest })
+  // A sentence that announces a saving bigger than itself is not a saving.
+  return said.length < body.length - ANNOUNCE_WORTH ? said : body
 }
 
 /**
@@ -3031,7 +3106,9 @@ function applyDelta(payload) {
     // every frame, so it cannot be a live region — each token would re-announce
     // the whole answer from the top. Announcing the finished text once is the
     // shape that matches how the panel actually builds it.
-    if (live.text.length > 0) announce(live.text)
+    //
+    // Once, but not whole: see `announceableAnswer`.
+    if (live.text.length > 0) announce(announceableAnswer(live.text))
     return
   } else return
 

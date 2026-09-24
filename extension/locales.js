@@ -136,6 +136,10 @@ export const zh = Object.freeze({
   'row.reasoning': '思考',
   'row.context': '已附带',
   'row.working': '思考中…',
+  // Spoken aloud when an answer finishes. Not one line by construction: the
+  // opening is the answer's own first sentence, so it carries the answer's
+  // punctuation. See the exempt list in `panel-i18n.test.js`.
+  'row.answerAnnounce': '{opening}（其余 {rest} 字）',
   // Compaction. The count is the range the checkpoint replaced, so the row can
   // say how much of the conversation it stands in for.
   'row.compaction': '上下文已压缩',
@@ -319,6 +323,7 @@ export const en = Object.freeze({
   'row.reasoning': 'Thinking',
   'row.context': 'Attached',
   'row.working': 'Thinking…',
+  'row.answerAnnounce': '{opening} ({rest} more characters)',
   'row.compaction': 'Context compacted',
   'row.compaction.count': '{count} history items',
   'trigger.request': 'Execution requested',

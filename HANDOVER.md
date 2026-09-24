@@ -1,9 +1,9 @@
 # 交接工作单：DSH 浏览器桥接插件
 
-> **当前状态：v103 已交付并入库。** 下一节就是最新的一轮改动；下面标 v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
-> 只想知道「现在能做什么、下一步做什么」，读到 v103 那一段为止即可。
+> **当前状态：v104 已交付并入库。** 下一节就是最新的一轮改动；下面标 v103/v102/v101/v99/v98/v97/v96/v95/v94/v93/v92/v91/v90/v89/v88/v87/v86/v85/v84/v83/v82/v81/v80/v79/v78/v77/v76/v75/v74/v73/v72/v71/v70/v69/v68/v67/v66/v65/v64/v63/v61/v60/v59/v58/v57/v56/v55/v54/v53/v52/v44/v43/v42/v41/v40/v39/v38/v37/v36/v35/v34/v33/v32/v31/v30/v29/v28/v27/v14/v13/v12/v11/v10/v9/v8/v3/v4/v5/… 的段落是历史层，越往下越旧。
+> 只想知道「现在能做什么、下一步做什么」，读到 v104 那一段为止即可。
 >
-> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（707 条）与
+> **环境前提：本仓库不需要 `pnpm install`。** 全新克隆后 `npm test`（709 条）与
 > `npm run check:extension` 都能直接跑通——测试是零依赖的自建 runner
 > （`packages/dsh-browser-bridge/test/run.js`），宿主 peer 依赖只在真实 dsh 进程里解析。
 > （真浏览器 e2e 那 4 条需要机器上有 Playwright Chromium 或 Chrome for Testing；
@@ -16,8 +16,72 @@
 > **`<repo>` 是本仓库在你机器上的位置**——文档里凡是出现 `<repo>\...` 的路径，
 > 换成你自己克隆它的目录即可（例：`cd <repo>`）。
 >
-> **已入库**：v3→v103 的全部改动已提交并推送到 `origin/main`。工作区干净。
-> （v102 是 `77b75e3`，v101 是 `cc33dd9`，v99 是 `bff292d`，v92 是 `e3ad6ba`，v91 是 `3d96bf1`，v90 是 `767e4cd`，v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
+> **已入库**：v3→v104 的全部改动已提交并推送到 `origin/main`。工作区干净。
+> （v103 是 `91fa7dd`，v102 是 `77b75e3`，v101 是 `cc33dd9`，v99 是 `bff292d`，v92 是 `e3ad6ba`，v91 是 `3d96bf1`，v90 是 `767e4cd`，v80 是 `53602de`，v79 是 `5c8ee77`，v78 是 `768e653`，v77 是 `322fdc4`，v75 是 `e0ef3ee`，v74 是 `bb5af8d`。）
+
+> ## v104：一篇长回答被整篇念给读者听，而 live region 停不下来
+
+**症状**：回答流完时，面板把**整篇回答**塞进 `#announcer`（一个 `role="status" aria-live="polite"` 的 `sr-only` 区域）。而 live region **不能跳过、不能滚动、不能打断**——读者只能坐着听完。
+
+**实测**（`.tmp-run/probe-announce-length.js`，5612 字符的回答）：`announcedCharacters: 5612`、`announcesWholeAnswer: true`、按中文 250 字/分估算 **22.4 分钟**。
+
+**这不是边缘情况**。扫本机 156 个会话、**10885 条 assistant 文本**（`.tmp-run/probe-answer-lengths.mjs`）：
+
+| 分位 | 字符数 | 朗读时长（200 词/分） |
+|---|---|---|
+| p50 | 89 | 0.1 分钟 |
+| p75 | 136 | 0.1 分钟 |
+| p90 | 204 | 0.2 分钟 |
+| **p99** | **2116** | **2.1 分钟** |
+| **max** | **35159** | **35.2 分钟** |
+
+超过 1 分钟的占 **1.5%**（168 条）。中位数很小，所以「念全文」在多数时候无害——这让它一直没被发现。
+
+**官方参考实现**（`dsh-client-ui-chat/lib/client.js` L6125-6131）：live region 里放的是**一句短状态**，四档全部如此——`chat.deepDiving`「深度求索中」、`message.stopped`「已停止」、`message.turnProcess.failed`「处理失败」、`message.turnProcess.worked`「已完成工作」（4 个字）。**从不放回答正文**；正文由读者自己在文档里读。
+
+**修法**：播报**开头**（读者据此知道回答到了、讲的是什么）＋**省下多少字的说明**，其余留在屏幕上由读者自己按自己的节奏读。新增 `announceableAnswer(text)`（`extension/sidepanel.js`，紧接 `announce` 之后）。
+
+三个常量，各有理由：
+- `ANNOUNCE_MAX = 240`：从分布取，中位数 89 与之相差很远，所以**常见档完全不受影响**，只有长尾改变形态。
+- `ANNOUNCE_MIN = 80`：低于它就不找句末边界了——三个字的「开头」不值得为它找句子边界。
+- `ANNOUNCE_WORTH = 40`：**截断必须省得比那句说明多**。
+
+**★ 边界缺陷（实现完成后才量出来）**：241 字符的回答被播报成 **244**——加了「（其余 5 字）」之后比原文还长。**为省 5 个字多说了 12 个字。** 这就是 `ANNOUNCE_WORTH` 的来由；它的成因不是疏忽，而是「截断」与「说明」被当成两件独立的事，而它们共享同一个时间预算。
+
+| 长度 | 修复前播报 | 修复后播报 |
+|---|---|---|
+| 89（p50） | 89 | **89（逐字）** |
+| 136（p75） | 136 | **136（逐字）** |
+| 240 | 240 | **240（逐字）** |
+| 241 | 241 | **241（逐字）**（不值得截） |
+| 280 | 280 | **225**（截断＋说明） |
+| 600 | 600 | **226** |
+| 2116（p99） | 2116 | **227** |
+| 5612 | 5612 | **227**（22.4 分钟 → 0.9 分钟） |
+
+**验证**：`npm test` **709 passed, 0 failed, 0 skipped**；`check:extension` exit 0；变异 `.tmp-run/mutate-announce.mjs` **真坏法 4/4 命中、等价变异 1/1 保持绿**、`restoredExactly: true`；15 张截图重渲后**除 `SOURCES.json` 指纹外零变化**（播报只写 `sr-only` 区域，不影响任何像素）。
+
+**★ 一条如实标注的等价变异**：`early-return-removed`（把 `if (body.length <= ANNOUNCE_MAX) return body` 改成 `<= 0`）**必须不红**——`ANNOUNCE_WORTH` 那道闸门已经让所有 ≤240 的回答逐字播报，所以 MAX 的提前返回是同一件事的另一种写法。用**算式**证明而不是靠论证：`.tmp-run/probe-max-equivalence.mjs` 对 1..4000 的每个长度跑两版实现，`differenceCount: 0`（3378 个有效长度）。脚本把 `realCaught` 与 `equivalentHeld` **分开统计**，不混成一个「命中数」。
+
+**★ 测试缺口（第一轮变异只有 2/5，追下去是三种不同原因）**：
+1. `drop-the-count` 没红 —— 断言写的是 `/有数字/`，而夹具的句子本身带编号（"Sentence 1…"），**这条断言恒真**。改成从播报里解析出 `（其余 N 字）` 的 N 并与实际丢弃量比对。
+2. `bound-everything` 没红 —— 测试里的长度最长只到 241，**全都在逐字档**，看不到上限移动。补了 250（逐字）与 280（截断）两个真正跨过闸门的长度。
+3. `no-worth-threshold` 没红 —— 241 字符里第 241 位恰好是**空格**，`trimEnd` 后是 240，没到触发点。
+
+**★ 两次误判都是测试夹具的错，不是产品的错**：`answerOfLength(241)` 返回的是 240（补串循环停在了请求长度上，而句子是 34 字符），以及「241 的第 241 位是空格、`trim()` 去掉它是对的」。两次都报成「面板违约」。夹具的两处 off-by-one 已写进该函数的注释。
+
+**新测试**（`packages/dsh-browser-bridge/test/panel-stream.test.js`，两条）：`a long answer is announced in part, and says how much it left out`、`an ordinary answer is announced whole, because bounding it would cost more`；新助手 `announcedFor(body)` 与 `answerOfLength(length)`。**`announcedFor` 必须按序推三帧**（`start` → `text` → `end`）：`applyDelta` 在会话不匹配或没有 live 块时提前返回，只推 `text` 一帧什么也测不到，而且会「因为什么都没发生」而通过。
+
+**词典豁免**：`row.answerAnnounce`（zh `'{opening}（其余 {rest} 字）'` / en `'{opening} ({rest} more characters)'`）加入了 `packages/dsh-browser-bridge/test/panel-i18n.test.js` 的 `ALLOWED` 表（长度 6 条）。理由与该表既有的四条不同：前四条是「句子就是内容」，这一条是**前半句引用读者自己的回答**，面板管不了它的标点，词数上限也无法适用于不是面板写的文本。豁免范围刻意只有这一个键。
+
+**探针**（`.tmp-run/`，被 gitignore）：`probe-answer-lengths.mjs`（扫真实日志得分布）、`probe-announce-length.js`、`probe-announce-short.js`（期望分组按「值不值得截」而不是「有没有超上限」）、`probe-announce-chain.js`（链条逐环诊断）、`probe-mutation-gaps.js`、`probe-max-equivalence.mjs`、`mutate-announce.mjs`。
+
+**★ 探针自身错了两次**（都是「读数恒为 0，先怀疑判据」）：
+1. 只推 `dsh-assistant-delta` 而不带 `kind`，`applyDelta` 不累加文本 → 播报 0 字符，看起来像通过。
+2. `announce()` 把文本写在 `setTimeout(…, 0)` 里（两步是为了让相同文本也能播报），而探针只等 `requestAnimationFrame` → 读到的正是「已清空、尚未写入」的中间态。
+
+**`tools/preview.mjs` 的一处工具改进**：`chrome.runtime.onMessage` 的替身现在把监听器发布到 `window.__previewState.onMessage`（原来只存在注入脚本的局部 `state` 上），探针因此能走**真实路径**投递消息。不发布它，探针就得自己编一个面板根本不监听的事件名，量到的是一条生产环境不存在的路径。
+
 
 > ## v103：放大字号之后，输入框里能看到的行数反而少了一半
 

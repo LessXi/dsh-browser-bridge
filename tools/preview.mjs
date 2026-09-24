@@ -801,7 +801,10 @@ function chromeStub(port, state, scenario) {
       openOptionsPage: () => { state.requests.push({ url: 'openOptionsPage' }) },
       // The panel registers exactly one listener here and everything the service
       // worker pushes — assistant deltas, approval questions — arrives through
-      // it. Keeping a handle lets a scenario deliver one.
+      // it. Keeping a handle lets a scenario deliver one, and publishing it on
+      // `window` lets a probe deliver one too: without that a probe has to
+      // invent an event name the panel never listens for, and then measures a
+      // path that does not exist in production.
       onMessage: {
         addListener: (fn) => { state.onMessage = fn },
       },

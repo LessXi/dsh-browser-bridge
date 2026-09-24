@@ -3530,6 +3530,115 @@ test('a question and a finished answer are announced, and a healthy start is not
 })
 
 /**
+ * Drive one whole turn — start, text, end — and read back what was announced.
+ *
+ * The three frames have to be delivered in order: `applyDelta` returns early
+ * unless it is the session on screen, and the text only accumulates once
+ * `kind: 'start'` has made a live block. A test that sends the text alone
+ * measures nothing, and passes for it.
+ *
+ * @param {string} body - The answer text.
+ * @returns {Promise<string>} What the live region held once the turn ended.
+ */
+async function announcedFor(body) {
+  announcer.textContent = ''
+  deliver({ sessionId: SESSION, kind: 'start' })
+  deliver({ sessionId: SESSION, kind: 'text', text: body })
+  deliver({ sessionId: SESSION, kind: 'end' })
+  await settleMacrotask()
+  return announcer.textContent
+}
+
+/**
+ * An answer of exactly `length` characters, built from numbered sentences.
+ *
+ * Two off-by-ones live here, both the fixture's rather than the panel's, and both
+ * were reported as the panel failing:
+ *
+ *  - The padding loop must run past the requested length before slicing. The
+ *    sentence is 34 characters, so a buffer that stopped at the request returned
+ *    one short.
+ *  - The requested length must not land on a space. `announceableAnswer` trims,
+ *    which is right — a trailing space is not something to read aloud — so a
+ *    241-character answer ending in `" "` is legitimately announced as 240. The
+ *    fixture was measuring the trim, not the ceiling.
+ *
+ * @param {number} length - Exact character count of a trimmed answer.
+ * @returns {string} An answer of that length.
+ */
+function answerOfLength(length) {
+  let out = ''
+  let index = 1
+  while (out.length < length + 40) {
+    out += `Sentence ${index} explains the thing. `
+    index += 1
+  }
+  return out.slice(0, length).trimEnd()
+}
+
+test('a long answer is announced in part, and says how much it left out', async () => {
+  // A live region cannot be skipped, scrolled or interrupted, so everything put
+  // in one is time the reader has to sit through. Announcing the finished answer
+  // whole meant a 5612-character answer held the region for ~22 minutes of
+  // speech — and that length is ordinary here: across 10885 assistant messages on
+  // the author's machine, p99 is 2116 characters and the longest is 35159.
+  const long = answerOfLength(2116)
+  const heard = await announcedFor(long)
+
+  assert.ok(
+    heard.length < long.length / 2,
+    `a 2116-character answer must not be announced whole, got ${heard.length} characters`,
+  )
+  // The count has to be *about this answer*. Asserting that a number appears
+  // proves nothing: the fixture's own sentences are numbered, so `/\d/` matches
+  // the text the panel never wrote. The announcement has to name the number of
+  // characters it dropped, and that number is arithmetic, not a guess.
+  const dropped = long.length - (heard.length - (heard.match(/（其余 (\d+) 字）/) ?? [])[0]?.length ?? 0)
+  const claimed = Number.parseInt((heard.match(/（其余 (\d+) 字）/) ?? [])[1] ?? '', 10)
+  assert.ok(
+    Number.isInteger(claimed),
+    `the announcement must say how much was left out, got: ${heard}`,
+  )
+  assert.ok(
+    dropped > 0 && claimed > 0 && Math.abs(claimed - dropped) <= 2,
+    `the count must match what was dropped (claimed ${claimed}, dropped about ${dropped})`,
+  )
+  // The opening really is the answer's opening, not a summary the panel wrote.
+  assert.ok(
+    long.startsWith(heard.slice(0, 40)),
+    `the announcement must open with the answer's own words, got: ${heard.slice(0, 40)}`,
+  )
+})
+
+test('an ordinary answer is announced whole, because bounding it would cost more', async () => {
+  // The median answer on that same machine is 89 characters, p75 is 136. If the
+  // ceiling changed the shape of those, the fix would trade most readers' case
+  // for the long tail's — which is not a fix.
+  //
+  // The boundary matters more than the round numbers. Two lengths sit just above
+  // the ceiling: 250 characters, where bounding saves about 25 and the count
+  // sentence is not yet worth it, and 280, where the saving has overtaken the
+  // cost and the answer is abbreviated. Measured: 280 comes out at 225. A test
+  // that only checked "under 240 is verbatim" cannot see the ceiling move at all,
+  // which is how the first version of this file let two mutations through.
+  for (const length of [89, 136, 240, 250]) {
+    const body = answerOfLength(length)
+    const heard = await announcedFor(body)
+    assert.equal(
+      heard,
+      body,
+      `an answer of ${length} characters must be announced verbatim; got ${heard.length} characters`,
+    )
+  }
+  const worthCutting = answerOfLength(280)
+  const shortened = await announcedFor(worthCutting)
+  assert.ok(
+    shortened.length < worthCutting.length,
+    `at 280 characters the saving is worth the count sentence, so it must be shortened; got ${shortened.length}`,
+  )
+})
+
+/**
  * The two rows in the model menu that carry a state, asserted on the DOM.
  *
  * Both defects these cover were invisible to every test that existed, because
